@@ -271,37 +271,60 @@ El sistema ahora usa **Neon PostgreSQL serverless** con arquitectura eficiente:
 8. **Si hay "Problema" → Toast al mesero con opción de cancelar/cambiar**
 9. **Mesero ve orden lista → Entrega y cobra**
 
-### Cambios Recientes (Mayo 2026 - Fase 2)
+### Cambios Recientes (Mayo 2026 - Fase 3: BD 100% Real)
 
-#### KDS Optimizado para Serverless
-1. **Quitar Polling Automático**: Eliminado refresco cada 5 segundos para ahorrar llamadas a BD
-2. **Botón Refrescar Manual**: KDS/Cocina/Bar presiona botón para obtener órdenes nuevas
-3. **Estados por Item**:
-   - **Pendiente**: Estado inicial cuando llega orden
-   - **En Preparación**: Cocinero marca manualmente al comenzar
-   - **Listo**: Comida/bebida lista para entregar
-   - **Problema**: Error o falta ingrediente
+#### Eliminación Completa de Datos Mock
+1. **initial-data.ts**: Reducido a solo 3 constantes de UI (quesos, ingredientes, salsas para dialog del POS)
+2. **app-context.tsx**: Iniciala con todos los arrays vacíos (`mesas: []`, `productos: []`, `usuarios: []`, etc.)
+3. **Cero fallbacks**: Si Neon no devuelve datos, la app muestra vacío — no hay datos legado que confundan
 
-#### Sistema de Notificaciones Emergentes
-- Toast rojo con ícono de alerta en esquina inferior derecha
-- Desaparece automáticamente en 8 segundos
-- Mesero puede cerrar manualmente antes
-- Tipo "problema": Notifica que hay orden con problema, opción de cancelar y crear nueva
+#### Menú Real en Neon (33 Productos)
+- **7 Categorías**: burgers, entradas, acompañamientos, postres, cervezas, jugos_bebidas, tragos
+- **33 Productos**: Cada uno con descripción, precio y categoría correcta
+  - Burgers: Clásica, BBQ, Doble, Vegana, Pollo, Italiana
+  - Entradas: Alitas, Aros, Nachos, Tequeños
+  - Acompañamientos: Papas, Wedges, Ensaladas
+  - Postres: Brownie, Cheesecake, Helados
+  - Cervezas: Rubia, Negra, IPA, Sin Alcohol
+  - Jugos: Coca, Sprite, Agua, Naturales
+  - Tragos: Pisco, Gin, Mojito, Ron, Vino, Whisky
+- **Inventario Automático**: Stock inicial según categoría (30-50 unidades) + stock_minimo + unidad_medida
 
-#### Cambios de Código
-- Tipos: `EstadoComanda` agregó 'en_preparacion' y 'problema', nuevo `EstadoItem`
-- Interface `Notificacion` en `AppState` con `tipo | ordenId | mesaNombre | vista`
-- Componente `NotificacionesToast` muestra notificaciones emergentes
-- KDS: 3 botones por orden: "Preparando", "Listo", "Problema"
-- Reducer: acciones `ADD_NOTIFICACION`, `MARCAR_NOTIFICACION_VISTA`, `LIMPIAR_NOTIFICACIONES`
-- Context: función `updateOrden` maneja estados
+#### Actualización de db.ts
+- `getProductos()`: JOIN con `categorias` e `inventario` — devuelve `categoria` como string (ej: 'burgers')
+- `getUsuarios()`: Normaliza shape de usuarios desde Neon
+- `getInventarioCompleto()`: Query completa con producto, categoría y stock
+- `crearProducto()`: Inserta producto e inventario en transacción
 
-#### Ventajas de esta Solución
-- **Serverless viable**: Sin polling, bajo consumo de BD (ideal para capa gratuita)
-- **Mejor UX**: Cocinero controla cuándo refrescar, menos distracciones
-- **Flexible**: Problema notifica mesero para cambiar item o cancelar orden
-- **Escalable**: Funciona igual con 1 o 1000 órdenes/hora
-- **Costo controlado**: Paga solo por llamadas reales, no por polling
+#### Limpieza de Componentes
+- `pos-page.tsx`: Carga productos desde API → dialog del burger ahora muestra quesos, ingredientes, salsas desde las constantes UI
+- `inventario-page.tsx`: Carga desde `/api/inventario` con `useEffect` propio → muestra resumen (total/OK/bajo/sin stock)
+- `kds-page.tsx`: Filter `isBarItem` actualizado para las 3 categorías de bebidas (`cervezas`, `jugos_bebidas`, `tragos`)
+- `mesas-page.tsx`: `getComandaActiva()` filtra por `items.length > 0` para nunca mostrar "Comanda activa (0 items)"
+
+#### Seed Actualizado
+- `/api/seed`: Ahora documenta el menú real (7 categorías + 33 productos)
+- Ejecuta solo si BD está vacía — no fuerza inserción si ya hay datos
+- DELETE `/api/seed` disponible en desarrollo para limpiar y re-inicializar
+
+#### Flujo 100% Real
+1. App inicia → carga vacío
+2. `/api/seed` verifica si BD está poblada
+3. Si vacía: inserta 7 categorías + 33 productos + 20 mesas + 5 usuarios + inventario
+4. Si llena: solo devuelve status OK
+5. Todo se carga desde Neon en tiempo real
+
+#### Ventajas Finales
+- **Transparencia total**: Datos en BD, visible siempre, sincronizado en todos los dispositivos
+- **Cero confusión**: No hay fallback a mock — el sistema enseña exactamente qué hay en la BD
+- **Escalable**: Agregar/quitar productos/usuarios es solo insertar en tablas
+- **Real desde día 1**: El POS muestra el menú real, inventario real, usuarios reales
+
+#### Cambios Fase 2 (Mayo 2026)
+1. **KDS Optimizado para Serverless**: Botón refrescar manual (sin polling automático)
+2. **Estados Granulares**: pendiente → en_preparacion → listo → problema
+3. **Notificaciones Emergentes**: Toast rojo para problemas en órdenes
+4. **Mapper Correcto**: `mapOrdenToComanda` convierte items de Neon al formato frontend
 
 #### Cambios Fase 1 (Mayo 2026)
 1. **Corrección de Temas**: Tokens semánticos (`bg-card`, `bg-muted`, `border-border`)
@@ -327,9 +350,9 @@ El sistema ahora usa **Neon PostgreSQL serverless** con arquitectura eficiente:
 ---
 
 ## Version
-- **Version:** 2.1.0-serverless
+- **Version:** 3.0.0-real-db
 - **Fecha:** Mayo 2026
-- **Estado:** Prototipo Funcional - KDS Optimizado para Serverless
-- **BD:** Neon PostgreSQL serverless (sin polling automático)
+- **Estado:** Sistema Completo 100% Real con BD Neon
+- **BD:** Neon PostgreSQL con 7 categorías, 33 productos, inventario real
 - **Ambiente:** Vercel deployment ready
-- **Última Actualización:** KDS refrescar manual, estados granulares, notificaciones emergentes para problemas
+- **Última Actualización:** Eliminación completa de datos mock, menú real en BD, todos los datos desde Neon
