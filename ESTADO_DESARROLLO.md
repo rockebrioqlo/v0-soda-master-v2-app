@@ -199,6 +199,8 @@ Sistema POS completo para sodas y restaurantes desarrollado con Next.js 16, Reac
 - [ ] Impresion real de tickets (ESC/POS)
 - [ ] Autenticación con JWT (en lugar de sessionStorage)
 - [ ] Rate limiting en endpoints API
+- [ ] Paginación en listados largos
+- [ ] Validación de datos en BD (constraints, triggers)
 
 ### Media Prioridad
 - [ ] Sistema de reservaciones con calendario
@@ -207,6 +209,8 @@ Sistema POS completo para sodas y restaurantes desarrollado con Next.js 16, Reac
 - [ ] Facturacion electronica
 - [ ] API para delivery (Uber Eats, etc.)
 - [ ] Tests unitarios e integración
+- [ ] Caché de datos en cliente para mejor rendimiento
+- [ ] Soporte multi-idioma
 
 ### Baja Prioridad
 - [ ] App movil nativa
@@ -217,28 +221,63 @@ Sistema POS completo para sodas y restaurantes desarrollado con Next.js 16, Reac
 
 ---
 
+## Bugs Corregidos Recientemente
+
+### Mayo 2026
+1. **[CORREGIDO]** Mesero abre mesa → refresca → mesa se cierra
+   - **Causa:** Datos solo en contexto local, no en BD
+   - **Solución:** Todas las acciones ahora persisten en Neon via APIs
+
+2. **[CORREGIDO]** Popups con fondo oscuro en tema claro
+   - **Causa:** Colores hardcodeados (`bg-zinc-800`) 
+   - **Solución:** Tokens semánticos (`bg-card`, `bg-muted`) que respetan tema
+
+3. **[CORREGIDO]** Mesas sin nombres ("disponible")
+   - **Causa:** Tabla sin columna `nombre`, solo `numero`
+   - **Solución:** Generación en SQL `'Mesa ' || numero`
+
+4. **[CORREGIDO]** KDS no ve órdenes nuevas sin refrescar
+   - **Causa:** Sin mecanismo de polling
+   - **Solución:** Polling automático cada 5 segundos
+
+---
+
 ## Notas de Implementacion
 
-### Persistencia con Neon
-El sistema ahora usa **Neon PostgreSQL serverless** para persistencia real:
+## Notas de Implementacion
+
+### Persistencia con Neon - Actualizado
+El sistema ahora usa **Neon PostgreSQL serverless** para persistencia real con flujo completo:
 - Datos se almacenan en base de datos
 - Endpoint de seed (`/api/seed`) inicializa BD con datos de demo
-- Cada acción escribe/lee de la base de datos via endpoints API
-- Context local mantiene estado de sesion actual del usuario
-- Los demás datos se cargan bajo demanda desde API
+- **Mesero crea orden en POS** → POST `/api/ordenes` + `/api/items-orden` persisten en BD
+- **Orden se envía a cocina** → PATCH `/api/ordenes` con `enviado_a_cocina=true`
+- **KDS refresca cada 5 segundos** → GET `/api/ordenes?kds=true` obtiene órdenes en tiempo real
+- **Cocinero/Barman marca lista** → PATCH `/api/ordenes` actualiza estado
+- **Admin ve todo el flujo** → Polling automático en todos los módulos
 
-### Arquitectura
-- **Frontend:** React Context + Reducers (estado local)
+### Arquitectura - Mejorada
+- **Frontend:** React Context + Reducers + APIs (estado local + persistencia)
 - **Backend:** Next.js API Routes (lógica de negocio)
-- **BD:** Neon PostgreSQL (persistencia)
+- **BD:** Neon PostgreSQL (persistencia real)
 - **Autenticación:** bcryptjs para hash de PINs
 
-### Flujo de Datos
+### Flujo de Datos - Mejorado
 1. Usuario hace login → Endpoint `/api/auth/login` verifica PIN en BD
-2. Usuario agrega producto al POS → Se mantiene en estado local
-3. Usuario envía orden → POST `/api/ordenes` crea registro en BD
-4. KDS obtiene órdenes → GET `/api/ordenes` trae de BD
-5. Se marca como lista → PATCH `/api/ordenes/[id]` actualiza BD
+2. Mesero abre mesa → API actualiza `estado` a 'ocupada' en BD
+3. Mesero agrega productos → Se mantiene en estado local
+4. **Mesero envía orden → POST `/api/ordenes` + items se crean en BD**
+5. **KDS obtiene órdenes → GET `/api/ordenes?kds=true` con polling cada 5s**
+6. **Cocinero marca lista → PATCH `/api/ordenes` actualiza BD**
+7. **Mesero ve orden lista → Recarga automática de órdenes**
+8. Mesero entrega y cobra → Cierra mesa, estado a 'libre'
+
+### Cambios Recientes (Mayo 2026)
+1. **Corrección de Temas**: Todos los componentes ahora usan tokens semánticos (`bg-card`, `bg-muted`, `border-border`) en lugar de colores hardcodeados (`bg-zinc-800`, `border-zinc-700`) - respetan tema claro/oscuro
+2. **Nombres de Mesas**: Generación automática `'Mesa ' || numero` en SQL - las mesas ahora muestran "Mesa 1", "Mesa 2", etc.
+3. **APIs Completadas**: Todos los endpoints GET/POST/PATCH/DELETE para mesas, órdenes, items
+4. **Polling en KDS**: Sistema de refresco cada 5 segundos para ver órdenes nuevas en tiempo real
+5. **Mapeo BD->Frontend**: Función `mapOrdenToComanda` convierte formato snake_case (BD) a camelCase (frontend)
 
 ### Siguiente Fase - JWT Authentication
 Para producción se recomienda:
@@ -265,8 +304,9 @@ Para producción se recomienda:
 ---
 
 ## Version
-- **Version:** 2.0.0-neon
+- **Version:** 2.0.1-neon
 - **Fecha:** Mayo 2026
-- **Estado:** Prototipo Funcional con Neon PostgreSQL
+- **Estado:** Prototipo Funcional - Flujo Completo de Restaurante
 - **BD:** Neon PostgreSQL serverless
 - **Ambiente:** Vercel deployment ready
+- **Última Actualización:** Corrección temas, nombres mesas, APIs persistencia, polling KDS
