@@ -68,13 +68,23 @@ export const db = {
   // Mesas
   async getMesas(): Promise<Mesa[]> {
     const sql = getSql()
-    const result = await sql`SELECT * FROM soda_master.mesas ORDER BY numero`
+    const result = await sql`
+      SELECT *, 
+             'Mesa ' || numero AS nombre 
+      FROM soda_master.mesas 
+      ORDER BY numero
+    `
     return result as Mesa[]
   },
 
   async getMesaById(id: string): Promise<Mesa | null> {
     const sql = getSql()
-    const result = await sql`SELECT * FROM soda_master.mesas WHERE id = ${id}`
+    const result = await sql`
+      SELECT *, 
+             'Mesa ' || numero AS nombre 
+      FROM soda_master.mesas 
+      WHERE id = ${id}
+    `
     return result[0] as Mesa | null
   },
 
@@ -84,7 +94,7 @@ export const db = {
       UPDATE soda_master.mesas 
       SET estado = ${estado}, updated_at = CURRENT_TIMESTAMP
       WHERE id = ${id}
-      RETURNING *
+      RETURNING *, 'Mesa ' || numero AS nombre
     `
     return result[0] as Mesa
   },
@@ -98,7 +108,7 @@ export const db = {
           area = COALESCE(${updates.area}, area),
           updated_at = CURRENT_TIMESTAMP
       WHERE id = ${id}
-      RETURNING *
+      RETURNING *, 'Mesa ' || numero AS nombre
     `
     return result[0] as Mesa
   },

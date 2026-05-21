@@ -230,11 +230,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         if (mesasRes.ok) {
           const mesas = await mesasRes.json()
           if (Array.isArray(mesas) && mesas.length > 0) {
-            // Add nombre field if missing and normalize estado
+            // Normalize estado and ensure nombre exists
             loadedMesas = mesas.map(m => ({
               ...m,
-              nombre: m.nombre || `Mesa ${m.numero}`,
-              estado: m.estado === 'disponible' ? 'libre' : m.estado
+              nombre: m.nombre || `Mesa ${m.numero || m.id}`,
+              estado: m.estado === 'disponible' ? 'libre' : (m.estado || 'libre')
             }))
             dispatch({ type: 'SET_MESAS', payload: loadedMesas })
           }
@@ -388,7 +388,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       const res = await fetch('/api/mesas')
       if (res.ok) {
         const mesas = await res.json()
-        dispatch({ type: 'SET_MESAS', payload: mesas })
+        const mesasNormalizadas = mesas.map((m: any) => ({
+          ...m,
+          nombre: m.nombre || `Mesa ${m.numero || m.id}`,
+          estado: m.estado === 'disponible' ? 'libre' : (m.estado || 'libre')
+        }))
+        dispatch({ type: 'SET_MESAS', payload: mesasNormalizadas })
       }
     } catch (error) {
       console.error('Error loading mesas:', error)
