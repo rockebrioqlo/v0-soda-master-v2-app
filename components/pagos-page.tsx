@@ -147,7 +147,7 @@ export function PagosPage() {
 
         <div className="grid gap-6 lg:grid-cols-2">
             {/* Pending comandas */}
-            <Card className="border-zinc-700 bg-zinc-800/50">
+            <Card className="border-border bg-card">
               <CardHeader>
                 <CardTitle className="text-foreground">Comandas Pendientes de Pago</CardTitle>
               </CardHeader>
@@ -161,7 +161,7 @@ export function PagosPage() {
                       return (
                         <div
                           key={comanda.id}
-                          className="flex cursor-pointer items-center justify-between rounded-lg border border-zinc-700 p-4 transition-colors hover:bg-zinc-700/50"
+                          className="flex cursor-pointer items-center justify-between rounded-lg border border-border p-4 transition-colors hover:bg-muted"
                           onClick={() => handleSelectComanda(comanda.id)}
                         >
                           <div>
@@ -185,7 +185,7 @@ export function PagosPage() {
             </Card>
 
             {/* Recent payments */}
-            <Card className="border-zinc-700 bg-zinc-800/50">
+            <Card className="border-border bg-card">
               <CardHeader>
                 <CardTitle className="text-foreground">Pagos Recientes</CardTitle>
               </CardHeader>
@@ -199,7 +199,7 @@ export function PagosPage() {
                       return (
                         <div
                           key={pago.id}
-                          className="flex items-center justify-between rounded-lg border border-zinc-700 p-3"
+                          className="flex items-center justify-between rounded-lg border border-border p-3"
                         >
                           <div>
                             <p className="font-medium text-foreground">
@@ -233,7 +233,7 @@ export function PagosPage() {
 
       <div className="grid gap-6 lg:grid-cols-2">
           {/* Order summary */}
-          <Card className="border-zinc-700 bg-zinc-800/50">
+          <Card className="border-border bg-card">
             <CardHeader>
               <CardTitle className="flex items-center justify-between text-foreground">
                 <span>{comandaAPagar.mesaNombre}</span>
@@ -245,7 +245,7 @@ export function PagosPage() {
             <CardContent>
               <ul className="mb-4 space-y-2">
                 {comandaAPagar.items.map(item => (
-                  <li key={item.id} className="flex justify-between rounded-lg bg-zinc-700/50 p-3">
+                  <li key={item.id} className="flex justify-between rounded-lg bg-muted p-3">
                     <div>
                       <p className="font-medium text-foreground">
                         {item.cantidad}x {item.productoNombre}
@@ -266,7 +266,7 @@ export function PagosPage() {
                 ))}
               </ul>
 
-              <div className="space-y-2 border-t border-zinc-700 pt-4 text-sm">
+              <div className="space-y-2 border-t border-border pt-4 text-sm">
                 <div className="flex justify-between text-muted-foreground">
                   <span>Subtotal</span>
                   <span>{formatCurrency(subtotal)}</span>
@@ -281,7 +281,7 @@ export function PagosPage() {
                   <span>Propina ({propinaTipo === 'porcentaje' ? `${propinaValor}%` : 'fijo'})</span>
                   <span>+{formatCurrency(propinaCalculada)}</span>
                 </div>
-                <div className="flex justify-between border-t border-zinc-700 pt-2 text-xl font-bold text-foreground">
+                <div className="flex justify-between border-t border-border pt-2 text-xl font-bold text-foreground">
                   <span>Total</span>
                   <span>{formatCurrency(total)}</span>
                 </div>
@@ -298,7 +298,7 @@ export function PagosPage() {
           {/* Payment options */}
           <div className="space-y-6">
             {/* Propina */}
-            <Card className="border-zinc-700 bg-zinc-800/50">
+            <Card className="border-border bg-card">
               <CardHeader>
                 <CardTitle className="text-foreground">Propina</CardTitle>
               </CardHeader>
@@ -339,7 +339,7 @@ export function PagosPage() {
                       value={propinaValor}
                       onChange={e => setPropinaValor(e.target.value)}
                       placeholder="Monto"
-                      className="border-zinc-600 bg-zinc-700/50"
+                      className="border-border bg-muted"
                     />
                   )}
                 </div>
@@ -347,7 +347,7 @@ export function PagosPage() {
             </Card>
 
             {/* Split bill */}
-            <Card className="border-zinc-700 bg-zinc-800/50">
+            <Card className="border-border bg-card">
               <CardHeader>
                 <div className="flex items-center justify-between">
                   <CardTitle className="flex items-center gap-2 text-foreground">
@@ -362,7 +362,7 @@ export function PagosPage() {
                   <div className="flex items-center gap-4">
                     <span className="text-muted-foreground">Número de personas:</span>
                     <Select value={numPersonas} onValueChange={setNumPersonas}>
-                      <SelectTrigger className="w-24 border-zinc-600 bg-zinc-700/50">
+                      <SelectTrigger className="w-24 border-border bg-muted">
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
@@ -377,7 +377,7 @@ export function PagosPage() {
             </Card>
 
             {/* Payment method */}
-            <Card className="border-zinc-700 bg-zinc-800/50">
+            <Card className="border-border bg-card">
               <CardHeader>
                 <CardTitle className="text-foreground">Método de Pago</CardTitle>
               </CardHeader>
@@ -427,7 +427,7 @@ export function PagosPage() {
                         value={efectivoRecibido}
                         onChange={e => setEfectivoRecibido(e.target.value)}
                         placeholder={formatCurrency(total)}
-                        className="border-zinc-600 bg-zinc-700/50"
+                        className="border-border bg-muted"
                       />
                     </div>
                     {parseFloat(efectivoRecibido) >= total && (
@@ -455,7 +455,7 @@ export function PagosPage() {
 
         {/* QR Dialog */}
         <Dialog open={showQRDialog} onOpenChange={setShowQRDialog}>
-          <DialogContent className="border-zinc-700 bg-zinc-800">
+          <DialogContent className="border-border bg-card">
             <DialogHeader>
               <DialogTitle className="text-foreground">Pago con QR</DialogTitle>
             </DialogHeader>
@@ -481,7 +481,7 @@ export function PagosPage() {
 
         {/* Boleta Dialog */}
         <Dialog open={showBoletaDialog} onOpenChange={setShowBoletaDialog}>
-          <DialogContent className="border-zinc-700 bg-zinc-800 sm:max-w-md">
+          <DialogContent className="border-border bg-card sm:max-w-md">
             <DialogHeader>
               <DialogTitle className="flex items-center gap-2 text-foreground">
                 <Receipt className="h-5 w-5" />
@@ -494,10 +494,10 @@ export function PagosPage() {
                 <p className="text-muted-foreground">{state.configuracion.encabezadoTicket}</p>
                 <p className="mt-2 text-muted-foreground">{formatDate(Date.now())}</p>
               </div>
-              <div className="my-4 border-t border-dashed border-zinc-300" />
+              <div className="my-4 border-t border-dashed border-border" />
               <p className="font-bold">{comandaAPagar.mesaNombre}</p>
               <p className="text-muted-foreground">Atendido por: {comandaAPagar.usuarioNombre}</p>
-              <div className="my-4 border-t border-dashed border-zinc-300" />
+              <div className="my-4 border-t border-dashed border-border" />
               {comandaAPagar.items.map(item => (
                 <div key={item.id} className="flex justify-between py-1">
                   <span>
@@ -507,7 +507,7 @@ export function PagosPage() {
                   <span>{formatCurrency(item.precio * item.cantidad)}</span>
                 </div>
               ))}
-              <div className="my-4 border-t border-dashed border-zinc-300" />
+              <div className="my-4 border-t border-dashed border-border" />
               <div className="flex justify-between">
                 <span>Subtotal</span>
                 <span>{formatCurrency(subtotal)}</span>
@@ -524,19 +524,19 @@ export function PagosPage() {
                   <span>+{formatCurrency(propinaCalculada)}</span>
                 </div>
               )}
-              <div className="my-2 border-t border-zinc-300" />
+              <div className="my-2 border-t border-border" />
               <div className="flex justify-between text-lg font-bold">
                 <span>TOTAL</span>
                 <span>{formatCurrency(total)}</span>
               </div>
-              <div className="my-4 border-t border-dashed border-zinc-300" />
+              <div className="my-4 border-t border-dashed border-border" />
               <p className="text-center text-muted-foreground">Método: {metodoPago.toUpperCase()}</p>
               {dividirCuenta && (
                 <p className="text-center text-muted-foreground">
                   Dividido entre {numPersonas} personas: {formatCurrency(montoPorPersona)} c/u
                 </p>
               )}
-              <div className="my-4 border-t border-dashed border-zinc-300" />
+              <div className="my-4 border-t border-dashed border-border" />
               <p className="text-center text-muted-foreground">{state.configuracion.pieTicket}</p>
             </div>
             <DialogFooter>

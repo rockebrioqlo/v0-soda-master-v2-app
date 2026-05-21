@@ -25,10 +25,10 @@ function AppContent() {
 
   if (!mounted || !isInitialized) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-zinc-900">
+      <div className="flex min-h-screen items-center justify-center bg-background">
         <div className="text-center">
           <div className="h-12 w-12 animate-spin rounded-full border-4 border-amber-500 border-t-transparent mx-auto mb-4" />
-          <p className="text-zinc-400">Cargando Soda Master...</p>
+          <p className="text-muted-foreground">Cargando Soda Master...</p>
         </div>
       </div>
     )

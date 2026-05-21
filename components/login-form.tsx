@@ -84,7 +84,7 @@ export function LoginForm() {
         <p className="mt-2 text-zinc-400">Sistema POS para Restaurantes</p>
       </div>
 
-      <Card className="w-full max-w-md border-zinc-700 bg-zinc-800/50">
+      <Card className="w-full max-w-md border-border bg-card/90 backdrop-blur">
         <CardHeader>
           <CardTitle className="text-center text-white">Iniciar Sesion</CardTitle>
         </CardHeader>
@@ -97,7 +97,7 @@ export function LoginForm() {
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 placeholder="usuario@soda.cl"
-                className="border-zinc-600 bg-zinc-700/50 text-white placeholder:text-zinc-500"
+                className="border-border bg-muted text-foreground placeholder:text-muted-foreground"
                 autoComplete="email"
               />
             </div>
@@ -113,7 +113,7 @@ export function LoginForm() {
                   maxLength={6}
                   inputMode="numeric"
                   pattern="[0-9]*"
-                  className="border-zinc-600 bg-zinc-700/50 text-center text-2xl tracking-widest text-white"
+                  className="border-border bg-muted text-center text-2xl tracking-widest text-foreground"
                 />
               </div>
             </div>
@@ -125,7 +125,7 @@ export function LoginForm() {
                   key={digit}
                   type="button"
                   variant="outline"
-                  className="h-14 text-xl font-semibold border-zinc-600 bg-zinc-700/30 text-white hover:bg-amber-500/20 hover:text-amber-500"
+                  className="h-14 text-xl font-semibold border-border bg-muted/50 text-foreground hover:bg-amber-500/20 hover:text-amber-500"
                   onClick={() => handlePinDigit(digit.toString())}
                 >
                   {digit}
@@ -134,7 +134,7 @@ export function LoginForm() {
               <Button
                 type="button"
                 variant="outline"
-                className="h-14 border-zinc-600 bg-zinc-700/30 text-white hover:bg-red-500/20 hover:text-red-500"
+                className="h-14 border-border bg-muted/50 text-foreground hover:bg-red-500/20 hover:text-red-500"
                 onClick={handlePinClear}
               >
                 C
@@ -142,7 +142,7 @@ export function LoginForm() {
               <Button
                 type="button"
                 variant="outline"
-                className="h-14 text-xl font-semibold border-zinc-600 bg-zinc-700/30 text-white hover:bg-amber-500/20 hover:text-amber-500"
+                className="h-14 text-xl font-semibold border-border bg-muted/50 text-foreground hover:bg-amber-500/20 hover:text-amber-500"
                 onClick={() => handlePinDigit('0')}
               >
                 0
@@ -150,7 +150,7 @@ export function LoginForm() {
               <Button
                 type="button"
                 variant="outline"
-                className="h-14 border-zinc-600 bg-zinc-700/30 text-white hover:bg-red-500/20 hover:text-red-500"
+                className="h-14 border-border bg-muted/50 text-foreground hover:bg-red-500/20 hover:text-red-500"
                 onClick={handlePinDelete}
               >
                 <Delete className="h-5 w-5" />
@@ -180,7 +180,7 @@ export function LoginForm() {
           </form>
 
           {/* Quick access for demo */}
-          <div className="mt-6 border-t border-zinc-700 pt-4">
+          <div className="mt-6 border-t border-border pt-4">
             <p className="mb-3 text-center text-xs text-zinc-500">Acceso rapido (demo)</p>
             <div className="flex flex-wrap justify-center gap-2">
               {state.usuarios.slice(0, 5).map((user) => (

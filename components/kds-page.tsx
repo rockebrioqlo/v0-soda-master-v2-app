@@ -103,7 +103,7 @@ export function KDSPage() {
 
           <div className="space-y-4">
             {(usuarioActual.rol === 'cocina' ? comandasCocina : comandasBar).length === 0 ? (
-              <div className="flex flex-col items-center justify-center rounded-lg border-2 border-dashed border-zinc-700 p-12">
+              <div className="flex flex-col items-center justify-center rounded-lg border-2 border-dashed border-border p-12">
                 <Check className="h-12 w-12 text-green-500" />
                 <p className="mt-4 text-lg text-muted-foreground">No hay pedidos pendientes</p>
               </div>
@@ -136,7 +136,7 @@ export function KDSPage() {
 
               <div className="space-y-4">
                 {comandasCocina.length === 0 ? (
-                  <div className="flex flex-col items-center justify-center rounded-lg border-2 border-dashed border-zinc-700 p-8">
+                  <div className="flex flex-col items-center justify-center rounded-lg border-2 border-dashed border-border p-8">
                     <Check className="h-8 w-8 text-green-500" />
                     <p className="mt-2 text-sm text-muted-foreground">Sin pedidos</p>
                   </div>
@@ -168,7 +168,7 @@ export function KDSPage() {
 
               <div className="space-y-4">
                 {comandasBar.length === 0 ? (
-                  <div className="flex flex-col items-center justify-center rounded-lg border-2 border-dashed border-zinc-700 p-8">
+                  <div className="flex flex-col items-center justify-center rounded-lg border-2 border-dashed border-border p-8">
                     <Check className="h-8 w-8 text-green-500" />
                     <p className="mt-2 text-sm text-muted-foreground">Sin pedidos</p>
                   </div>
@@ -213,7 +213,7 @@ function ComandaCard({
         'border-2 transition-all',
         isNew && 'animate-pulse border-amber-500 bg-amber-500/10',
         isDelayed && 'border-red-500 bg-red-500/10',
-        !isNew && !isDelayed && 'border-zinc-700 bg-zinc-800/50'
+        !isNew && !isDelayed && 'border-border bg-card'
       )}
     >
       <CardHeader className="pb-2">
@@ -242,7 +242,7 @@ function ComandaCard({
       <CardContent>
         <ul className="mb-4 space-y-2">
           {comanda.items.map((item) => (
-            <li key={item.id} className="rounded-lg bg-zinc-700/50 p-3">
+            <li key={item.id} className="rounded-lg bg-muted p-3">
               <div className="flex items-start justify-between">
                 <div>
                   <span className="text-lg font-bold text-foreground">

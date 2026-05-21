@@ -192,7 +192,7 @@ export function MesasPage() {
                       value={mesa.estado}
                       onValueChange={(value) => handleChangeEstado(mesa, value as EstadoMesa)}
                     >
-                      <SelectTrigger className="h-8 flex-1 border-zinc-600 bg-zinc-700/50 text-xs">
+                      <SelectTrigger className="h-8 flex-1 border-border bg-muted text-xs">
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
@@ -226,7 +226,7 @@ export function MesasPage() {
 
         {/* Dialog for New/Edit Mesa */}
         <Dialog open={showDialog} onOpenChange={setShowDialog}>
-          <DialogContent className="border-zinc-700 bg-zinc-800">
+          <DialogContent className="border-border bg-card">
             <DialogHeader>
               <DialogTitle className="text-foreground">
                 {editingMesa ? 'Editar Mesa' : 'Nueva Mesa'}
@@ -239,7 +239,7 @@ export function MesasPage() {
                   value={formData.nombre}
                   onChange={(e) => setFormData({ ...formData, nombre: e.target.value })}
                   placeholder="Ej: Mesa 6"
-                  className="border-zinc-600 bg-zinc-700/50"
+                  className="border-border bg-muted"
                 />
               </div>
               <div className="space-y-2">
@@ -248,7 +248,7 @@ export function MesasPage() {
                   value={formData.capacidad}
                   onValueChange={(value) => setFormData({ ...formData, capacidad: value })}
                 >
-                  <SelectTrigger className="border-zinc-600 bg-zinc-700/50">
+                  <SelectTrigger className="border-border bg-muted">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -266,7 +266,7 @@ export function MesasPage() {
                   value={formData.estado}
                   onValueChange={(value) => setFormData({ ...formData, estado: value as EstadoMesa })}
                 >
-                  <SelectTrigger className="border-zinc-600 bg-zinc-700/50">
+                  <SelectTrigger className="border-border bg-muted">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
