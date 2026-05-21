@@ -181,11 +181,15 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           dispatch({ type: 'SET_USUARIOS', payload: usuarios })
         }
 
-        // Load productos from Neon
+        // Load productos from Neon - only if valid data with categories
         const productosRes = await fetch('/api/productos')
         if (productosRes.ok) {
           const productos = await productosRes.json()
-          dispatch({ type: 'SET_PRODUCTOS', payload: productos })
+          // Only update if products have proper category field (not empty array or malformed)
+          if (Array.isArray(productos) && productos.length > 0 && productos[0].categoria) {
+            dispatch({ type: 'SET_PRODUCTOS', payload: productos })
+          }
+          // Otherwise keep initialProductos from initialState
         }
 
         // Load mesas from Neon
