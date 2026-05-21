@@ -38,7 +38,12 @@ export function MesasPage() {
   })
 
   const getComandaActiva = (mesaId: string) => {
-    return comandas.find(c => c.mesaId === mesaId && c.estado !== 'pagada')
+    return comandas.find(
+      c =>
+        c.mesaId === mesaId &&
+        !['pagada', 'pagado', 'cancelado'].includes(c.estado) &&
+        c.items.length > 0
+    )
   }
 
   const handleOpenNew = () => {

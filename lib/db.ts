@@ -170,21 +170,28 @@ export const db = {
   async getOrdenesParaKDS(): Promise<Orden[]> {
     const sql = getSql()
     const result = await sql`
-      SELECT o.*, 
-             json_agg(json_build_object(
-               'id', i.id,
-               'producto_id', i.producto_id,
-               'cantidad', i.cantidad,
-               'precio_unitario', i.precio_unitario,
-               'modificadores', i.modificadores,
-               'notas_especiales', i.notas_especiales,
-               'estado_item', i.estado_item
-             )) as items
+      SELECT o.*,
+             COALESCE(
+               json_agg(
+                 json_build_object(
+                   'id', i.id,
+                   'producto_id', i.producto_id,
+                   'producto_nombre', p.nombre,
+                   'cantidad', i.cantidad,
+                   'precio_unitario', i.precio_unitario,
+                   'modificadores', i.modificadores,
+                   'notas_especiales', i.notas_especiales,
+                   'estado_item', i.estado_item
+                 ) ORDER BY i.created_at
+               ) FILTER (WHERE i.id IS NOT NULL),
+               '[]'::json
+             ) AS items
       FROM soda_master.ordenes o
       LEFT JOIN soda_master.items_orden i ON o.id = i.orden_id
-      WHERE o.enviado_a_cocina = true AND o.estado IN ('en_cocina', 'listo')
+      LEFT JOIN soda_master.productos p ON i.producto_id = p.id
+      WHERE o.estado NOT IN ('pagado', 'cancelado')
       GROUP BY o.id
-      ORDER BY o.hora_envio ASC
+      ORDER BY o.created_at ASC
     `
     return result as Orden[]
   },

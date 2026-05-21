@@ -272,13 +272,35 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           }
         }
 
-        // Load ordenes/comandas from Neon
-        const ordenesRes = await fetch('/api/ordenes')
+        // Load ordenes/comandas from Neon — use ?kds=true to get items via JOIN
+        const ordenesRes = await fetch('/api/ordenes?kds=true')
         if (ordenesRes.ok) {
           const ordenes = await ordenesRes.json()
-          if (Array.isArray(ordenes) && ordenes.length > 0) {
-            const comandas = ordenes.map(o => mapOrdenToComanda(o, loadedMesas))
+          if (Array.isArray(ordenes)) {
+            const comandas = ordenes
+              .map((o: any) => mapOrdenToComanda(o, loadedMesas))
+              // Never load a comanda with 0 items — it is corrupted/incomplete data
+              .filter((c: any) => c.items.length > 0)
             dispatch({ type: 'SET_COMANDAS', payload: comandas })
+
+            // Fix mesa states: if a mesa is 'ocupada' but has no active comanda, reset it to 'libre'
+            const mesasConComandaActiva = new Set(
+              comandas
+                .filter((c: any) => !['pagada', 'pagado', 'cancelado'].includes(c.estado))
+                .map((c: any) => c.mesaId)
+            )
+            for (const mesa of loadedMesas) {
+              if (mesa.estado === 'ocupada' && !mesasConComandaActiva.has(mesa.id)) {
+                await fetch('/api/mesas', {
+                  method: 'PATCH',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ id: mesa.id, estado: 'libre' }),
+                })
+                mesa.estado = 'libre'
+              }
+            }
+            // Re-dispatch corrected mesas
+            dispatch({ type: 'SET_MESAS', payload: [...loadedMesas] })
           }
         }
 
@@ -500,7 +522,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         const mesas = await mesasRes.json()
 
         if (Array.isArray(ordenes)) {
-          const comandas = ordenes.map((o: any) => mapOrdenToComanda(o, mesas))
+          const comandas = ordenes
+            .map((o: any) => mapOrdenToComanda(o, mesas))
+            .filter((c: any) => c.items.length > 0)
           dispatch({ type: 'SET_COMANDAS', payload: comandas })
         }
       }
