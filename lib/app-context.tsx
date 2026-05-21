@@ -156,41 +156,58 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [isInitialized, setIsInitialized] = useState(false)
   const [currentPage, setCurrentPage] = useState<PageType>('dashboard')
 
-  // Initialize users with hashed PINs
+  // Initialize database and users from Neon
   useEffect(() => {
-    const initializeUsers = async () => {
-      // Check if we have users in sessionStorage
-      const savedSession = sessionStorage.getItem('soda_master_session')
-      
-      // Hash PINs for initial users
-      const usersWithHash: Usuario[] = await Promise.all(
-        initialUsuarios.map(async (user) => {
-          const pin = userPins[user.id]
-          const pinHash = await hash(pin, 10)
-          return { ...user, pinHash }
-        })
-      )
-      
-      dispatch({ type: 'SET_USUARIOS', payload: usersWithHash })
-      
-      // Restore session if exists
-      if (savedSession) {
-        try {
-          const sessionData = JSON.parse(savedSession)
-          const user = usersWithHash.find(u => u.id === sessionData.userId)
-          if (user && user.activo) {
-            dispatch({ type: 'SET_USUARIO', payload: user })
-            setCurrentPage(sessionData.currentPage || defaultPageByRole[user.rol])
-          }
-        } catch {
-          sessionStorage.removeItem('soda_master_session')
+    const initializeDatabase = async () => {
+      try {
+        // Initialize seed data
+        await fetch('/api/seed', { method: 'POST' })
+
+        // Load usuarios from Neon
+        const usuariosRes = await fetch('/api/usuarios')
+        if (usuariosRes.ok) {
+          const usuarios = await usuariosRes.json()
+          dispatch({ type: 'SET_USUARIOS', payload: usuarios })
         }
+
+        // Load productos from Neon
+        const productosRes = await fetch('/api/productos')
+        if (productosRes.ok) {
+          const productos = await productosRes.json()
+          dispatch({ type: 'SET_PRODUCTOS', payload: productos })
+        }
+
+        // Load mesas from Neon
+        const mesasRes = await fetch('/api/mesas')
+        if (mesasRes.ok) {
+          const mesas = await mesasRes.json()
+          dispatch({ type: 'SET_MESAS', payload: mesas })
+        }
+
+        // Restore session if exists
+        const savedSession = sessionStorage.getItem('soda_master_session')
+        if (savedSession) {
+          try {
+            const sessionData = JSON.parse(savedSession)
+            const usuariosRes = await fetch('/api/usuarios')
+            const usuarios = await usuariosRes.json()
+            const user = usuarios.find((u: any) => u.id === sessionData.userId)
+            if (user && user.activo) {
+              dispatch({ type: 'SET_USUARIO', payload: user })
+              setCurrentPage(sessionData.currentPage || defaultPageByRole[user.rol])
+            }
+          } catch {
+            sessionStorage.removeItem('soda_master_session')
+          }
+        }
+      } catch (error) {
+        console.error('Database initialization error:', error)
       }
-      
+
       setIsInitialized(true)
     }
 
-    initializeUsers()
+    initializeDatabase()
   }, [])
 
   // Online/offline detection
@@ -218,77 +235,37 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }, [currentPage, state.usuarioActual])
 
   const login = useCallback(async (email: string, pin: string): Promise<{ success: boolean; message: string }> => {
-    // Import bcryptjs dynamically to avoid issues
-    const { compare } = await import('bcryptjs')
-    
-    const user = state.usuarios.find(u => u.email.toLowerCase() === email.toLowerCase())
-    
-    // Generic error message for security
-    const genericError = 'Credenciales incorrectas'
-    
-    if (!user) {
-      return { success: false, message: genericError }
-    }
-    
-    // Check if user is blocked
-    if (user.bloqueadoHasta && user.bloqueadoHasta > Date.now()) {
-      const remainingTime = Math.ceil((user.bloqueadoHasta - Date.now()) / 1000 / 60)
-      return { 
-        success: false, 
-        message: `Usuario bloqueado. Intente en ${remainingTime} minutos.` 
+    try {
+      const response = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, pin }),
+      })
+
+      if (!response.ok) {
+        return { success: false, message: 'Credenciales inválidas' }
       }
-    }
-    
-    // Check if user is active
-    if (!user.activo) {
-      return { success: false, message: genericError }
-    }
-    
-    // Verify PIN with bcrypt
-    const isValid = await compare(pin, user.pinHash)
-    
-    if (!isValid) {
-      // Increment failed attempts
-      const newAttempts = user.intentosFallidos + 1
-      const updatedUser: Usuario = {
-        ...user,
-        intentosFallidos: newAttempts,
-        bloqueadoHasta: newAttempts >= 3 ? Date.now() + 5 * 60 * 1000 : null
-      }
-      dispatch({ type: 'UPDATE_USUARIO', payload: updatedUser })
+
+      const usuario = await response.json()
+      dispatch({ type: 'UPDATE_USUARIO', payload: { ...usuario, intentosFallidos: 0, bloqueadoHasta: null } })
+      dispatch({ type: 'SET_USUARIO', payload: usuario })
       
-      if (newAttempts >= 3) {
-        return { 
-          success: false, 
-          message: 'Usuario bloqueado por 5 minutos debido a múltiples intentos fallidos.' 
-        }
-      }
+      // Set default page based on role
+      const defaultPage = defaultPageByRole[usuario.rol]
+      setCurrentPage(defaultPage)
       
-      return { success: false, message: genericError }
+      // Save session to sessionStorage
+      sessionStorage.setItem('soda_master_session', JSON.stringify({ 
+        userId: usuario.id,
+        currentPage: defaultPage
+      }))
+      
+      return { success: true, message: 'Inicio de sesión exitoso' }
+    } catch (error) {
+      console.error('Login error:', error)
+      return { success: false, message: 'Error en servidor' }
     }
-    
-    // Reset failed attempts on successful login
-    const loggedInUser: Usuario = {
-      ...user,
-      intentosFallidos: 0,
-      bloqueadoHasta: null
-    }
-    
-    dispatch({ type: 'UPDATE_USUARIO', payload: loggedInUser })
-    dispatch({ type: 'SET_USUARIO', payload: loggedInUser })
-    
-    // Set default page based on role
-    const defaultPage = defaultPageByRole[loggedInUser.rol]
-    setCurrentPage(defaultPage)
-    
-    // Save session to sessionStorage
-    sessionStorage.setItem('soda_master_session', JSON.stringify({ 
-      userId: user.id,
-      currentPage: defaultPage
-    }))
-    
-    return { success: true, message: 'Inicio de sesión exitoso' }
-  }, [state.usuarios])
+  }, [])
 
   const logout = useCallback(() => {
     dispatch({ type: 'SET_USUARIO', payload: null })

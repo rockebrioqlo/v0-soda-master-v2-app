@@ -2,7 +2,7 @@
 
 ## Resumen del Proyecto
 
-Sistema POS completo para sodas y restaurantes desarrollado con Next.js 15, React 19, TypeScript y Tailwind CSS. El sistema funciona completamente offline usando almacenamiento local (sessionStorage para sesiones).
+Sistema POS completo para sodas y restaurantes desarrollado con Next.js 16, React 19, TypeScript y Tailwind CSS. **Ahora con persistencia real en Neon PostgreSQL** con arquitectura client-side state + API endpoints.
 
 ---
 
@@ -99,12 +99,31 @@ Sistema POS completo para sodas y restaurantes desarrollado con Next.js 15, Reac
 ## Arquitectura Tecnica
 
 ### Stack Tecnologico
-- **Frontend:** Next.js 15, React 19, TypeScript
+- **Frontend:** Next.js 16, React 19, TypeScript
+- **Backend:** Next.js API Routes
+- **Base de Datos:** Neon PostgreSQL (serverless)
+- **ORM/Client:** @neondatabase/serverless (sql tagged template)
+- **Autenticacion:** bcryptjs + custom auth
 - **Estilos:** Tailwind CSS v4, shadcn/ui
 - **Graficos:** Recharts
 - **Fechas:** date-fns
 - **Iconos:** Lucide React
-- **Hash:** bcryptjs
+
+### Base de Datos Neon
+**Conexión:** `DATABASE_URL` en variables de entorno
+
+**Tablas Principales:**
+- `usuarios` - Usuarios del sistema con PIN hasheado
+- `mesas` - Mesas del restaurante
+- `categorias` - Categorías de productos
+- `productos` - Catálogo de productos
+- `modificadores` - Opciones/modificadores de productos
+- `ordenes` - Órdenes de mesas/clientes
+- `items_orden` - Líneas de items en ordenes
+- `pagos` - Registro de pagos
+- `inventario` - Stock actual de productos
+- `movimientos_inventario` - Historial de movimientos
+- `configuracion` - Configuración del negocio
 
 ### Estructura de Archivos
 ```
@@ -112,6 +131,16 @@ Sistema POS completo para sodas y restaurantes desarrollado con Next.js 15, Reac
   page.tsx           - Pagina principal (SPA)
   layout.tsx         - Layout con metadata
   globals.css        - Estilos globales
+  /api
+    /seed            - Inicializar base de datos
+    /auth/login      - Endpoint de autenticacion
+    /usuarios        - CRUD de usuarios
+    /mesas           - Listado de mesas
+    /productos       - CRUD de productos
+    /ordenes         - CRUD de ordenes
+    /items-orden     - Items de ordenes
+    /pagos           - Registrar pagos
+    /inventario      - CRUD de inventario
 
 /components
   ui/*               - Componentes shadcn/ui
@@ -130,10 +159,12 @@ Sistema POS completo para sodas y restaurantes desarrollado con Next.js 15, Reac
 
 /lib
   types.ts           - Tipos TypeScript
-  app-context.tsx    - Context global con estado
-  initial-data.ts    - Datos iniciales de demo
+  app-context.tsx    - Context global (sin estado local, usa APIs)
+  db.ts              - Cliente Neon PostgreSQL
+  initial-data.ts    - Datos de referencia
   helpers.ts         - Funciones utilitarias
   utils.ts           - Utilidades (cn)
+  seed-database.ts   - Script de inicializacion
 ```
 
 ### Usuarios de Prueba
@@ -163,18 +194,19 @@ Sistema POS completo para sodas y restaurantes desarrollado con Next.js 15, Reac
 ## Funcionalidades Pendientes (Para Version Produccion)
 
 ### Alta Prioridad
-- [ ] Persistencia con base de datos real (Supabase recomendado)
-- [ ] Sincronizacion en tiempo real entre dispositivos
-- [ ] Sistema de respaldo automatico
+- [ ] Sincronizacion en tiempo real entre dispositivos (WebSockets)
+- [ ] Sistema de respaldo automatico de BD
 - [ ] Impresion real de tickets (ESC/POS)
-- [ ] Modulo de mermas completo
+- [ ] Autenticación con JWT (en lugar de sessionStorage)
+- [ ] Rate limiting en endpoints API
 
 ### Media Prioridad
 - [ ] Sistema de reservaciones con calendario
 - [ ] Gestion de turnos de empleados
-- [ ] Integracion con datafono
-- [ ] Facturacion electronica (Costa Rica)
+- [ ] Integracion con datafono/Stripe
+- [ ] Facturacion electronica
 - [ ] API para delivery (Uber Eats, etc.)
+- [ ] Tests unitarios e integración
 
 ### Baja Prioridad
 - [ ] App movil nativa
@@ -187,24 +219,33 @@ Sistema POS completo para sodas y restaurantes desarrollado con Next.js 15, Reac
 
 ## Notas de Implementacion
 
-### Almacenamiento
-El sistema actualmente usa sessionStorage para sesiones. Los datos iniciales se cargan desde initial-data.ts. Para produccion se recomienda migrar a Supabase para:
-- Persistencia real de datos
-- Sincronizacion multi-dispositivo
-- Autenticacion robusta
-- Row Level Security
+### Persistencia con Neon
+El sistema ahora usa **Neon PostgreSQL serverless** para persistencia real:
+- Datos se almacenan en base de datos
+- Endpoint de seed (`/api/seed`) inicializa BD con datos de demo
+- Cada acción escribe/lee de la base de datos via endpoints API
+- Context local mantiene estado de sesion actual del usuario
+- Los demás datos se cargan bajo demanda desde API
 
-### Navegacion
-El sistema es una SPA (Single Page Application) que maneja la navegacion internamente sin usar el router de Next.js. Esto permite:
-- Transiciones rapidas entre paginas
-- Mantenimiento del estado global
-- Funcionamiento offline
+### Arquitectura
+- **Frontend:** React Context + Reducers (estado local)
+- **Backend:** Next.js API Routes (lógica de negocio)
+- **BD:** Neon PostgreSQL (persistencia)
+- **Autenticación:** bcryptjs para hash de PINs
 
-### Responsive Design
-El sistema esta disenado para funcionar en:
-- Desktop (1280px+) - Experiencia completa
-- Tablet (768px - 1279px) - Optimizado para servicio
-- Movil (< 768px) - Navegacion inferior adaptada por rol
+### Flujo de Datos
+1. Usuario hace login → Endpoint `/api/auth/login` verifica PIN en BD
+2. Usuario agrega producto al POS → Se mantiene en estado local
+3. Usuario envía orden → POST `/api/ordenes` crea registro en BD
+4. KDS obtiene órdenes → GET `/api/ordenes` trae de BD
+5. Se marca como lista → PATCH `/api/ordenes/[id]` actualiza BD
+
+### Siguiente Fase - JWT Authentication
+Para producción se recomienda:
+- Reemplazar sessionStorage con JWT en cookies httpOnly
+- Validar token en cada request
+- Implementar refresh tokens
+- Agregar CORS y rate limiting
 
 ---
 
@@ -224,6 +265,8 @@ El sistema esta disenado para funcionar en:
 ---
 
 ## Version
-- **Version:** 2.0.0-prototype
-- **Fecha:** Mayo 2025
-- **Estado:** Prototipo Funcional
+- **Version:** 2.0.0-neon
+- **Fecha:** Mayo 2026
+- **Estado:** Prototipo Funcional con Neon PostgreSQL
+- **BD:** Neon PostgreSQL serverless
+- **Ambiente:** Vercel deployment ready

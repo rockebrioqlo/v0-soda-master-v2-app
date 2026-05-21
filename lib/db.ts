@@ -1,0 +1,161 @@
+import { neon } from '@neondatabase/serverless'
+import bcryptjs from 'bcryptjs'
+import type { Usuario, Mesa, Producto, Orden, ItemOrden, Pago, Inventario } from './types'
+
+const sql = neon(process.env.DATABASE_URL!)
+
+export const db = {
+  // Usuarios
+  async getUsuarios(): Promise<Usuario[]> {
+    const result = await sql`SELECT * FROM soda_master.usuarios WHERE activo = true`
+    return result as Usuario[]
+  },
+
+  async getUsuarioById(id: string): Promise<Usuario | null> {
+    const result = await sql`SELECT * FROM soda_master.usuarios WHERE id = ${id}`
+    return result[0] as Usuario | null
+  },
+
+  async verificarPIN(email: string, pin: string): Promise<Usuario | null> {
+    const result = await sql`SELECT * FROM soda_master.usuarios WHERE email = ${email} AND activo = true`
+    if (!result[0]) return null
+    
+    const usuario = result[0] as any
+    const esValido = await bcryptjs.compare(pin, usuario.pin_hash)
+    
+    return esValido ? (usuario as Usuario) : null
+  },
+
+  async crearUsuario(usuario: Omit<Usuario, 'id' | 'created_at' | 'updated_at'>) {
+    const pinHash = await bcryptjs.hash(usuario.pin_hash, 10)
+    const result = await sql`
+      INSERT INTO soda_master.usuarios (email, nombre, pin_hash, rol, activo)
+      VALUES (${usuario.email}, ${usuario.nombre}, ${pinHash}, ${usuario.rol}, true)
+      RETURNING *
+    `
+    return result[0] as Usuario
+  },
+
+  async actualizarUsuario(id: string, updates: Partial<Usuario>) {
+    const result = await sql`
+      UPDATE soda_master.usuarios 
+      SET nombre = COALESCE(${updates.nombre}, nombre),
+          rol = COALESCE(${updates.rol}, rol),
+          activo = COALESCE(${updates.activo}, activo),
+          updated_at = CURRENT_TIMESTAMP
+      WHERE id = ${id}
+      RETURNING *
+    `
+    return result[0] as Usuario
+  },
+
+  // Mesas
+  async getMesas(): Promise<Mesa[]> {
+    const result = await sql`SELECT * FROM soda_master.mesas ORDER BY numero`
+    return result as Mesa[]
+  },
+
+  async actualizarEstadoMesa(id: string, estado: string) {
+    const result = await sql`
+      UPDATE soda_master.mesas 
+      SET estado = ${estado}, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ${id}
+      RETURNING *
+    `
+    return result[0] as Mesa
+  },
+
+  // Productos
+  async getProductos(): Promise<Producto[]> {
+    const result = await sql`SELECT * FROM soda_master.productos WHERE activo = true ORDER BY nombre`
+    return result as Producto[]
+  },
+
+  async getProductosPorCategoria(categoriaId: string): Promise<Producto[]> {
+    const result = await sql`
+      SELECT * FROM soda_master.productos 
+      WHERE categoria_id = ${categoriaId} AND activo = true
+      ORDER BY nombre
+    `
+    return result as Producto[]
+  },
+
+  async crearProducto(producto: Omit<Producto, 'id' | 'created_at' | 'updated_at'>) {
+    const result = await sql`
+      INSERT INTO soda_master.productos (nombre, categoria_id, precio, descripcion, imagen_url, activo)
+      VALUES (${producto.nombre}, ${producto.categoria_id}, ${producto.precio}, ${producto.descripcion}, ${producto.imagen_url}, true)
+      RETURNING *
+    `
+    return result[0] as Producto
+  },
+
+  // Órdenes
+  async crearOrden(orden: Omit<Orden, 'id' | 'created_at' | 'updated_at' | 'numero_orden'>) {
+    const result = await sql`
+      INSERT INTO soda_master.ordenes (mesa_id, usuario_id, estado, subtotal, impuesto, total, notas)
+      VALUES (${orden.mesa_id}, ${orden.usuario_id}, ${orden.estado}, ${orden.subtotal}, ${orden.impuesto}, ${orden.total}, ${orden.notas})
+      RETURNING *
+    `
+    return result[0] as Orden
+  },
+
+  async getOrdenesPendientes(): Promise<Orden[]> {
+    const result = await sql`
+      SELECT * FROM soda_master.ordenes 
+      WHERE estado IN ('pendiente', 'en_cocina', 'listo')
+      ORDER BY created_at DESC
+    `
+    return result as Orden[]
+  },
+
+  async actualizarOrden(id: string, updates: Partial<Orden>) {
+    const result = await sql`
+      UPDATE soda_master.ordenes 
+      SET estado = COALESCE(${updates.estado}, estado),
+          subtotal = COALESCE(${updates.subtotal}, subtotal),
+          impuesto = COALESCE(${updates.impuesto}, impuesto),
+          total = COALESCE(${updates.total}, total),
+          notas = COALESCE(${updates.notas}, notas),
+          updated_at = CURRENT_TIMESTAMP
+      WHERE id = ${id}
+      RETURNING *
+    `
+    return result[0] as Orden
+  },
+
+  // Items de orden
+  async crearItemOrden(item: Omit<ItemOrden, 'id' | 'created_at'>) {
+    const result = await sql`
+      INSERT INTO soda_master.items_orden (orden_id, producto_id, cantidad, precio_unitario, modificadores, notas_especiales)
+      VALUES (${item.orden_id}, ${item.producto_id}, ${item.cantidad}, ${item.precio_unitario}, ${JSON.stringify(item.modificadores)}, ${item.notas_especiales})
+      RETURNING *
+    `
+    return result[0] as ItemOrden
+  },
+
+  // Pagos
+  async crearPago(pago: Omit<Pago, 'id' | 'created_at'>) {
+    const result = await sql`
+      INSERT INTO soda_master.pagos (orden_id, metodo, monto, propina, vuelto, referencia, aprobado)
+      VALUES (${pago.orden_id}, ${pago.metodo}, ${pago.monto}, ${pago.propina}, ${pago.vuelto}, ${pago.referencia}, ${pago.aprobado})
+      RETURNING *
+    `
+    return result[0] as Pago
+  },
+
+  // Inventario
+  async getInventario(): Promise<Inventario[]> {
+    const result = await sql`SELECT * FROM soda_master.inventario ORDER BY created_at DESC`
+    return result as Inventario[]
+  },
+
+  async actualizarInventario(productoId: string, cantidad: number) {
+    const result = await sql`
+      UPDATE soda_master.inventario 
+      SET stock_actual = ${cantidad}, updated_at = CURRENT_TIMESTAMP
+      WHERE producto_id = ${productoId}
+      RETURNING *
+    `
+    return result[0] as Inventario
+  },
+}
