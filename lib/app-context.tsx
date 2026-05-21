@@ -18,6 +18,9 @@ import {
   initialConfiguracion,
   userPins
 } from './initial-data'
+import { showToast } from '@/components/toast'
+
+type PageType = 'dashboard' | 'mesas' | 'pos' | 'kds' | 'inventario' | 'usuarios' | 'pagos' | 'mermas' | 'reportes' | 'configuracion'
 
 const initialState: AppState = {
   mesas: initialMesas,
@@ -118,6 +121,9 @@ interface AppContextType {
   logout: () => void
   hasPermission: (modulo: string) => boolean
   isInitialized: boolean
+  currentPage: PageType
+  setCurrentPage: (page: PageType) => void
+  navigateTo: (page: PageType) => void
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined)
@@ -136,9 +142,19 @@ const permisosModulo: Record<string, Rol[]> = {
   configuracion: ['administrador'],
 }
 
+// Default pages by role
+const defaultPageByRole: Record<Rol, PageType> = {
+  administrador: 'dashboard',
+  cajero: 'mesas',
+  mesero: 'mesas',
+  cocina: 'kds',
+  bar: 'kds',
+}
+
 export function AppProvider({ children }: { children: React.ReactNode }) {
   const [state, dispatch] = useReducer(appReducer, initialState)
   const [isInitialized, setIsInitialized] = useState(false)
+  const [currentPage, setCurrentPage] = useState<PageType>('dashboard')
 
   // Initialize users with hashed PINs
   useEffect(() => {
@@ -164,6 +180,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           const user = usersWithHash.find(u => u.id === sessionData.userId)
           if (user && user.activo) {
             dispatch({ type: 'SET_USUARIO', payload: user })
+            setCurrentPage(sessionData.currentPage || defaultPageByRole[user.rol])
           }
         } catch {
           sessionStorage.removeItem('soda_master_session')
@@ -189,6 +206,16 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       window.removeEventListener('offline', handleOffline)
     }
   }, [])
+
+  // Save session when page changes
+  useEffect(() => {
+    if (state.usuarioActual) {
+      sessionStorage.setItem('soda_master_session', JSON.stringify({
+        userId: state.usuarioActual.id,
+        currentPage
+      }))
+    }
+  }, [currentPage, state.usuarioActual])
 
   const login = useCallback(async (email: string, pin: string): Promise<{ success: boolean; message: string }> => {
     // Import bcryptjs dynamically to avoid issues
@@ -250,14 +277,22 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     dispatch({ type: 'UPDATE_USUARIO', payload: loggedInUser })
     dispatch({ type: 'SET_USUARIO', payload: loggedInUser })
     
+    // Set default page based on role
+    const defaultPage = defaultPageByRole[loggedInUser.rol]
+    setCurrentPage(defaultPage)
+    
     // Save session to sessionStorage
-    sessionStorage.setItem('soda_master_session', JSON.stringify({ userId: user.id }))
+    sessionStorage.setItem('soda_master_session', JSON.stringify({ 
+      userId: user.id,
+      currentPage: defaultPage
+    }))
     
     return { success: true, message: 'Inicio de sesión exitoso' }
   }, [state.usuarios])
 
   const logout = useCallback(() => {
     dispatch({ type: 'SET_USUARIO', payload: null })
+    setCurrentPage('dashboard')
     sessionStorage.removeItem('soda_master_session')
   }, [])
 
@@ -267,8 +302,26 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     return allowedRoles.includes(state.usuarioActual.rol)
   }, [state.usuarioActual])
 
+  const navigateTo = useCallback((page: PageType) => {
+    if (hasPermission(page)) {
+      setCurrentPage(page)
+    } else {
+      showToast('No tienes permisos para acceder a esta sección', 'error')
+    }
+  }, [hasPermission])
+
   return (
-    <AppContext.Provider value={{ state, dispatch, login, logout, hasPermission, isInitialized }}>
+    <AppContext.Provider value={{ 
+      state, 
+      dispatch, 
+      login, 
+      logout, 
+      hasPermission, 
+      isInitialized,
+      currentPage,
+      setCurrentPage,
+      navigateTo
+    }}>
       {children}
     </AppContext.Provider>
   )
