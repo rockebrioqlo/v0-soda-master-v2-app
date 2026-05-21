@@ -135,13 +135,15 @@ export function KDSPage() {
       </div>
 
       {/* Role-specific view */}
-      {usuarioActual?.rol === 'cocina' || usuarioActual?.rol === 'bar' ? (
+      {(usuarioActual?.rol === 'cocina' || usuarioActual?.rol === 'bar') ? (
         <div className="mx-auto max-w-4xl">
           <div className="mb-4 flex items-center justify-between">
             <Badge variant="outline" className="text-lg px-4 py-2">
               {comandasEnCocina.length} pendientes
             </Badge>
           </div>
+          <div className="space-y-4">
+            {(usuarioActual.rol === 'cocina' ? comandasCocina : comandasBar).length === 0 ? (
               <div className="flex flex-col items-center justify-center rounded-lg border-2 border-dashed border-border p-12">
                 <Check className="h-12 w-12 text-green-500" />
                 <p className="mt-4 text-lg text-muted-foreground">No hay pedidos pendientes</p>
