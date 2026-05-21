@@ -217,7 +217,6 @@ export function PagosPage() {
                 )}
               </CardContent>
             </Card>
-          </div>
         </div>
       </div>
     )
@@ -232,7 +231,7 @@ export function PagosPage() {
         </Button>
       </div>
 
-        <div className="grid gap-6 lg:grid-cols-2">
+      <div className="grid gap-6 lg:grid-cols-2">
           {/* Order summary */}
           <Card className="border-zinc-700 bg-zinc-800/50">
             <CardHeader>
@@ -550,7 +549,6 @@ export function PagosPage() {
             </DialogFooter>
           </DialogContent>
         </Dialog>
-      </div>
     </div>
   )
 }
