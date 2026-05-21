@@ -133,11 +133,43 @@ interface AppContextType {
   posNavigation: POSNavigationState
   navigateToPOS: (mesaId: string, comandaId?: string) => void
   clearPOSNavigation: () => void
+  // API functions for persistence
+  updateMesa: (id: string, updates: any) => Promise<void>
+  crearOrden: (orden: any) => Promise<any>
+  updateOrden: (id: string, updates: any) => Promise<void>
+  enviarOrdenACocina: (ordenId: string) => Promise<void>
+  crearItemOrden: (item: any) => Promise<any>
+  actualizarItemOrden: (id: string, updates: any) => Promise<void>
+  eliminarItemOrden: (id: string) => Promise<void>
+  recargarOrdenes: () => Promise<void>
+  recargarMesas: () => Promise<void>
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined)
 
-// Permission matrix by role
+// Helper to map DB orden to frontend Comanda format
+function mapOrdenToComanda(orden: any, mesas: any[]): any {
+  const mesa = mesas.find(m => m.id === orden.mesa_id)
+  return {
+    id: orden.id,
+    mesaId: orden.mesa_id,
+    mesaNombre: mesa?.nombre || `Mesa ${mesa?.numero || '?'}`,
+    usuarioId: orden.usuario_id,
+    estado: orden.estado,
+    items: orden.items || [],
+    subtotal: parseFloat(orden.subtotal) || 0,
+    impuesto: parseFloat(orden.impuesto) || 0,
+    total: parseFloat(orden.total) || 0,
+    descuento: 0,
+    propina: 0,
+    notas: orden.notas || '',
+    creadoAt: orden.created_at ? new Date(orden.created_at).getTime() : Date.now(),
+    actualizadoAt: orden.updated_at ? new Date(orden.updated_at).getTime() : Date.now(),
+    enviadoACocina: orden.enviado_a_cocina || false,
+    horaEnvio: orden.hora_envio ? new Date(orden.hora_envio).getTime() : null
+  }
+}
+
 const permisosModulo: Record<string, Rol[]> = {
   dashboard: ['administrador', 'admin', 'cajero'],
   mesas: ['administrador', 'admin', 'mesero', 'cajero'],
@@ -193,10 +225,29 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         }
 
         // Load mesas from Neon
+        let loadedMesas: any[] = []
         const mesasRes = await fetch('/api/mesas')
         if (mesasRes.ok) {
           const mesas = await mesasRes.json()
-          dispatch({ type: 'SET_MESAS', payload: mesas })
+          if (Array.isArray(mesas) && mesas.length > 0) {
+            // Add nombre field if missing and normalize estado
+            loadedMesas = mesas.map(m => ({
+              ...m,
+              nombre: m.nombre || `Mesa ${m.numero}`,
+              estado: m.estado === 'disponible' ? 'libre' : m.estado
+            }))
+            dispatch({ type: 'SET_MESAS', payload: loadedMesas })
+          }
+        }
+
+        // Load ordenes/comandas from Neon
+        const ordenesRes = await fetch('/api/ordenes')
+        if (ordenesRes.ok) {
+          const ordenes = await ordenesRes.json()
+          if (Array.isArray(ordenes) && ordenes.length > 0) {
+            const comandas = ordenes.map(o => mapOrdenToComanda(o, loadedMesas))
+            dispatch({ type: 'SET_COMANDAS', payload: comandas })
+          }
         }
 
         // Restore session if exists
@@ -315,6 +366,147 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setPosNavigation({ mesaId: null, comandaId: null })
   }, [])
 
+  // API functions for persistence
+  const updateMesa = useCallback(async (id: string, updates: any) => {
+    try {
+      const res = await fetch('/api/mesas', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id, ...updates }),
+      })
+      if (res.ok) {
+        const mesa = await res.json()
+        dispatch({ type: 'UPDATE_MESA', payload: mesa })
+      }
+    } catch (error) {
+      console.error('Error updating mesa:', error)
+    }
+  }, [])
+
+  const recargarMesas = useCallback(async () => {
+    try {
+      const res = await fetch('/api/mesas')
+      if (res.ok) {
+        const mesas = await res.json()
+        dispatch({ type: 'SET_MESAS', payload: mesas })
+      }
+    } catch (error) {
+      console.error('Error loading mesas:', error)
+    }
+  }, [])
+
+  const crearOrden = useCallback(async (orden: any) => {
+    try {
+      const res = await fetch('/api/ordenes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(orden),
+      })
+      if (res.ok) {
+        const newOrden = await res.json()
+        dispatch({ type: 'ADD_COMANDA', payload: newOrden })
+        return newOrden
+      }
+    } catch (error) {
+      console.error('Error creating orden:', error)
+    }
+    return null
+  }, [])
+
+  const updateOrden = useCallback(async (id: string, updates: any) => {
+    try {
+      const res = await fetch('/api/ordenes', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id, ...updates }),
+      })
+      if (res.ok) {
+        const orden = await res.json()
+        dispatch({ type: 'UPDATE_COMANDA', payload: orden })
+      }
+    } catch (error) {
+      console.error('Error updating orden:', error)
+    }
+  }, [])
+
+  const enviarOrdenACocina = useCallback(async (ordenId: string) => {
+    try {
+      const res = await fetch('/api/ordenes', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: ordenId, action: 'enviar_cocina' }),
+      })
+      if (res.ok) {
+        const orden = await res.json()
+        dispatch({ type: 'UPDATE_COMANDA', payload: orden })
+        showToast('Orden enviada a cocina', 'success')
+      }
+    } catch (error) {
+      console.error('Error sending to kitchen:', error)
+    }
+  }, [])
+
+  const recargarOrdenes = useCallback(async () => {
+    try {
+      const [ordenesRes, mesasRes] = await Promise.all([
+        fetch('/api/ordenes'),
+        fetch('/api/mesas')
+      ])
+      
+      if (ordenesRes.ok && mesasRes.ok) {
+        const ordenes = await ordenesRes.json()
+        const mesas = await mesasRes.json()
+        
+        if (Array.isArray(ordenes) && ordenes.length > 0) {
+          const comandas = ordenes.map(o => mapOrdenToComanda(o, mesas))
+          dispatch({ type: 'SET_COMANDAS', payload: comandas })
+        }
+      }
+    } catch (error) {
+      console.error('Error loading ordenes:', error)
+    }
+  }, [])
+
+  const crearItemOrden = useCallback(async (item: any) => {
+    try {
+      const res = await fetch('/api/items-orden', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(item),
+      })
+      if (res.ok) {
+        return await res.json()
+      }
+    } catch (error) {
+      console.error('Error creating item:', error)
+    }
+    return null
+  }, [])
+
+  const actualizarItemOrden = useCallback(async (id: string, updates: any) => {
+    try {
+      await fetch('/api/items-orden', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id, ...updates }),
+      })
+    } catch (error) {
+      console.error('Error updating item:', error)
+    }
+  }, [])
+
+  const eliminarItemOrden = useCallback(async (id: string) => {
+    try {
+      await fetch('/api/items-orden', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id }),
+      })
+    } catch (error) {
+      console.error('Error deleting item:', error)
+    }
+  }, [])
+
   return (
     <AppContext.Provider value={{ 
       state, 
@@ -328,7 +520,16 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       navigateTo,
       posNavigation,
       navigateToPOS,
-      clearPOSNavigation
+      clearPOSNavigation,
+      updateMesa,
+      crearOrden,
+      updateOrden,
+      enviarOrdenACocina,
+      crearItemOrden,
+      actualizarItemOrden,
+      eliminarItemOrden,
+      recargarOrdenes,
+      recargarMesas,
     }}>
       {children}
     </AppContext.Provider>

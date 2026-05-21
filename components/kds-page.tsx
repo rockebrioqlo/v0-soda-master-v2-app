@@ -12,17 +12,25 @@ import { showToast } from '@/components/toast'
 import { Comanda, ItemComanda } from '@/lib/types'
 
 export function KDSPage() {
-  const { state, dispatch } = useApp()
-  const { comandas, usuarioActual } = state
+  const { state, dispatch, updateOrden, recargarOrdenes } = useApp()
+  const { comandas, usuarioActual, mesas, productos } = state
   const [, setTick] = useState(0)
 
-  // Update elapsed time every second
+  // Update elapsed time every second and refresh data
   useEffect(() => {
     const interval = setInterval(() => {
       setTick(t => t + 1)
     }, 1000)
     return () => clearInterval(interval)
   }, [])
+
+  // Poll for new orders every 5 seconds
+  useEffect(() => {
+    const pollInterval = setInterval(() => {
+      recargarOrdenes()
+    }, 5000)
+    return () => clearInterval(pollInterval)
+  }, [recargarOrdenes])
 
   // Filter comandas that are in kitchen
   const comandasEnCocina = comandas.filter(c => c.estado === 'en_cocina')
@@ -54,17 +62,13 @@ export function KDSPage() {
   const showCocina = !usuarioActual || usuarioActual.rol === 'administrador' || usuarioActual.rol === 'cocina'
   const showBar = !usuarioActual || usuarioActual.rol === 'administrador' || usuarioActual.rol === 'bar'
 
-  const handleMarkReady = (comandaId: string) => {
+  const handleMarkReady = async (comandaId: string) => {
     const comanda = comandas.find(c => c.id === comandaId)
     if (!comanda) return
 
-    // Check if all items are marked (for simplicity, we mark whole comanda as ready)
-    const updatedComanda: Comanda = {
-      ...comanda,
-      estado: 'lista'
-    }
-    dispatch({ type: 'UPDATE_COMANDA', payload: updatedComanda })
-    showToast(`Comanda de ${comanda.mesaNombre} marcada como lista`, 'success')
+    // Update in Neon
+    await updateOrden(comandaId, { estado: 'listo' })
+    showToast(`Comanda de ${comanda.mesaNombre || 'Mesa'} marcada como lista`, 'success')
   }
 
   // Check if comanda is new (less than 30 seconds old)

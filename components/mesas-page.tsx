@@ -26,7 +26,7 @@ import { showToast } from '@/components/toast'
 import { Mesa, EstadoMesa } from '@/lib/types'
 
 export function MesasPage() {
-  const { state, dispatch, navigateToPOS } = useApp()
+  const { state, dispatch, navigateToPOS, updateMesa } = useApp()
   const { mesas, comandas } = state
 
   const [showDialog, setShowDialog] = useState(false)
@@ -67,20 +67,18 @@ export function MesasPage() {
     showToast('Mesa eliminada', 'success')
   }
 
-  const handleSave = () => {
+  const handleSave = async () => {
     if (!formData.nombre.trim()) {
       showToast('El nombre es requerido', 'error')
       return
     }
 
     if (editingMesa) {
-      const updated: Mesa = {
-        ...editingMesa,
+      await updateMesa(editingMesa.id, {
         nombre: formData.nombre,
         capacidad: parseInt(formData.capacidad),
         estado: formData.estado
-      }
-      dispatch({ type: 'UPDATE_MESA', payload: updated })
+      })
       showToast('Mesa actualizada', 'success')
     } else {
       const newMesa: Mesa = {
@@ -110,7 +108,7 @@ export function MesasPage() {
     }
   }
 
-  const handleChangeEstado = (mesa: Mesa, nuevoEstado: EstadoMesa) => {
+  const handleChangeEstado = async (mesa: Mesa, nuevoEstado: EstadoMesa) => {
     const comanda = getComandaActiva(mesa.id)
     
     if (mesa.estado === 'ocupada' && nuevoEstado === 'libre' && comanda) {
@@ -118,10 +116,7 @@ export function MesasPage() {
       return
     }
 
-    dispatch({
-      type: 'UPDATE_MESA',
-      payload: { ...mesa, estado: nuevoEstado }
-    })
+    await updateMesa(mesa.id, { estado: nuevoEstado })
     showToast(`Mesa ${mesa.nombre} ahora está ${getEstadoMesaLabel(nuevoEstado).toLowerCase()}`, 'success')
   }
 

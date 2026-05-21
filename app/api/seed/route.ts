@@ -32,10 +32,9 @@ export async function POST() {
     for (let i = 1; i <= 20; i++) {
       const area = i <= 5 ? 'Patio' : i <= 10 ? 'Interior' : i <= 15 ? 'Barra' : 'Terraza'
       const capacidad = i <= 5 ? 4 : i <= 10 ? 6 : i <= 15 ? 2 : 8
-      const nombre = `Mesa ${i}`
       await sql`
-        INSERT INTO soda_master.mesas (nombre, numero, area, capacidad, estado) VALUES
-        (${nombre}, ${i}, ${area}, ${capacidad}, 'disponible')
+        INSERT INTO soda_master.mesas (numero, area, capacidad, estado) VALUES
+        (${i}, ${area}, ${capacidad}, 'libre')
       `
     }
 

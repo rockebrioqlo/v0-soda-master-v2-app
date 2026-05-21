@@ -31,7 +31,19 @@ import { Comanda, ItemComanda, Producto, TipoDescuento } from '@/lib/types'
 import { ingredientesEstandar, salsasDisponibles } from '@/lib/initial-data'
 
 export function POSPage() {
-  const { state, dispatch, hasPermission, posNavigation, clearPOSNavigation, navigateTo } = useApp()
+  const { 
+    state, 
+    dispatch, 
+    hasPermission, 
+    posNavigation, 
+    clearPOSNavigation, 
+    navigateTo,
+    updateMesa,
+    crearOrden,
+    crearItemOrden,
+    enviarOrdenACocina,
+    recargarOrdenes
+  } = useApp()
   const { mesas, productos, comandas, usuarioActual, permisosDescuento } = state
 
   const [selectedMesaId, setSelectedMesaId] = useState<string | null>(posNavigation.mesaId)
@@ -307,19 +319,63 @@ export function POSPage() {
     : (currentComanda?.propina || 0)
   const total = subtotal - descuentoMonto + propinaMonto
 
-  // Send to kitchen
-  const handleEnviarCocina = () => {
+  // Send to kitchen - persist to Neon
+  const handleEnviarCocina = async () => {
     if (!currentComanda || currentComanda.items.length === 0) {
       showToast('Agrega items a la comanda primero', 'error')
       return
     }
 
-    const updatedComanda: Comanda = {
-      ...currentComanda,
-      estado: 'en_cocina'
+    try {
+      // 1. Create the order in Neon
+      const ordenData = {
+        mesa_id: currentComanda.mesaId,
+        usuario_id: usuarioActual?.id,
+        estado: 'en_cocina',
+        subtotal: subtotal,
+        impuesto: 0,
+        total: total,
+        notas: currentComanda.notas || '',
+        enviado_a_cocina: true
+      }
+      
+      const nuevaOrden = await crearOrden(ordenData)
+      
+      if (nuevaOrden) {
+        // 2. Create items in Neon
+        for (const item of currentComanda.items) {
+          await crearItemOrden({
+            orden_id: nuevaOrden.id,
+            producto_id: item.productoId,
+            cantidad: item.cantidad,
+            precio_unitario: item.precioUnitario,
+            modificadores: item.modificadores || [],
+            notas_especiales: item.notas || '',
+            estado_item: 'pendiente'
+          })
+        }
+
+        // 3. Update mesa status to 'ocupada'
+        const mesa = mesas.find(m => m.id === currentComanda.mesaId)
+        if (mesa && mesa.estado !== 'ocupada') {
+          await updateMesa(mesa.id, { estado: 'ocupada' })
+        }
+
+        // Update local state
+        const updatedComanda: Comanda = {
+          ...currentComanda,
+          id: nuevaOrden.id,
+          estado: 'en_cocina'
+        }
+        setCurrentComanda(updatedComanda)
+        dispatch({ type: 'UPDATE_COMANDA', payload: updatedComanda })
+        
+        showToast('Comanda enviada a cocina/bar', 'success')
+      }
+    } catch (error) {
+      console.error('Error sending to kitchen:', error)
+      showToast('Error al enviar a cocina', 'error')
     }
-    dispatch({ type: 'UPDATE_COMANDA', payload: updatedComanda })
-    showToast('Comanda enviada a cocina/bar', 'success')
   }
 
   // Discount handling
