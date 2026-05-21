@@ -48,8 +48,9 @@ const mobileNavByRole: Record<string, PageType[]> = {
   mesero: ['mesas', 'pos'],
   cocina: ['kds'],
   bar: ['kds'],
-  cajero: ['mesas', 'pos', 'pagos', 'reportes'],
-  administrador: ['dashboard', 'mesas', 'pos', 'kds', 'inventario'],
+  cajero: ['dashboard', 'mesas', 'pos', 'pagos', 'reportes'],
+  administrador: ['dashboard', 'mesas', 'pos', 'kds', 'inventario', 'usuarios', 'pagos', 'reportes', 'configuracion'],
+  admin: ['dashboard', 'mesas', 'pos', 'kds', 'inventario', 'usuarios', 'pagos', 'reportes', 'configuracion'],
 }
 
 export function MainLayout({ children }: { children: React.ReactNode }) {

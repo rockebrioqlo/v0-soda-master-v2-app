@@ -2,7 +2,6 @@
 
 import { useState } from 'react'
 import { useApp } from '@/lib/app-context'
-import { MainLayout } from '@/components/main-layout'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -164,10 +163,9 @@ export function UsuariosPage() {
   }
 
   return (
-    <MainLayout>
-      <div className="p-4 lg:p-6">
-        <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-          <h1 className="text-2xl font-bold text-foreground">Gestión de Usuarios</h1>
+    <div className="space-y-6">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+        <h1 className="text-2xl font-bold text-foreground">Gestion de Usuarios</h1>
           <div className="flex gap-2">
             <Button 
               variant="outline" 
@@ -442,7 +440,6 @@ export function UsuariosPage() {
             </DialogFooter>
           </DialogContent>
         </Dialog>
-      </div>
-    </MainLayout>
+    </div>
   )
 }

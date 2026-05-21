@@ -40,6 +40,7 @@ export function generateId(): string {
 export function getRolLabel(rol: string): string {
   const labels: Record<string, string> = {
     administrador: 'Administrador',
+    admin: 'Administrador',
     mesero: 'Mesero',
     cocina: 'Cocina',
     bar: 'Bar',

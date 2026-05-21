@@ -1,6 +1,6 @@
 // Types for Soda Master V2 POS System
 
-export type Rol = 'administrador' | 'mesero' | 'cocina' | 'bar' | 'cajero'
+export type Rol = 'administrador' | 'admin' | 'mesero' | 'cocina' | 'bar' | 'cajero'
 
 export type EstadoMesa = 'libre' | 'ocupada' | 'reservada'
 

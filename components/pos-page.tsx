@@ -2,7 +2,6 @@
 
 import { useState, useEffect, useMemo } from 'react'
 import { useApp } from '@/lib/app-context'
-import { MainLayout } from '@/components/main-layout'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -380,36 +379,34 @@ export function POSPage() {
   // If no mesa selected, show mesa selector
   if (!selectedMesaId) {
     return (
-      <MainLayout>
-        <div className="p-4 lg:p-6">
-          <h1 className="mb-6 text-2xl font-bold text-foreground">Selecciona una Mesa</h1>
-          <div className="grid gap-4 grid-cols-2 sm:grid-cols-3 lg:grid-cols-4">
-            {mesas.map((mesa) => (
-              <Card
-                key={mesa.id}
-                className={cn(
-                  'cursor-pointer border-2 transition-all hover:scale-[1.02]',
-                  mesa.estado === 'libre' && 'border-green-500/50 bg-green-500/10',
-                  mesa.estado === 'ocupada' && 'border-red-500/50 bg-red-500/10',
-                  mesa.estado === 'reservada' && 'border-yellow-500/50 bg-yellow-500/10'
-                )}
-                onClick={() => handleSelectMesa(mesa.id)}
-              >
-                <CardContent className="flex flex-col items-center justify-center p-6">
-                  <span className="text-2xl font-bold text-foreground">{mesa.nombre}</span>
-                  <span className="text-sm text-muted-foreground">Capacidad: {mesa.capacidad}</span>
-                </CardContent>
-              </Card>
-            ))}
-          </div>
+      <div className="space-y-6">
+        <h1 className="text-2xl font-bold text-foreground">Selecciona una Mesa</h1>
+        <div className="grid gap-4 grid-cols-2 sm:grid-cols-3 lg:grid-cols-4">
+          {mesas.map((mesa) => (
+            <Card
+              key={mesa.id}
+              className={cn(
+                'cursor-pointer border-2 transition-all hover:scale-[1.02]',
+                mesa.estado === 'libre' && 'border-green-500/50 bg-green-500/10',
+                mesa.estado === 'ocupada' && 'border-red-500/50 bg-red-500/10',
+                mesa.estado === 'reservada' && 'border-yellow-500/50 bg-yellow-500/10'
+              )}
+              onClick={() => handleSelectMesa(mesa.id)}
+            >
+              <CardContent className="flex flex-col items-center justify-center p-6">
+                <span className="text-2xl font-bold text-foreground">{mesa.nombre}</span>
+                <span className="text-sm text-muted-foreground">Capacidad: {mesa.capacidad}</span>
+              </CardContent>
+            </Card>
+          ))}
         </div>
-      </MainLayout>
+      </div>
     )
   }
 
   return (
-    <MainLayout>
-      <div className="flex h-[calc(100vh-3.5rem-5rem)] flex-col lg:h-[calc(100vh-3.5rem)] lg:flex-row">
+    <>
+      <div className="flex h-[calc(100vh-3.5rem-5rem)] flex-col lg:h-[calc(100vh-3.5rem-1.5rem)] lg:flex-row gap-4">
         {/* Products Section */}
         <div className="flex-1 overflow-auto border-b border-zinc-700 p-4 lg:border-b-0 lg:border-r">
           {/* Mesa Header */}
@@ -924,7 +921,7 @@ export function POSPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </MainLayout>
+    </>
   )
 }
 

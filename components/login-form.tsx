@@ -15,6 +15,12 @@ export function LoginForm() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
 
+  const handlePinChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const value = e.target.value.replace(/\D/g, '').slice(0, 6)
+    setPin(value)
+    setError('')
+  }
+
   const handlePinDigit = (digit: string) => {
     if (pin.length < 6) {
       setPin(prev => prev + digit)
@@ -102,8 +108,11 @@ export function LoginForm() {
                 <Input
                   type="password"
                   value={pin}
-                  readOnly
+                  onChange={handlePinChange}
                   placeholder="----"
+                  maxLength={6}
+                  inputMode="numeric"
+                  pattern="[0-9]*"
                   className="border-zinc-600 bg-zinc-700/50 text-center text-2xl tracking-widest text-white"
                 />
               </div>

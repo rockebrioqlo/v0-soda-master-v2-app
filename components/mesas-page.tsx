@@ -2,7 +2,6 @@
 
 import { useState } from 'react'
 import { useApp } from '@/lib/app-context'
-import { MainLayout } from '@/components/main-layout'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -129,15 +128,14 @@ export function MesasPage() {
   }
 
   return (
-    <MainLayout>
-      <div className="p-4 lg:p-6">
-        <div className="mb-6 flex items-center justify-between">
-          <h1 className="text-2xl font-bold text-foreground">Gestión de Mesas</h1>
-          <Button onClick={handleOpenNew} className="bg-amber-500 text-zinc-900 hover:bg-amber-400">
-            <Plus className="mr-2 h-4 w-4" />
-            Nueva Mesa
-          </Button>
-        </div>
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <h1 className="text-2xl font-bold text-foreground">Gestion de Mesas</h1>
+        <Button onClick={handleOpenNew} className="bg-amber-500 text-zinc-900 hover:bg-amber-400">
+          <Plus className="mr-2 h-4 w-4" />
+          Nueva Mesa
+        </Button>
+      </div>
 
         {/* Legend */}
         <div className="mb-6 flex flex-wrap gap-4">
@@ -291,7 +289,6 @@ export function MesasPage() {
             </DialogFooter>
           </DialogContent>
         </Dialog>
-      </div>
-    </MainLayout>
+    </div>
   )
 }

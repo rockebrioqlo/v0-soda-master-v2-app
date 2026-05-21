@@ -111,6 +111,7 @@ export const initialComandas: Comanda[] = []
 
 export const initialPermisosDescuento: Record<Rol, PermisosDescuento> = {
   administrador: { puede: true, limiteMax: 100, requiereMotivo: false },
+  admin: { puede: true, limiteMax: 100, requiereMotivo: false },
   cajero: { puede: true, limiteMax: 15, requiereMotivo: true },
   mesero: { puede: false, limiteMax: 0, requiereMotivo: true },
   cocina: { puede: false, limiteMax: 0, requiereMotivo: true },

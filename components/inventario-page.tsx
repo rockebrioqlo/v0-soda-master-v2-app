@@ -2,7 +2,6 @@
 
 import { useState } from 'react'
 import { useApp } from '@/lib/app-context'
-import { MainLayout } from '@/components/main-layout'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -160,11 +159,10 @@ export function InventarioPage() {
   const stockBajoCount = productos.filter(p => p.stock <= p.stockMinimo && p.stock > 0).length
 
   return (
-    <MainLayout>
-      <div className="p-4 lg:p-6">
-        <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <h1 className="text-2xl font-bold text-foreground">Inventario</h1>
+    <div className="space-y-6">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-foreground">Inventario</h1>
             {stockBajoCount > 0 && (
               <p className="mt-1 flex items-center gap-2 text-sm text-orange-500">
                 <AlertTriangle className="h-4 w-4" />
@@ -461,7 +459,6 @@ export function InventarioPage() {
             </DialogFooter>
           </DialogContent>
         </Dialog>
-      </div>
-    </MainLayout>
+    </div>
   )
 }

@@ -130,21 +130,22 @@ const AppContext = createContext<AppContextType | undefined>(undefined)
 
 // Permission matrix by role
 const permisosModulo: Record<string, Rol[]> = {
-  dashboard: ['administrador', 'cajero'],
-  mesas: ['administrador', 'mesero', 'cajero'],
-  pos: ['administrador', 'mesero', 'cajero'],
-  kds: ['administrador', 'cocina', 'bar'],
-  inventario: ['administrador'],
-  usuarios: ['administrador'],
-  pagos: ['administrador', 'cajero'],
-  mermas: ['administrador', 'mesero', 'cocina', 'bar'],
-  reportes: ['administrador', 'cajero'],
-  configuracion: ['administrador'],
+  dashboard: ['administrador', 'admin', 'cajero'],
+  mesas: ['administrador', 'admin', 'mesero', 'cajero'],
+  pos: ['administrador', 'admin', 'mesero', 'cajero'],
+  kds: ['administrador', 'admin', 'cocina', 'bar'],
+  inventario: ['administrador', 'admin'],
+  usuarios: ['administrador', 'admin'],
+  pagos: ['administrador', 'admin', 'cajero'],
+  mermas: ['administrador', 'admin', 'mesero', 'cocina', 'bar'],
+  reportes: ['administrador', 'admin', 'cajero'],
+  configuracion: ['administrador', 'admin'],
 }
 
 // Default pages by role
 const defaultPageByRole: Record<Rol, PageType> = {
   administrador: 'dashboard',
+  admin: 'dashboard',
   cajero: 'mesas',
   mesero: 'mesas',
   cocina: 'kds',

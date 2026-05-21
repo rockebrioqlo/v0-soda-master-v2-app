@@ -2,7 +2,6 @@
 
 import { useState } from 'react'
 import { useApp } from '@/lib/app-context'
-import { MainLayout } from '@/components/main-layout'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -137,17 +136,16 @@ export function PagosPage() {
   // If no comanda selected, show list of pending comandas
   if (!comandaAPagar) {
     return (
-      <MainLayout>
-        <div className="p-4 lg:p-6">
-          <div className="mb-6 flex items-center justify-between">
-            <h1 className="text-2xl font-bold text-foreground">Pagos y Facturación</h1>
-            <Button onClick={handleCerrarCaja} variant="outline">
-              <Calculator className="mr-2 h-4 w-4" />
-              Cerrar Caja
-            </Button>
-          </div>
+      <div className="space-y-6">
+        <div className="flex items-center justify-between">
+          <h1 className="text-2xl font-bold text-foreground">Pagos y Facturacion</h1>
+          <Button onClick={handleCerrarCaja} variant="outline">
+            <Calculator className="mr-2 h-4 w-4" />
+            Cerrar Caja
+          </Button>
+        </div>
 
-          <div className="grid gap-6 lg:grid-cols-2">
+        <div className="grid gap-6 lg:grid-cols-2">
             {/* Pending comandas */}
             <Card className="border-zinc-700 bg-zinc-800/50">
               <CardHeader>
@@ -221,19 +219,18 @@ export function PagosPage() {
             </Card>
           </div>
         </div>
-      </MainLayout>
+      </div>
     )
   }
 
   // Payment view for selected comanda
   return (
-    <MainLayout>
-      <div className="p-4 lg:p-6">
-        <div className="mb-6">
-          <Button variant="ghost" onClick={() => router.push('/pagos')}>
-            ← Volver a lista
-          </Button>
-        </div>
+    <div className="space-y-6">
+      <div>
+        <Button variant="ghost" onClick={() => router.push('/pagos')}>
+          Volver a lista
+        </Button>
+      </div>
 
         <div className="grid gap-6 lg:grid-cols-2">
           {/* Order summary */}
@@ -554,6 +551,6 @@ export function PagosPage() {
           </DialogContent>
         </Dialog>
       </div>
-    </MainLayout>
+    </div>
   )
 }
