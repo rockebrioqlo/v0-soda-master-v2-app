@@ -1,7 +1,7 @@
 'use client'
 
 import React, { createContext, useContext, useReducer, useEffect, useState, useCallback } from 'react'
-import { hash } from 'bcryptjs'
+
 import { 
   AppState, 
   AppAction, 
@@ -9,14 +9,8 @@ import {
   Rol
 } from './types'
 import {
-  initialMesas,
-  initialUsuarios,
-  initialProductos,
-  initialIngredientes,
-  initialComandas,
   initialPermisosDescuento,
   initialConfiguracion,
-  userPins
 } from './initial-data'
 import { showToast } from '@/components/toast'
 
@@ -29,11 +23,11 @@ interface POSNavigationState {
 }
 
 const initialState: AppState = {
-  mesas: initialMesas,
+  mesas: [],
   usuarios: [],
-  productos: initialProductos,
-  ingredientes: initialIngredientes,
-  comandas: initialComandas,
+  productos: [],
+  ingredientes: [],
+  comandas: [],
   pagos: [],
   mermas: [],
   comandasNoPagadas: [],
@@ -245,15 +239,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           dispatch({ type: 'SET_USUARIOS', payload: usuarios })
         }
 
-        // Load productos from Neon - only if valid data with categories
+        // Load productos from Neon
         const productosRes = await fetch('/api/productos')
         if (productosRes.ok) {
           const productos = await productosRes.json()
-          // Only update if products have proper category field (not empty array or malformed)
-          if (Array.isArray(productos) && productos.length > 0 && productos[0].categoria) {
+          if (Array.isArray(productos)) {
             dispatch({ type: 'SET_PRODUCTOS', payload: productos })
           }
-          // Otherwise keep initialProductos from initialState
         }
 
         // Load mesas from Neon

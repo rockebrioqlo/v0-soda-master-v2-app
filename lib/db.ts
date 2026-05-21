@@ -19,8 +19,16 @@ export const db = {
   // Usuarios
   async getUsuarios(): Promise<Usuario[]> {
     const sql = getSql()
-    const result = await sql`SELECT * FROM soda_master.usuarios WHERE activo = true`
-    return result as Usuario[]
+    const result = await sql`
+      SELECT id, email, nombre, rol, activo, pin_hash, created_at, updated_at
+      FROM soda_master.usuarios
+      ORDER BY nombre
+    `
+    return result.map((u: any) => ({
+      ...u,
+      intentosFallidos: 0,
+      bloqueadoHasta: null,
+    })) as Usuario[]
   },
 
   async getUsuarioById(id: string): Promise<Usuario | null> {
@@ -113,29 +121,72 @@ export const db = {
     return result[0] as Mesa
   },
 
-  // Productos
+  // Productos — always JOIN categorias so frontend gets `categoria` as string name
   async getProductos(): Promise<Producto[]> {
     const sql = getSql()
-    const result = await sql`SELECT * FROM soda_master.productos WHERE activo = true ORDER BY nombre`
-    return result as Producto[]
+    const result = await sql`
+      SELECT
+        p.id,
+        p.nombre,
+        p.descripcion,
+        p.precio,
+        p.imagen_url,
+        p.activo,
+        p.categoria_id,
+        c.nombre AS categoria,
+        COALESCE(inv.stock_actual, 0)  AS stock,
+        COALESCE(inv.stock_minimo, 5)  AS "stockMinimo",
+        COALESCE(inv.unidad_medida, 'unidad') AS formato
+      FROM soda_master.productos p
+      LEFT JOIN soda_master.categorias c ON p.categoria_id = c.id
+      LEFT JOIN soda_master.inventario inv ON inv.producto_id = p.id
+      WHERE p.activo = true
+      ORDER BY c.nombre, p.nombre
+    `
+    return result.map((r: any) => ({
+      ...r,
+      esIngredienteEspecial: false,
+      costoAdicional: 0,
+    })) as Producto[]
   },
 
-  async getProductosPorCategoria(categoriaId: string): Promise<Producto[]> {
+  async getInventarioCompleto() {
     const sql = getSql()
     const result = await sql`
-      SELECT * FROM soda_master.productos 
-      WHERE categoria_id = ${categoriaId} AND activo = true
-      ORDER BY nombre
+      SELECT
+        inv.id,
+        inv.producto_id,
+        p.nombre                        AS producto_nombre,
+        c.nombre                        AS categoria,
+        inv.stock_actual,
+        inv.stock_minimo,
+        inv.unidad_medida,
+        inv.updated_at
+      FROM soda_master.inventario inv
+      JOIN soda_master.productos p ON inv.producto_id = p.id
+      JOIN soda_master.categorias c ON p.categoria_id = c.id
+      WHERE p.activo = true
+      ORDER BY c.nombre, p.nombre
     `
-    return result as Producto[]
+    return result
   },
 
   async crearProducto(producto: Omit<Producto, 'id' | 'created_at' | 'updated_at'>) {
     const sql = getSql()
+    // Resolve categoria name → id
+    const catRows = await sql`
+      SELECT id FROM soda_master.categorias WHERE nombre = ${producto.categoria} LIMIT 1
+    `
+    const categoriaId = catRows[0] ? (catRows[0] as any).id : null
     const result = await sql`
       INSERT INTO soda_master.productos (nombre, categoria_id, precio, descripcion, imagen_url, activo)
-      VALUES (${producto.nombre}, ${producto.categoria_id}, ${producto.precio}, ${producto.descripcion}, ${producto.imagen_url}, true)
+      VALUES (${producto.nombre}, ${categoriaId}, ${producto.precio}, ${(producto as any).descripcion ?? ''}, ${(producto as any).imagen_url ?? ''}, true)
       RETURNING *
+    `
+    // Create inventory row
+    await sql`
+      INSERT INTO soda_master.inventario (producto_id, stock_actual, stock_minimo, unidad_medida)
+      VALUES (${(result[0] as any).id}, 100, 10, 'unidad')
     `
     return result[0] as Producto
   },
