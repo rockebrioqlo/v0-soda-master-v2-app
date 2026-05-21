@@ -441,7 +441,7 @@ export function POSPage() {
     <>
       <div className="flex h-[calc(100vh-3.5rem-5rem)] flex-col lg:h-[calc(100vh-3.5rem-1.5rem)] lg:flex-row gap-4">
         {/* Products Section */}
-        <div className="flex-1 overflow-auto border-b border-zinc-700 p-4 lg:border-b-0 lg:border-r">
+        <div className="flex-1 overflow-auto border-b border-border p-4 lg:border-b-0 lg:border-r">
           {/* Mesa Header */}
           <div className="mb-4 flex items-center justify-between">
             <div className="flex items-center gap-3">
@@ -461,7 +461,7 @@ export function POSPage() {
           {/* Tabs for mobile, columns for desktop */}
           <div className="lg:hidden">
             <Tabs value={activeTab} onValueChange={setActiveTab}>
-              <TabsList className="grid w-full grid-cols-2 bg-zinc-800">
+              <TabsList className="grid w-full grid-cols-2 bg-muted">
                 <TabsTrigger value="comidas" className="data-[state=active]:bg-amber-500 data-[state=active]:text-zinc-900">
                   <ChefHat className="mr-2 h-4 w-4" />
                   Comidas
@@ -506,8 +506,8 @@ export function POSPage() {
         </div>
 
         {/* Order Summary */}
-        <div className="flex w-full flex-col bg-zinc-800/50 lg:w-96">
-          <div className="border-b border-zinc-700 p-4">
+        <div className="flex w-full flex-col bg-muted/50 lg:w-96">
+          <div className="border-b border-border p-4">
             <h3 className="font-semibold text-foreground">Resumen de Comanda</h3>
           </div>
           
@@ -517,7 +517,7 @@ export function POSPage() {
             ) : (
               <ul className="space-y-3">
                 {currentComanda?.items.map((item) => (
-                  <li key={item.id} className="rounded-lg bg-zinc-700/50 p-3">
+                  <li key={item.id} className="rounded-lg bg-muted p-3">
                     <div className="flex items-start justify-between">
                       <div className="flex-1">
                         <p className="font-medium text-foreground">
@@ -581,7 +581,7 @@ export function POSPage() {
           </div>
 
           {/* Totals */}
-          <div className="border-t border-zinc-700 p-4">
+          <div className="border-t border-border p-4">
             <div className="space-y-2 text-sm">
               <div className="flex justify-between text-muted-foreground">
                 <span>Subtotal</span>
@@ -599,7 +599,7 @@ export function POSPage() {
                   <span>+{formatCurrency(propinaMonto)}</span>
                 </div>
               )}
-              <div className="flex justify-between border-t border-zinc-700 pt-2 text-lg font-bold text-foreground">
+              <div className="flex justify-between border-t border-border pt-2 text-lg font-bold text-foreground">
                 <span>Total</span>
                 <span>{formatCurrency(total)}</span>
               </div>
@@ -609,7 +609,7 @@ export function POSPage() {
             <div className="mt-4 grid grid-cols-2 gap-2">
               <Button
                 variant="outline"
-                className="border-zinc-600"
+                className="border-border"
                 onClick={handleOpenDescuento}
                 disabled={!currentComanda || currentComanda.items.length === 0}
               >
@@ -618,7 +618,7 @@ export function POSPage() {
               </Button>
               <Button
                 variant="outline"
-                className="border-zinc-600"
+                className="border-border"
                 onClick={handlePrintTicket}
                 disabled={!currentComanda || currentComanda.items.length === 0}
               >
@@ -649,7 +649,7 @@ export function POSPage() {
 
       {/* Burger Customization Dialog */}
       <Dialog open={showBurgerDialog} onOpenChange={setShowBurgerDialog}>
-        <DialogContent aria-describedby={undefined} className="max-h-[90vh] overflow-auto border-zinc-700 bg-zinc-800 sm:max-w-lg">
+        <DialogContent aria-describedby={undefined} className="max-h-[90vh] overflow-auto border-border bg-card sm:max-w-lg">
           <DialogHeader>
             <DialogTitle className="text-foreground">
               Personalizar {selectedBurger?.nombre}
@@ -669,7 +669,7 @@ export function POSPage() {
                       'flex cursor-pointer items-center gap-2 rounded-lg border p-3 transition-colors',
                       burgerIngredientes.includes(ing)
                         ? 'border-amber-500 bg-amber-500/20'
-                        : 'border-zinc-600 hover:border-zinc-500',
+                        : 'border-border hover:border-muted-foreground',
                       burgerIngredientes.length >= 4 && !burgerIngredientes.includes(ing) && 'cursor-not-allowed opacity-50'
                     )}
                     onClick={() => handleToggleIngrediente(ing)}
@@ -703,7 +703,7 @@ export function POSPage() {
                         'cursor-pointer py-2 px-3',
                         burgerEspeciales.includes(esp.id)
                           ? 'bg-amber-500 text-zinc-900'
-                          : 'border-zinc-600 hover:border-amber-500'
+                            : 'border-border hover:border-amber-500'
                       )}
                       onClick={() => handleToggleEspecial(esp.id)}
                     >
@@ -718,7 +718,7 @@ export function POSPage() {
             <div>
               <label className="mb-2 block text-sm font-medium text-muted-foreground">Salsa</label>
               <Select value={burgerSalsa || "ninguna"} onValueChange={(v) => setBurgerSalsa(v === "ninguna" ? "" : v)}>
-                <SelectTrigger className="border-zinc-600 bg-zinc-700/50">
+                <SelectTrigger className="border-border bg-muted">
                   <SelectValue placeholder="Sin salsa" />
                 </SelectTrigger>
                 <SelectContent>
@@ -739,12 +739,12 @@ export function POSPage() {
                 value={burgerNotas}
                 onChange={(e) => setBurgerNotas(e.target.value)}
                 placeholder="Ej: sin sal, bien cocida..."
-                className="border-zinc-600 bg-zinc-700/50"
+                className="border-border bg-muted"
               />
             </div>
 
             {/* Price */}
-            <div className="rounded-lg bg-zinc-700/50 p-3">
+            <div className="rounded-lg bg-muted p-3">
               <div className="flex justify-between text-sm">
                 <span className="text-muted-foreground">Precio base:</span>
                 <span className="text-foreground">{formatCurrency(selectedBurger?.precio || 0)}</span>
@@ -760,7 +760,7 @@ export function POSPage() {
                   </span>
                 </div>
               )}
-              <div className="mt-2 flex justify-between border-t border-zinc-600 pt-2 font-bold">
+              <div className="mt-2 flex justify-between border-t border-border pt-2 font-bold">
                 <span className="text-foreground">Total:</span>
                 <span className="text-foreground">
                   {formatCurrency(
@@ -787,7 +787,7 @@ export function POSPage() {
 
       {/* Generic Item Dialog */}
       <Dialog open={showItemDialog} onOpenChange={setShowItemDialog}>
-        <DialogContent aria-describedby={undefined} className="border-zinc-700 bg-zinc-800">
+        <DialogContent aria-describedby={undefined} className="border-border bg-card">
           <DialogHeader>
             <DialogTitle className="text-foreground">
               Agregar {selectedItem?.nombre}
@@ -799,7 +799,7 @@ export function POSPage() {
               <div>
                 <label className="mb-2 block text-sm font-medium text-muted-foreground">Tamaño/Variante</label>
                 <Select value={itemVariante} onValueChange={setItemVariante}>
-                  <SelectTrigger className="border-zinc-600 bg-zinc-700/50">
+                  <SelectTrigger className="border-border bg-muted">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -818,7 +818,7 @@ export function POSPage() {
               <div>
                 <label className="mb-2 block text-sm font-medium text-muted-foreground">Salsa</label>
                 <Select value={itemSalsa || "ninguna"} onValueChange={(v) => setItemSalsa(v === "ninguna" ? "" : v)}>
-                  <SelectTrigger className="border-zinc-600 bg-zinc-700/50">
+                  <SelectTrigger className="border-border bg-muted">
                     <SelectValue placeholder="Sin salsa" />
                   </SelectTrigger>
                   <SelectContent>
@@ -860,7 +860,7 @@ export function POSPage() {
                 value={itemNotas}
                 onChange={(e) => setItemNotas(e.target.value)}
                 placeholder="Ej: sin hielo, con limón..."
-                className="border-zinc-600 bg-zinc-700/50"
+                className="border-border bg-muted"
               />
             </div>
           </div>
@@ -877,7 +877,7 @@ export function POSPage() {
 
       {/* Discount Dialog */}
       <Dialog open={showDescuentoDialog} onOpenChange={setShowDescuentoDialog}>
-        <DialogContent aria-describedby={undefined} className="border-zinc-700 bg-zinc-800">
+        <DialogContent aria-describedby={undefined} className="border-border bg-card">
           <DialogHeader>
             <DialogTitle className="text-foreground">Aplicar Descuento</DialogTitle>
           </DialogHeader>
@@ -885,7 +885,7 @@ export function POSPage() {
             <div>
               <label className="mb-2 block text-sm font-medium text-muted-foreground">Tipo</label>
               <Select value={descuentoTipo} onValueChange={(v) => setDescuentoTipo(v as TipoDescuento)}>
-                <SelectTrigger className="border-zinc-600 bg-zinc-700/50">
+                <SelectTrigger className="border-border bg-muted">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -901,7 +901,7 @@ export function POSPage() {
                 value={descuentoValor}
                 onChange={(e) => setDescuentoValor(e.target.value)}
                 placeholder={descuentoTipo === 'porcentaje' ? 'Ej: 10' : 'Ej: 1000'}
-                className="border-zinc-600 bg-zinc-700/50"
+                className="border-border bg-muted"
               />
             </div>
             <div>
@@ -912,7 +912,7 @@ export function POSPage() {
                 value={descuentoMotivo}
                 onChange={(e) => setDescuentoMotivo(e.target.value)}
                 placeholder="Motivo del descuento..."
-                className="border-zinc-600 bg-zinc-700/50"
+                className="border-border bg-muted"
               />
             </div>
           </div>
@@ -929,7 +929,7 @@ export function POSPage() {
 
       {/* Auth Dialog for Discount */}
       <Dialog open={showAuthDialog} onOpenChange={setShowAuthDialog}>
-        <DialogContent aria-describedby={undefined} className="border-zinc-700 bg-zinc-800">
+        <DialogContent aria-describedby={undefined} className="border-border bg-card">
           <DialogHeader>
             <DialogTitle className="text-foreground">Autorización Requerida</DialogTitle>
           </DialogHeader>
@@ -942,7 +942,7 @@ export function POSPage() {
               value={authPin}
               onChange={(e) => setAuthPin(e.target.value)}
               placeholder="PIN del administrador"
-              className="border-zinc-600 bg-zinc-700/50"
+              className="border-border bg-muted"
             />
           </div>
           <DialogFooter>
@@ -979,7 +979,7 @@ function ProductSection({
           <Button
             key={item.id}
             variant="outline"
-            className="h-auto min-h-[4.5rem] flex-col items-start justify-start border-zinc-600 p-2 text-left hover:border-amber-500 hover:bg-amber-500/10"
+            className="h-auto min-h-[4.5rem] flex-col items-start justify-start border-border p-2 text-left hover:border-amber-500 hover:bg-amber-500/10"
             onClick={() => onSelect(item)}
           >
             <span className="w-full text-xs font-medium leading-tight text-foreground sm:text-sm">
