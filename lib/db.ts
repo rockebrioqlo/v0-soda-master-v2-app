@@ -1,22 +1,36 @@
-import { neon } from '@neondatabase/serverless'
+import { neon, NeonQueryFunction } from '@neondatabase/serverless'
 import bcryptjs from 'bcryptjs'
 import type { Usuario, Mesa, Producto, Orden, ItemOrden, Pago, Inventario } from './types'
 
-const sql = neon(process.env.DATABASE_URL!)
+// Lazy initialization to avoid build-time errors
+let _sql: NeonQueryFunction<false, false> | null = null
+
+function getSql() {
+  if (!_sql) {
+    if (!process.env.DATABASE_URL) {
+      throw new Error('DATABASE_URL environment variable is not set')
+    }
+    _sql = neon(process.env.DATABASE_URL)
+  }
+  return _sql
+}
 
 export const db = {
   // Usuarios
   async getUsuarios(): Promise<Usuario[]> {
+    const sql = getSql()
     const result = await sql`SELECT * FROM soda_master.usuarios WHERE activo = true`
     return result as Usuario[]
   },
 
   async getUsuarioById(id: string): Promise<Usuario | null> {
+    const sql = getSql()
     const result = await sql`SELECT * FROM soda_master.usuarios WHERE id = ${id}`
     return result[0] as Usuario | null
   },
 
   async verificarPIN(email: string, pin: string): Promise<Usuario | null> {
+    const sql = getSql()
     const result = await sql`SELECT * FROM soda_master.usuarios WHERE email = ${email} AND activo = true`
     if (!result[0]) return null
     
@@ -27,6 +41,7 @@ export const db = {
   },
 
   async crearUsuario(usuario: Omit<Usuario, 'id' | 'created_at' | 'updated_at'>) {
+    const sql = getSql()
     const pinHash = await bcryptjs.hash(usuario.pin_hash, 10)
     const result = await sql`
       INSERT INTO soda_master.usuarios (email, nombre, pin_hash, rol, activo)
@@ -37,6 +52,7 @@ export const db = {
   },
 
   async actualizarUsuario(id: string, updates: Partial<Usuario>) {
+    const sql = getSql()
     const result = await sql`
       UPDATE soda_master.usuarios 
       SET nombre = COALESCE(${updates.nombre}, nombre),
@@ -51,11 +67,13 @@ export const db = {
 
   // Mesas
   async getMesas(): Promise<Mesa[]> {
+    const sql = getSql()
     const result = await sql`SELECT * FROM soda_master.mesas ORDER BY numero`
     return result as Mesa[]
   },
 
   async actualizarEstadoMesa(id: string, estado: string) {
+    const sql = getSql()
     const result = await sql`
       UPDATE soda_master.mesas 
       SET estado = ${estado}, updated_at = CURRENT_TIMESTAMP
@@ -67,11 +85,13 @@ export const db = {
 
   // Productos
   async getProductos(): Promise<Producto[]> {
+    const sql = getSql()
     const result = await sql`SELECT * FROM soda_master.productos WHERE activo = true ORDER BY nombre`
     return result as Producto[]
   },
 
   async getProductosPorCategoria(categoriaId: string): Promise<Producto[]> {
+    const sql = getSql()
     const result = await sql`
       SELECT * FROM soda_master.productos 
       WHERE categoria_id = ${categoriaId} AND activo = true
@@ -81,6 +101,7 @@ export const db = {
   },
 
   async crearProducto(producto: Omit<Producto, 'id' | 'created_at' | 'updated_at'>) {
+    const sql = getSql()
     const result = await sql`
       INSERT INTO soda_master.productos (nombre, categoria_id, precio, descripcion, imagen_url, activo)
       VALUES (${producto.nombre}, ${producto.categoria_id}, ${producto.precio}, ${producto.descripcion}, ${producto.imagen_url}, true)
@@ -91,6 +112,7 @@ export const db = {
 
   // Órdenes
   async crearOrden(orden: Omit<Orden, 'id' | 'created_at' | 'updated_at' | 'numero_orden'>) {
+    const sql = getSql()
     const result = await sql`
       INSERT INTO soda_master.ordenes (mesa_id, usuario_id, estado, subtotal, impuesto, total, notas)
       VALUES (${orden.mesa_id}, ${orden.usuario_id}, ${orden.estado}, ${orden.subtotal}, ${orden.impuesto}, ${orden.total}, ${orden.notas})
@@ -100,6 +122,7 @@ export const db = {
   },
 
   async getOrdenesPendientes(): Promise<Orden[]> {
+    const sql = getSql()
     const result = await sql`
       SELECT * FROM soda_master.ordenes 
       WHERE estado IN ('pendiente', 'en_cocina', 'listo')
@@ -109,6 +132,7 @@ export const db = {
   },
 
   async actualizarOrden(id: string, updates: Partial<Orden>) {
+    const sql = getSql()
     const result = await sql`
       UPDATE soda_master.ordenes 
       SET estado = COALESCE(${updates.estado}, estado),
@@ -125,6 +149,7 @@ export const db = {
 
   // Items de orden
   async crearItemOrden(item: Omit<ItemOrden, 'id' | 'created_at'>) {
+    const sql = getSql()
     const result = await sql`
       INSERT INTO soda_master.items_orden (orden_id, producto_id, cantidad, precio_unitario, modificadores, notas_especiales)
       VALUES (${item.orden_id}, ${item.producto_id}, ${item.cantidad}, ${item.precio_unitario}, ${JSON.stringify(item.modificadores)}, ${item.notas_especiales})
@@ -135,6 +160,7 @@ export const db = {
 
   // Pagos
   async crearPago(pago: Omit<Pago, 'id' | 'created_at'>) {
+    const sql = getSql()
     const result = await sql`
       INSERT INTO soda_master.pagos (orden_id, metodo, monto, propina, vuelto, referencia, aprobado)
       VALUES (${pago.orden_id}, ${pago.metodo}, ${pago.monto}, ${pago.propina}, ${pago.vuelto}, ${pago.referencia}, ${pago.aprobado})
@@ -145,11 +171,13 @@ export const db = {
 
   // Inventario
   async getInventario(): Promise<Inventario[]> {
+    const sql = getSql()
     const result = await sql`SELECT * FROM soda_master.inventario ORDER BY created_at DESC`
     return result as Inventario[]
   },
 
   async actualizarInventario(productoId: string, cantidad: number) {
+    const sql = getSql()
     const result = await sql`
       UPDATE soda_master.inventario 
       SET stock_actual = ${cantidad}, updated_at = CURRENT_TIMESTAMP
