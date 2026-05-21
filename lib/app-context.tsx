@@ -78,9 +78,11 @@ function appReducer(state: AppState, action: AppAction): AppState {
     case 'ADD_COMANDA':
       return { ...state, comandas: [...state.comandas, action.payload] }
     case 'UPDATE_COMANDA':
-      return { 
-        ...state, 
-        comandas: state.comandas.map(c => c.id === action.payload.id ? action.payload : c) 
+      return {
+        ...state,
+        comandas: state.comandas.map(c =>
+          c.id === action.payload.id ? { ...c, ...action.payload } : c
+        ),
       }
     case 'DELETE_COMANDA':
       return { ...state, comandas: state.comandas.filter(c => c.id !== action.payload) }
@@ -162,13 +164,31 @@ const AppContext = createContext<AppContextType | undefined>(undefined)
 // Helper to map DB orden to frontend Comanda format
 function mapOrdenToComanda(orden: any, mesas: any[]): any {
   const mesa = mesas.find(m => m.id === orden.mesa_id)
+
+  // Map Neon items_orden rows → ItemComanda shape expected by the frontend
+  const rawItems: any[] = Array.isArray(orden.items) ? orden.items : []
+  const mappedItems = rawItems
+    .filter((i: any) => i && i.id)   // filter null rows from LEFT JOIN when no items
+    .map((i: any) => ({
+      id: i.id,
+      productoId: i.producto_id,
+      productoNombre: i.producto_nombre || i.nombre || '',
+      cantidad: i.cantidad || 1,
+      precio: parseFloat(i.precio_unitario) || 0,
+      ingredientesEstandar: Array.isArray(i.modificadores) ? i.modificadores : [],
+      ingredientesEspeciales: [],
+      salsaSeleccionada: i.notas_especiales || '',
+      notas: i.notas_especiales || '',
+      estado: i.estado_item || 'pendiente',
+    }))
+
   return {
     id: orden.id,
     mesaId: orden.mesa_id,
     mesaNombre: mesa?.nombre || `Mesa ${mesa?.numero || '?'}`,
     usuarioId: orden.usuario_id,
     estado: orden.estado,
-    items: orden.items || [],
+    items: mappedItems,
     subtotal: parseFloat(orden.subtotal) || 0,
     impuesto: parseFloat(orden.impuesto) || 0,
     total: parseFloat(orden.total) || 0,
@@ -421,7 +441,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       })
       if (res.ok) {
         const newOrden = await res.json()
-        dispatch({ type: 'ADD_COMANDA', payload: newOrden })
+        // Don't dispatch ADD_COMANDA here — pos-page.tsx manages comanda state
+        // after getting back the Neon id and doing UPDATE_COMANDA itself
         return newOrden
       }
     } catch (error) {
@@ -438,8 +459,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         body: JSON.stringify({ id, ...updates }),
       })
       if (res.ok) {
-        const orden = await res.json()
-        dispatch({ type: 'UPDATE_COMANDA', payload: orden })
+        // Update local comanda estado without full remap
+        dispatch({
+          type: 'UPDATE_COMANDA',
+          payload: { id, ...updates } as any,
+        })
       }
     } catch (error) {
       console.error('Error updating orden:', error)
@@ -465,17 +489,18 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const recargarOrdenes = useCallback(async () => {
     try {
+      // Use ?kds=true so the API returns ordenes with items via JOIN
       const [ordenesRes, mesasRes] = await Promise.all([
-        fetch('/api/ordenes'),
+        fetch('/api/ordenes?kds=true'),
         fetch('/api/mesas')
       ])
-      
+
       if (ordenesRes.ok && mesasRes.ok) {
         const ordenes = await ordenesRes.json()
         const mesas = await mesasRes.json()
-        
-        if (Array.isArray(ordenes) && ordenes.length > 0) {
-          const comandas = ordenes.map(o => mapOrdenToComanda(o, mesas))
+
+        if (Array.isArray(ordenes)) {
+          const comandas = ordenes.map((o: any) => mapOrdenToComanda(o, mesas))
           dispatch({ type: 'SET_COMANDAS', payload: comandas })
         }
       }

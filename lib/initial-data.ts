@@ -63,14 +63,23 @@ export const initialProductos: Producto[] = [
   { id: 'p3', nombre: 'Helado Chocolate', categoria: 'postres', precio: 1500, stock: 60, stockMinimo: 10, formato: 'bola', esIngredienteEspecial: false, costoAdicional: 0 },
   { id: 'p4', nombre: 'Helado Vainilla', categoria: 'postres', precio: 1500, stock: 60, stockMinimo: 10, formato: 'bola', esIngredienteEspecial: false, costoAdicional: 0 },
   
-  // Bebidas
-  { id: 'd1', nombre: 'Coca Cola', categoria: 'bebidas', precio: 1500, stock: 200, stockMinimo: 30, formato: 'vaso', esIngredienteEspecial: false, costoAdicional: 0 },
-  { id: 'd2', nombre: 'Sprite', categoria: 'bebidas', precio: 1500, stock: 150, stockMinimo: 25, formato: 'vaso', esIngredienteEspecial: false, costoAdicional: 0 },
-  { id: 'd3', nombre: 'Jugo Natural', categoria: 'bebidas', precio: 2000, stock: 80, stockMinimo: 15, formato: 'vaso', esIngredienteEspecial: false, costoAdicional: 0 },
-  { id: 'd4', nombre: 'Agua Mineral', categoria: 'bebidas', precio: 1000, stock: 300, stockMinimo: 50, formato: 'botella', esIngredienteEspecial: false, costoAdicional: 0 },
-  { id: 'd5', nombre: 'Cerveza', categoria: 'bebidas', precio: 2500, stock: 100, stockMinimo: 20, formato: 'botella', esIngredienteEspecial: false, costoAdicional: 0 },
-  { id: 'd6', nombre: 'Vino Tinto', categoria: 'bebidas', precio: 3500, stock: 40, stockMinimo: 10, formato: 'copa', esIngredienteEspecial: false, costoAdicional: 0 },
-  { id: 'd7', nombre: 'Vino Blanco', categoria: 'bebidas', precio: 3500, stock: 40, stockMinimo: 10, formato: 'copa', esIngredienteEspecial: false, costoAdicional: 0 },
+  // Bebidas - Cervezas
+  { id: 'd5', nombre: 'Cerveza Rubia', categoria: 'cervezas', precio: 2500, stock: 100, stockMinimo: 20, formato: 'botella', esIngredienteEspecial: false, costoAdicional: 0 },
+  { id: 'd8', nombre: 'Cerveza Negra', categoria: 'cervezas', precio: 2800, stock: 60, stockMinimo: 15, formato: 'botella', esIngredienteEspecial: false, costoAdicional: 0 },
+  { id: 'd9', nombre: 'Cerveza IPA', categoria: 'cervezas', precio: 3000, stock: 50, stockMinimo: 10, formato: 'botella', esIngredienteEspecial: false, costoAdicional: 0 },
+  // Bebidas - Jugos y Bebidas
+  { id: 'd1', nombre: 'Coca Cola', categoria: 'jugos_bebidas', precio: 1500, stock: 200, stockMinimo: 30, formato: 'vaso', esIngredienteEspecial: false, costoAdicional: 0 },
+  { id: 'd2', nombre: 'Sprite', categoria: 'jugos_bebidas', precio: 1500, stock: 150, stockMinimo: 25, formato: 'vaso', esIngredienteEspecial: false, costoAdicional: 0 },
+  { id: 'd3', nombre: 'Jugo Natural Naranja', categoria: 'jugos_bebidas', precio: 2000, stock: 80, stockMinimo: 15, formato: 'vaso', esIngredienteEspecial: false, costoAdicional: 0 },
+  { id: 'd10', nombre: 'Jugo Natural Piña', categoria: 'jugos_bebidas', precio: 2000, stock: 70, stockMinimo: 15, formato: 'vaso', esIngredienteEspecial: false, costoAdicional: 0 },
+  { id: 'd4', nombre: 'Agua Mineral', categoria: 'jugos_bebidas', precio: 1000, stock: 300, stockMinimo: 50, formato: 'botella', esIngredienteEspecial: false, costoAdicional: 0 },
+  // Bebidas - Tragos
+  { id: 'd11', nombre: 'Pisco Sour', categoria: 'tragos', precio: 4500, stock: 50, stockMinimo: 10, formato: 'vaso', esIngredienteEspecial: false, costoAdicional: 0 },
+  { id: 'd6', nombre: 'Vino Tinto', categoria: 'tragos', precio: 3500, stock: 40, stockMinimo: 10, formato: 'copa', esIngredienteEspecial: false, costoAdicional: 0 },
+  { id: 'd7', nombre: 'Vino Blanco', categoria: 'tragos', precio: 3500, stock: 40, stockMinimo: 10, formato: 'copa', esIngredienteEspecial: false, costoAdicional: 0 },
+  { id: 'd12', nombre: 'Whisky', categoria: 'tragos', precio: 5500, stock: 30, stockMinimo: 5, formato: 'vaso', esIngredienteEspecial: false, costoAdicional: 0 },
+  { id: 'd13', nombre: 'Ron Cola', categoria: 'tragos', precio: 4000, stock: 40, stockMinimo: 8, formato: 'vaso', esIngredienteEspecial: false, costoAdicional: 0 },
+  { id: 'd14', nombre: 'Gin Tonic', categoria: 'tragos', precio: 4500, stock: 35, stockMinimo: 8, formato: 'vaso', esIngredienteEspecial: false, costoAdicional: 0 },
   
   // Salsas
   { id: 's1', nombre: 'Salsa Cheddar', categoria: 'salsas', precio: 0, stock: 100, stockMinimo: 10, formato: 'porción', esIngredienteEspecial: false, costoAdicional: 0 },
@@ -129,11 +138,18 @@ export const initialConfiguracion: Configuracion = {
   modoMantenimiento: false,
 }
 
+export const quesosDisponibles = [
+  'Queso Cheddar',
+  'Queso Mozzarella',
+  'Queso Azul',
+  'Queso Gouda',
+]
+
 export const ingredientesEstandar = [
-  'Queso', 'Tomate', 'Lechuga', 'Tocino', 
-  'Cebolla', 'Palta', 'Champiñones', 'Jalapeño'
+  'Tomate', 'Lechuga', 'Tocino',
+  'Cebolla', 'Palta', 'Champiñones', 'Jalapeño', 'Cebolla Caramelizada'
 ]
 
 export const salsasDisponibles = [
-  'Cheddar', 'BBQ', 'Mayo', 'Picante', 'Chimichurri'
+  'Mayonesa', 'Ketchup', 'Mostaza', 'BBQ', 'Salsa Picante', 'Chimichurri', 'Cheddar'
 ]

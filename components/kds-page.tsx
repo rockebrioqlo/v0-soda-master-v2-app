@@ -43,9 +43,11 @@ export function KDSPage() {
     (c) => c.estado === 'en_cocina' || c.estado === 'en_preparacion'
   )
 
+  const CATEGORIAS_BAR = ['bebidas', 'cervezas', 'jugos_bebidas', 'tragos']
+
   const isBarItem = (item: ItemComanda) => {
     const producto = productos.find((p) => p.id === item.productoId)
-    return producto?.categoria === 'bebidas'
+    return CATEGORIAS_BAR.includes(producto?.categoria || '')
   }
 
   const isCocinaItem = (item: ItemComanda) => !isBarItem(item)

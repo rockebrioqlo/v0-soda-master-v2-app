@@ -44,7 +44,7 @@ export interface Mesa {
 export interface Producto {
   id: string
   nombre: string
-  categoria: 'burgers' | 'entradas' | 'acompañamientos' | 'postres' | 'bebidas' | 'salsas'
+  categoria: 'burgers' | 'entradas' | 'acompañamientos' | 'postres' | 'bebidas' | 'salsas' | 'cervezas' | 'jugos_bebidas' | 'tragos'
   precio: number
   stock: number
   stockMinimo: number
