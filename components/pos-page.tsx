@@ -974,18 +974,20 @@ function ProductSection({
   return (
     <div>
       {title && <h4 className="mb-2 text-sm font-medium text-muted-foreground">{title}</h4>}
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+      <div className="grid grid-cols-2 gap-2 md:grid-cols-3 lg:grid-cols-2 xl:grid-cols-3">
         {items.map((item) => (
           <Button
             key={item.id}
             variant="outline"
-            className="h-auto flex-col items-start border-zinc-600 p-3 text-left hover:border-amber-500 hover:bg-amber-500/10"
+            className="h-auto min-h-[4.5rem] flex-col items-start justify-start border-zinc-600 p-2 text-left hover:border-amber-500 hover:bg-amber-500/10"
             onClick={() => onSelect(item)}
           >
-            <span className="text-sm font-medium text-foreground">{item.nombre}</span>
-            <span className="text-xs text-amber-500">{formatCurrency(item.precio)}</span>
+            <span className="w-full text-xs font-medium leading-tight text-foreground sm:text-sm">
+              {item.nombre}
+            </span>
+            <span className="mt-1 text-xs font-semibold text-amber-500">{formatCurrency(item.precio)}</span>
             {item.variantes && item.variantes.length > 0 && (
-              <span className="text-xs text-muted-foreground">
+              <span className="mt-0.5 text-[10px] leading-tight text-muted-foreground">
                 ({item.variantes.map(v => v.nombre).join(' / ')})
               </span>
             )}
