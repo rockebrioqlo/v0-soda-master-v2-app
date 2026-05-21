@@ -1,14 +1,14 @@
 import { neon } from '@neondatabase/serverless'
 import bcryptjs from 'bcryptjs'
 
+// Checks if DB already has data - if yes, returns status. If no, seeds it.
 export async function POST() {
   try {
     const sql = neon(process.env.DATABASE_URL!)
 
-    // ── Check if already seeded ──────────────────────────────────────────
-    const existentes = await sql`SELECT COUNT(*) as count FROM soda_master.usuarios`
-    if (Number((existentes[0] as any).count) > 0) {
-      return Response.json({ message: 'Base de datos ya inicializada' }, { status: 200 })
+    const existing = await sql`SELECT COUNT(*) as count FROM soda_master.productos`
+    if (Number((existing[0] as any).count) > 0) {
+      return Response.json({ message: 'Base de datos ya inicializada', productos: Number((existing[0] as any).count) })
     }
 
     // ── Usuarios ─────────────────────────────────────────────────────────
@@ -19,178 +19,120 @@ export async function POST() {
       bcryptjs.hash('4444', 10),
       bcryptjs.hash('5555', 10),
     ])
-
     await sql`
       INSERT INTO soda_master.usuarios (email, nombre, pin_hash, rol, activo) VALUES
-      ('admin@soda.cl',   'Administrador',    ${h1234}, 'administrador', true),
-      ('cajero@soda.cl',  'Carlos García',    ${h2222}, 'cajero',        true),
-      ('mesero@soda.cl',  'María López',      ${h3333}, 'mesero',        true),
-      ('cocina@soda.cl',  'Pedro Martínez',   ${h4444}, 'cocina',        true),
-      ('bar@soda.cl',     'Laura Rodríguez',  ${h5555}, 'bar',           true)
+      ('admin@soda.cl',  'Administrador',    ${h1234}, 'admin',  true),
+      ('cajero@soda.cl', 'Carlos García',    ${h2222}, 'cajero', true),
+      ('mesero@soda.cl', 'María López',      ${h3333}, 'mesero', true),
+      ('cocina@soda.cl', 'Pedro Martínez',   ${h4444}, 'cocina', true),
+      ('bar@soda.cl',    'Laura Rodríguez',  ${h5555}, 'bar',    true)
+      ON CONFLICT (email) DO NOTHING
     `
 
-    // ── Mesas ────────────────────────────────────────────────────────────
-    const mesasData = [
-      // Interior (1-6)
-      ...[1,2,3,4,5,6].map(n => ({ numero: n, area: 'Interior', capacidad: n <= 4 ? 4 : 6 })),
-      // Patio (7-12)
-      ...[7,8,9,10,11,12].map(n => ({ numero: n, area: 'Patio', capacidad: n <= 9 ? 4 : 6 })),
-      // Barra (13-16)
-      ...[13,14,15,16].map(n => ({ numero: n, area: 'Barra', capacidad: 2 })),
-      // Terraza (17-20)
-      ...[17,18,19,20].map(n => ({ numero: n, area: 'Terraza', capacidad: 8 })),
-    ]
-    for (const m of mesasData) {
-      await sql`
-        INSERT INTO soda_master.mesas (numero, area, capacidad, estado)
-        VALUES (${m.numero}, ${m.area}, ${m.capacidad}, 'libre')
-      `
+    // ── Mesas (solo si no hay) ────────────────────────────────────────────
+    const mesasCount = await sql`SELECT COUNT(*) as c FROM soda_master.mesas`
+    if (Number((mesasCount[0] as any).c) === 0) {
+      const mesas = [
+        ...[1,2,3,4,5,6].map(n => ({ n, area: 'Interior', cap: n <= 4 ? 4 : 6 })),
+        ...[7,8,9,10,11,12].map(n => ({ n, area: 'Patio', cap: n <= 9 ? 4 : 6 })),
+        ...[13,14,15,16].map(n => ({ n, area: 'Barra', cap: 2 })),
+        ...[17,18,19,20].map(n => ({ n, area: 'Terraza', cap: 8 })),
+      ]
+      for (const m of mesas) {
+        await sql`INSERT INTO soda_master.mesas (numero, area, capacidad, estado) VALUES (${m.n}, ${m.area}, ${m.cap}, 'libre')`
+      }
     }
 
     // ── Categorías ───────────────────────────────────────────────────────
-    const categoriaRows = await sql`
+    const catRows = await sql`
       INSERT INTO soda_master.categorias (nombre, descripcion) VALUES
-      ('burgers',        'Hamburguesas artesanales'),
-      ('entradas',       'Entradas y aperitivos'),
-      ('acompañamientos','Acompañamientos y guarniciones'),
-      ('postres',        'Postres y dulces'),
-      ('cervezas',       'Cervezas nacionales e importadas'),
-      ('jugos_bebidas',  'Jugos naturales y bebidas'),
-      ('tragos',         'Cocteles y licores')
+      ('burgers',         'Hamburguesas artesanales'),
+      ('entradas',        'Entradas y aperitivos'),
+      ('acompañamientos', 'Acompañamientos y guarniciones'),
+      ('postres',         'Postres y dulces'),
+      ('cervezas',        'Cervezas nacionales e importadas'),
+      ('jugos_bebidas',   'Jugos naturales y bebidas'),
+      ('tragos',          'Cocteles y licores')
       RETURNING id, nombre
     `
     const catMap: Record<string, string> = {}
-    for (const row of categoriaRows) {
-      catMap[(row as any).nombre] = (row as any).id
-    }
+    for (const r of catRows) catMap[(r as any).nombre] = (r as any).id
 
-    // ── Productos ────────────────────────────────────────────────────────
-    type ProdInput = { nombre: string; cat: string; precio: number; desc: string }
-    const productos: ProdInput[] = [
-      // Burgers
-      { nombre: 'Burger Clásica',     cat: 'burgers', precio: 4500, desc: 'Carne vacuno, lechuga, tomate, mayonesa' },
-      { nombre: 'Burger Doble',       cat: 'burgers', precio: 5500, desc: 'Doble carne, doble queso, tocino' },
-      { nombre: 'Burger Vegetariana', cat: 'burgers', precio: 4200, desc: 'Medallón vegetal, palta, rúcula' },
-      { nombre: 'Burger BBQ',         cat: 'burgers', precio: 5000, desc: 'Carne, tocino, cebolla caramelizada, BBQ' },
-      { nombre: 'Burger Especial',    cat: 'burgers', precio: 5800, desc: 'Carne wagyu, queso azul, champiñones' },
-      // Entradas
-      { nombre: 'Nachos',              cat: 'entradas', precio: 2500, desc: 'Nachos con queso cheddar derretido' },
-      { nombre: 'Fingers de Pollo',    cat: 'entradas', precio: 3000, desc: 'Tiras de pollo apanadas' },
-      { nombre: 'Alitas de Pollo',     cat: 'entradas', precio: 3500, desc: 'Alitas BBQ o picantes' },
-      { nombre: 'Aros de Cebolla',     cat: 'entradas', precio: 2800, desc: 'Aros de cebolla crujientes' },
-      // Acompañamientos
-      { nombre: 'Papas Fritas',   cat: 'acompañamientos', precio: 1500, desc: 'Papas fritas crujientes' },
-      { nombre: 'Papas Rústicas', cat: 'acompañamientos', precio: 1800, desc: 'Papas con piel al horno' },
-      { nombre: 'Onion Rings',    cat: 'acompañamientos', precio: 2000, desc: 'Aros de cebolla' },
-      { nombre: 'Ensalada',       cat: 'acompañamientos', precio: 1800, desc: 'Lechuga, tomate, pepino' },
-      // Postres
-      { nombre: 'Brownie con Helado', cat: 'postres', precio: 2800, desc: 'Brownie tibio con helado de vainilla' },
-      { nombre: 'Cheesecake',         cat: 'postres', precio: 2500, desc: 'Cheesecake de frutos del bosque' },
-      { nombre: 'Helado Chocolate',   cat: 'postres', precio: 1500, desc: 'Helado artesanal de chocolate' },
-      { nombre: 'Helado Vainilla',    cat: 'postres', precio: 1500, desc: 'Helado artesanal de vainilla' },
-      // Cervezas
-      { nombre: 'Cerveza Rubia',  cat: 'cervezas', precio: 2500, desc: 'Cerveza rubia 330ml' },
-      { nombre: 'Cerveza Negra',  cat: 'cervezas', precio: 2800, desc: 'Cerveza negra 330ml' },
-      { nombre: 'Cerveza IPA',    cat: 'cervezas', precio: 3000, desc: 'India Pale Ale 330ml' },
-      { nombre: 'Cerveza Artesanal', cat: 'cervezas', precio: 3500, desc: 'Cerveza artesanal local' },
-      // Jugos y bebidas
-      { nombre: 'Coca Cola',          cat: 'jugos_bebidas', precio: 1500, desc: 'Coca Cola 350ml' },
-      { nombre: 'Sprite',             cat: 'jugos_bebidas', precio: 1500, desc: 'Sprite 350ml' },
-      { nombre: 'Fanta',              cat: 'jugos_bebidas', precio: 1500, desc: 'Fanta naranja 350ml' },
-      { nombre: 'Jugo Natural Naranja', cat: 'jugos_bebidas', precio: 2000, desc: 'Jugo exprimido' },
-      { nombre: 'Jugo Natural Piña',  cat: 'jugos_bebidas', precio: 2000, desc: 'Jugo natural de piña' },
-      { nombre: 'Agua Mineral',       cat: 'jugos_bebidas', precio: 1000, desc: 'Agua mineral 500ml' },
-      // Tragos
-      { nombre: 'Pisco Sour',   cat: 'tragos', precio: 4500, desc: 'Pisco, limón, azúcar, clara de huevo' },
-      { nombre: 'Vino Tinto',   cat: 'tragos', precio: 3500, desc: 'Copa de vino tinto 150ml' },
-      { nombre: 'Vino Blanco',  cat: 'tragos', precio: 3500, desc: 'Copa de vino blanco 150ml' },
-      { nombre: 'Whisky',       cat: 'tragos', precio: 5500, desc: 'Whisky en las rocas' },
-      { nombre: 'Ron Cola',     cat: 'tragos', precio: 4000, desc: 'Ron con Coca Cola' },
-      { nombre: 'Gin Tonic',    cat: 'tragos', precio: 4500, desc: 'Gin con agua tónica' },
+    // ── Productos ─────────────────────────────────────────────────────────
+    type P = { nombre: string; cat: string; precio: number; desc: string }
+    const prods: P[] = [
+      { nombre: 'Burger Clásica',    cat: 'burgers', precio: 7500,  desc: 'Carne 150g, lechuga, tomate, cebolla' },
+      { nombre: 'Burger BBQ',        cat: 'burgers', precio: 8500,  desc: 'Carne 150g, tocino, cebolla caramelizada, salsa BBQ' },
+      { nombre: 'Burger Doble',      cat: 'burgers', precio: 10500, desc: 'Doble carne 300g, queso cheddar, lechuga, tomate' },
+      { nombre: 'Burger Vegana',     cat: 'burgers', precio: 8000,  desc: 'Medallón de lentejas, palta, rúcula, tomate' },
+      { nombre: 'Burger Pollo',      cat: 'burgers', precio: 7800,  desc: 'Pechuga grillada, lechuga, tomate, mayo' },
+      { nombre: 'Burger Italiana',   cat: 'burgers', precio: 9000,  desc: 'Carne, mozzarella, tomate confitado, albahaca' },
+      { nombre: 'Alitas BBQ',        cat: 'entradas', precio: 5500, desc: '8 alitas con salsa BBQ y ranch' },
+      { nombre: 'Aros de Cebolla',   cat: 'entradas', precio: 3800, desc: 'Aros de cebolla apanados con dip' },
+      { nombre: 'Nachos',            cat: 'entradas', precio: 4500, desc: 'Nachos con queso cheddar, jalapeño y guacamole' },
+      { nombre: 'Tequeños',          cat: 'entradas', precio: 4000, desc: '6 tequeños de queso mozzarella' },
+      { nombre: 'Papas Fritas',      cat: 'acompañamientos', precio: 2500, desc: 'Papas fritas crujientes con sal' },
+      { nombre: 'Papas Wedges',      cat: 'acompañamientos', precio: 3000, desc: 'Papas en gajos con especias' },
+      { nombre: 'Ensalada Verde',    cat: 'acompañamientos', precio: 2800, desc: 'Mix de lechugas, tomate cherry, pepino' },
+      { nombre: 'Coleslaw',          cat: 'acompañamientos', precio: 2200, desc: 'Ensalada de repollo con mayo' },
+      { nombre: 'Brownie',           cat: 'postres', precio: 3500, desc: 'Brownie de chocolate con helado de vainilla' },
+      { nombre: 'Cheesecake',        cat: 'postres', precio: 4000, desc: 'Cheesecake de frambuesa con coulis' },
+      { nombre: 'Helado 3 Bolas',    cat: 'postres', precio: 2800, desc: 'Elección de 3 sabores' },
+      { nombre: 'Cerveza Rubia',     cat: 'cervezas', precio: 2500, desc: 'Cerveza lager nacional 330ml' },
+      { nombre: 'Cerveza Negra',     cat: 'cervezas', precio: 3200, desc: 'Cerveza stout importada 330ml' },
+      { nombre: 'Cerveza IPA',       cat: 'cervezas', precio: 3500, desc: 'Cerveza artesanal IPA 330ml' },
+      { nombre: 'Cerveza Sin Alcohol', cat: 'cervezas', precio: 2800, desc: 'Cerveza sin alcohol 330ml' },
+      { nombre: 'Coca Cola',         cat: 'jugos_bebidas', precio: 1800, desc: 'Coca Cola 350ml' },
+      { nombre: 'Sprite',            cat: 'jugos_bebidas', precio: 1800, desc: 'Sprite 350ml' },
+      { nombre: 'Agua Mineral',      cat: 'jugos_bebidas', precio: 1200, desc: 'Agua mineral sin gas 500ml' },
+      { nombre: 'Agua con Gas',      cat: 'jugos_bebidas', precio: 1300, desc: 'Agua mineral con gas 500ml' },
+      { nombre: 'Jugo Naranja',      cat: 'jugos_bebidas', precio: 2500, desc: 'Jugo natural de naranja 400ml' },
+      { nombre: 'Jugo Piña',         cat: 'jugos_bebidas', precio: 2500, desc: 'Jugo natural de piña 400ml' },
+      { nombre: 'Pisco Sour',        cat: 'tragos', precio: 4500, desc: 'Pisco, limón, azúcar, clara de huevo' },
+      { nombre: 'Gin Tonic',         cat: 'tragos', precio: 4800, desc: 'Gin con agua tónica y lima' },
+      { nombre: 'Mojito',            cat: 'tragos', precio: 4500, desc: 'Ron, menta, limón, azúcar, soda' },
+      { nombre: 'Ron Cola',          cat: 'tragos', precio: 4000, desc: 'Ron con Coca Cola y limón' },
+      { nombre: 'Vino Tinto Copa',   cat: 'tragos', precio: 3800, desc: 'Copa de vino tinto de la casa' },
+      { nombre: 'Whisky',            cat: 'tragos', precio: 5500, desc: 'Whisky en las rocas' },
     ]
 
-    const insertedProds: { id: string; nombre: string }[] = []
-    for (const p of productos) {
+    const insertedProds: string[] = []
+    for (const p of prods) {
       const rows = await sql`
         INSERT INTO soda_master.productos (nombre, categoria_id, precio, descripcion, activo)
         VALUES (${p.nombre}, ${catMap[p.cat]}, ${p.precio}, ${p.desc}, true)
-        RETURNING id, nombre
+        RETURNING id
       `
-      insertedProds.push({ id: (rows[0] as any).id, nombre: (rows[0] as any).nombre })
+      insertedProds.push((rows[0] as any).id)
     }
 
-    // ── Inventario ────────────────────────────────────────────────────────
-    // Also seed raw ingredient inventory for kitchen tracking
-    const inventarioItems = [
-      { nombre: 'Pan Hamburguesa', stock: 1500, minimo: 200 },
-      { nombre: 'Carne Vacuno (kg)', stock: 120, minimo: 20 },
-      { nombre: 'Queso Cheddar (kg)', stock: 15, minimo: 3 },
-      { nombre: 'Queso Mozzarella (kg)', stock: 10, minimo: 2 },
-      { nombre: 'Queso Azul (kg)', stock: 5, minimo: 1 },
-      { nombre: 'Tomate (kg)', stock: 30, minimo: 5 },
-      { nombre: 'Lechuga (kg)', stock: 20, minimo: 3 },
-      { nombre: 'Tocino (kg)', stock: 15, minimo: 3 },
-      { nombre: 'Cebolla (kg)', stock: 25, minimo: 5 },
-      { nombre: 'Palta (kg)', stock: 12, minimo: 2 },
-      { nombre: 'Champiñones (kg)', stock: 8, minimo: 2 },
-      { nombre: 'Jalapeño (kg)', stock: 5, minimo: 1 },
-      { nombre: 'Salsa BBQ (lt)', stock: 20, minimo: 3 },
-      { nombre: 'Mayonesa (kg)', stock: 15, minimo: 3 },
-      { nombre: 'Mostaza (kg)', stock: 10, minimo: 2 },
-      { nombre: 'Ketchup (kg)', stock: 15, minimo: 3 },
-      { nombre: 'Papas Fritas (kg)', stock: 80, minimo: 15 },
-      { nombre: 'Aceite Frita (lt)', stock: 40, minimo: 10 },
-    ]
-
-    // Insert as productos with a special 'inventario' category marker (we reuse acompañamientos)
-    // and create inventory tracking entries linked to products
-    for (const prod of insertedProds) {
-      // Default stock by category assumptions
-      const stock = prod.nombre.toLowerCase().includes('burger') ? 999
-        : prod.nombre.toLowerCase().includes('cerveza') ? 100
-        : prod.nombre.toLowerCase().includes('vino') ? 40
-        : prod.nombre.toLowerCase().includes('whisky') ? 30
-        : prod.nombre.toLowerCase().includes('agua') ? 300
-        : prod.nombre.toLowerCase().includes('coca') || prod.nombre.toLowerCase().includes('sprite') || prod.nombre.toLowerCase().includes('fanta') ? 200
-        : prod.nombre.toLowerCase().includes('jugo') ? 80
-        : prod.nombre.toLowerCase().includes('pisco') || prod.nombre.toLowerCase().includes('ron') || prod.nombre.toLowerCase().includes('gin') ? 50
-        : prod.nombre.toLowerCase().includes('postre') || prod.nombre.toLowerCase().includes('helado') || prod.nombre.toLowerCase().includes('brownie') || prod.nombre.toLowerCase().includes('cheesecake') ? 40
-        : 100
-      const minimo = stock > 100 ? 20 : stock > 50 ? 10 : 5
+    // ── Inventario ─────────────────────────────────────────────────────────
+    for (const prodId of insertedProds) {
       await sql`
         INSERT INTO soda_master.inventario (producto_id, stock_actual, stock_minimo, unidad_medida)
-        VALUES (${prod.id}, ${stock}, ${minimo}, 'unidad')
+        VALUES (${prodId}, 50, 10, 'unidad')
         ON CONFLICT (producto_id) DO NOTHING
       `
     }
 
     return Response.json({
       message: 'Base de datos inicializada correctamente',
-      usuarios: 5,
-      mesas: mesasData.length,
-      categorias: Object.keys(catMap).length,
       productos: insertedProds.length,
-    }, { status: 200 })
+    })
   } catch (error) {
-    console.error('Seed error:', error)
+    console.error('[seed] error:', error)
     return Response.json({ error: String(error) }, { status: 500 })
   }
 }
 
-// DELETE to force re-seed (admin only in production - here open for dev)
+// DELETE /api/seed — limpia todo para re-seed (solo desarrollo)
 export async function DELETE() {
   try {
     const sql = neon(process.env.DATABASE_URL!)
-    await sql`DELETE FROM soda_master.items_orden`
-    await sql`DELETE FROM soda_master.pagos`
-    await sql`DELETE FROM soda_master.ordenes`
-    await sql`DELETE FROM soda_master.inventario`
-    await sql`DELETE FROM soda_master.modificadores`
-    await sql`DELETE FROM soda_master.productos`
-    await sql`DELETE FROM soda_master.categorias`
-    await sql`DELETE FROM soda_master.mesas`
-    await sql`DELETE FROM soda_master.usuarios`
-    return Response.json({ message: 'Base de datos limpiada. Llama POST /api/seed para reinicializar.' })
+    await sql`TRUNCATE soda_master.items_orden, soda_master.pagos, soda_master.ordenes, soda_master.inventario, soda_master.modificadores RESTART IDENTITY CASCADE`
+    await sql`TRUNCATE soda_master.productos, soda_master.categorias RESTART IDENTITY CASCADE`
+    await sql`TRUNCATE soda_master.mesas, soda_master.usuarios RESTART IDENTITY CASCADE`
+    return Response.json({ message: 'BD limpiada. Llama POST /api/seed para reinicializar.' })
   } catch (error) {
     return Response.json({ error: String(error) }, { status: 500 })
   }
