@@ -185,12 +185,12 @@ export function UsuariosPage() {
         </div>
 
         {/* Users Table */}
-        <Card className="border-zinc-700 bg-zinc-800/50">
+        <Card className="border-border bg-card">
           <CardContent className="p-0">
             <div className="overflow-x-auto">
               <Table>
                 <TableHeader>
-                  <TableRow className="border-zinc-700">
+                  <TableRow className="border-border">
                     <TableHead className="text-muted-foreground">Nombre</TableHead>
                     <TableHead className="text-muted-foreground">Email</TableHead>
                     <TableHead className="text-muted-foreground">Rol</TableHead>
@@ -200,7 +200,7 @@ export function UsuariosPage() {
                 </TableHeader>
                 <TableBody>
                   {usuarios.map((usuario) => (
-                    <TableRow key={usuario.id} className="border-zinc-700">
+                    <TableRow key={usuario.id} className="border-border">
                       <TableCell className="font-medium text-foreground">
                         {usuario.nombre}
                         {usuario.bloqueadoHasta && usuario.bloqueadoHasta > Date.now() && (
@@ -256,7 +256,7 @@ export function UsuariosPage() {
         </Card>
 
         {/* Permisos Summary */}
-        <Card className="mt-6 border-zinc-700 bg-zinc-800/50">
+        <Card className="mt-6 border-border bg-card">
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-foreground">
               <Shield className="h-5 w-5 text-amber-500" />
@@ -268,7 +268,7 @@ export function UsuariosPage() {
               {(Object.keys(permisosDescuento) as Rol[]).map((rol) => {
                 const permisos = permisosDescuento[rol]
                 return (
-                  <div key={rol} className="rounded-lg border border-zinc-700 p-4">
+                  <div key={rol} className="rounded-lg border border-border p-4">
                     <div className="flex items-center justify-between">
                       <Badge className={cn('text-white', getRolBadgeColor(rol))}>
                         {getRolLabel(rol)}
@@ -298,7 +298,7 @@ export function UsuariosPage() {
 
         {/* Dialog for New/Edit User */}
         <Dialog open={showDialog} onOpenChange={setShowDialog}>
-          <DialogContent className="border-zinc-700 bg-zinc-800">
+          <DialogContent className="border-border bg-card">
             <DialogHeader>
               <DialogTitle className="text-foreground">
                 {editingUsuario ? 'Editar Usuario' : 'Nuevo Usuario'}
@@ -310,7 +310,7 @@ export function UsuariosPage() {
                 <Input
                   value={formData.nombre}
                   onChange={(e) => setFormData({ ...formData, nombre: e.target.value })}
-                  className="border-zinc-600 bg-zinc-700/50"
+                  className="border-border bg-muted"
                 />
               </div>
               <div className="space-y-2">
@@ -319,7 +319,7 @@ export function UsuariosPage() {
                   type="email"
                   value={formData.email}
                   onChange={(e) => setFormData({ ...formData, email: e.target.value })}
-                  className="border-zinc-600 bg-zinc-700/50"
+                  className="border-border bg-muted"
                 />
               </div>
               <div className="space-y-2">
@@ -332,7 +332,7 @@ export function UsuariosPage() {
                   onChange={(e) => setFormData({ ...formData, pin: e.target.value.replace(/\D/g, '') })}
                   placeholder="••••"
                   maxLength={6}
-                  className="border-zinc-600 bg-zinc-700/50"
+                  className="border-border bg-muted"
                 />
               </div>
               <div className="space-y-2">
@@ -341,7 +341,7 @@ export function UsuariosPage() {
                   value={formData.rol}
                   onValueChange={(v) => setFormData({ ...formData, rol: v as Rol })}
                 >
-                  <SelectTrigger className="border-zinc-600 bg-zinc-700/50">
+                  <SelectTrigger className="border-border bg-muted">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -353,7 +353,7 @@ export function UsuariosPage() {
                   </SelectContent>
                 </Select>
               </div>
-              <div className="flex items-center justify-between rounded-lg bg-zinc-700/50 p-4">
+              <div className="flex items-center justify-between rounded-lg bg-muted p-4">
                 <span className="text-sm text-foreground">Usuario Activo</span>
                 <Switch
                   checked={formData.activo}
@@ -374,7 +374,7 @@ export function UsuariosPage() {
 
         {/* Dialog for Discount Permissions */}
         <Dialog open={showPermisosDialog} onOpenChange={setShowPermisosDialog}>
-          <DialogContent className="max-h-[90vh] overflow-auto border-zinc-700 bg-zinc-800 sm:max-w-lg">
+          <DialogContent className="max-h-[90vh] overflow-auto border-border bg-card sm:max-w-lg">
             <DialogHeader>
               <DialogTitle className="text-foreground">
                 Permisos de Descuento por Rol
@@ -384,7 +384,7 @@ export function UsuariosPage() {
               {(Object.keys(permisosEdit) as Rol[]).map((rol) => {
                 const permisos = permisosEdit[rol]
                 return (
-                  <div key={rol} className="rounded-lg border border-zinc-700 p-4">
+                  <div key={rol} className="rounded-lg border border-border p-4">
                     <div className="mb-4 flex items-center justify-between">
                       <Badge className={cn('text-white', getRolBadgeColor(rol))}>
                         {getRolLabel(rol)}
