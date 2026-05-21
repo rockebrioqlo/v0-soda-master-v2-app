@@ -242,49 +242,72 @@ Sistema POS completo para sodas y restaurantes desarrollado con Next.js 16, Reac
 
 ---
 
-## Notas de Implementacion
-
-## Notas de Implementacion
-
-### Persistencia con Neon - Actualizado
-El sistema ahora usa **Neon PostgreSQL serverless** para persistencia real con flujo completo:
+### Persistencia con Neon - Optimizado para Serverless
+El sistema ahora usa **Neon PostgreSQL serverless** con arquitectura eficiente:
 - Datos se almacenan en base de datos
 - Endpoint de seed (`/api/seed`) inicializa BD con datos de demo
 - **Mesero crea orden en POS** → POST `/api/ordenes` + `/api/items-orden` persisten en BD
-- **Orden se envía a cocina** → PATCH `/api/ordenes` con `enviado_a_cocina=true`
-- **KDS refresca cada 5 segundos** → GET `/api/ordenes?kds=true` obtiene órdenes en tiempo real
-- **Cocinero/Barman marca lista** → PATCH `/api/ordenes` actualiza estado
-- **Admin ve todo el flujo** → Polling automático en todos los módulos
+- **Orden se envía a cocina** → PATCH `/api/ordenes` con `estado='en_cocina'`
+- **KDS refrescar manual** → GET `/api/ordenes` cuando cocinero presiona botón "Refrescar" (sin polling = costo bajo)
+- **Cocinero/Barman marcan estados** → PATCH `/api/ordenes` con `estado='en_preparacion'|'listo'|'problema'`
+- **Problema notifica mesero** → Toast emergente para cancelar orden o cambiar items
+- **Auto-refrescar al enviar** → KDS se actualiza cuando mesero envía nueva orden
 
-### Arquitectura - Mejorada
+### Arquitectura - Optimizada
 - **Frontend:** React Context + Reducers + APIs (estado local + persistencia)
 - **Backend:** Next.js API Routes (lógica de negocio)
-- **BD:** Neon PostgreSQL (persistencia real)
+- **BD:** Neon PostgreSQL (persistencia real, sin polling automático)
 - **Autenticación:** bcryptjs para hash de PINs
+- **Notificaciones:** Toast emergentes del sistema
 
-### Flujo de Datos - Mejorado
+### Flujo de Datos - Optimizado
 1. Usuario hace login → Endpoint `/api/auth/login` verifica PIN en BD
 2. Mesero abre mesa → API actualiza `estado` a 'ocupada' en BD
 3. Mesero agrega productos → Se mantiene en estado local
 4. **Mesero envía orden → POST `/api/ordenes` + items se crean en BD**
-5. **KDS obtiene órdenes → GET `/api/ordenes?kds=true` con polling cada 5s**
-6. **Cocinero marca lista → PATCH `/api/ordenes` actualiza BD**
-7. **Mesero ve orden lista → Recarga automática de órdenes**
-8. Mesero entrega y cobra → Cierra mesa, estado a 'libre'
+5. **Cocinero presiona "Refrescar" → GET `/api/ordenes` obtiene orden nueva**
+6. **Cocinero marca "Preparando" → PATCH `/api/ordenes` con estado='en_preparacion'**
+7. **Cocinero marca "Listo" → PATCH `/api/ordenes` con estado='listo'**
+8. **Si hay "Problema" → Toast al mesero con opción de cancelar/cambiar**
+9. **Mesero ve orden lista → Entrega y cobra**
 
-### Cambios Recientes (Mayo 2026)
-1. **Corrección de Temas**: Todos los componentes ahora usan tokens semánticos (`bg-card`, `bg-muted`, `border-border`) en lugar de colores hardcodeados (`bg-zinc-800`, `border-zinc-700`) - respetan tema claro/oscuro
-2. **Nombres de Mesas**: Generación automática `'Mesa ' || numero` en SQL - las mesas ahora muestran "Mesa 1", "Mesa 2", etc.
-3. **APIs Completadas**: Todos los endpoints GET/POST/PATCH/DELETE para mesas, órdenes, items
-4. **Polling en KDS**: Sistema de refresco cada 5 segundos para ver órdenes nuevas en tiempo real
-5. **Mapeo BD->Frontend**: Función `mapOrdenToComanda` convierte formato snake_case (BD) a camelCase (frontend)
+### Cambios Recientes (Mayo 2026 - Fase 2)
 
-### Siguiente Fase - JWT Authentication
-Para producción se recomienda:
-- Reemplazar sessionStorage con JWT en cookies httpOnly
-- Validar token en cada request
-- Implementar refresh tokens
-- Agregar CORS y rate limiting
+#### KDS Optimizado para Serverless
+1. **Quitar Polling Automático**: Eliminado refresco cada 5 segundos para ahorrar llamadas a BD
+2. **Botón Refrescar Manual**: KDS/Cocina/Bar presiona botón para obtener órdenes nuevas
+3. **Estados por Item**:
+   - **Pendiente**: Estado inicial cuando llega orden
+   - **En Preparación**: Cocinero marca manualmente al comenzar
+   - **Listo**: Comida/bebida lista para entregar
+   - **Problema**: Error o falta ingrediente
+
+#### Sistema de Notificaciones Emergentes
+- Toast rojo con ícono de alerta en esquina inferior derecha
+- Desaparece automáticamente en 8 segundos
+- Mesero puede cerrar manualmente antes
+- Tipo "problema": Notifica que hay orden con problema, opción de cancelar y crear nueva
+
+#### Cambios de Código
+- Tipos: `EstadoComanda` agregó 'en_preparacion' y 'problema', nuevo `EstadoItem`
+- Interface `Notificacion` en `AppState` con `tipo | ordenId | mesaNombre | vista`
+- Componente `NotificacionesToast` muestra notificaciones emergentes
+- KDS: 3 botones por orden: "Preparando", "Listo", "Problema"
+- Reducer: acciones `ADD_NOTIFICACION`, `MARCAR_NOTIFICACION_VISTA`, `LIMPIAR_NOTIFICACIONES`
+- Context: función `updateOrden` maneja estados
+
+#### Ventajas de esta Solución
+- **Serverless viable**: Sin polling, bajo consumo de BD (ideal para capa gratuita)
+- **Mejor UX**: Cocinero controla cuándo refrescar, menos distracciones
+- **Flexible**: Problema notifica mesero para cambiar item o cancelar orden
+- **Escalable**: Funciona igual con 1 o 1000 órdenes/hora
+- **Costo controlado**: Paga solo por llamadas reales, no por polling
+
+#### Cambios Fase 1 (Mayo 2026)
+1. **Corrección de Temas**: Tokens semánticos (`bg-card`, `bg-muted`, `border-border`)
+2. **Nombres de Mesas**: Generación en SQL `'Mesa ' || numero`
+3. **APIs Completadas**: GET/POST/PATCH/DELETE para mesas, órdenes, items
+4. **Mapeo BD->Frontend**: Función `mapOrdenToComanda` convierte snake_case a camelCase
 
 ---
 
@@ -304,9 +327,9 @@ Para producción se recomienda:
 ---
 
 ## Version
-- **Version:** 2.0.1-neon
+- **Version:** 2.1.0-serverless
 - **Fecha:** Mayo 2026
-- **Estado:** Prototipo Funcional - Flujo Completo de Restaurante
-- **BD:** Neon PostgreSQL serverless
+- **Estado:** Prototipo Funcional - KDS Optimizado para Serverless
+- **BD:** Neon PostgreSQL serverless (sin polling automático)
 - **Ambiente:** Vercel deployment ready
-- **Última Actualización:** Corrección temas, nombres mesas, APIs persistencia, polling KDS
+- **Última Actualización:** KDS refrescar manual, estados granulares, notificaciones emergentes para problemas

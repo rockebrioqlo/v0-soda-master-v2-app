@@ -14,6 +14,7 @@ import { PagosPage } from "@/components/pagos-page"
 import { ReportesPage } from "@/components/reportes-page"
 import { ConfiguracionPage } from "@/components/configuracion-page"
 import { ToastContainer } from "@/components/toast"
+import { NotificacionesToast } from "@/components/notificaciones-toast"
 
 function AppContent() {
   const { state, isInitialized, currentPage } = useApp()
@@ -72,6 +73,7 @@ function AppContent() {
     <>
       <MainLayout>{renderPage()}</MainLayout>
       <ToastContainer />
+      <NotificacionesToast />
     </>
   )
 }

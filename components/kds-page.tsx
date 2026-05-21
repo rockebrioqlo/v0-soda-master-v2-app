@@ -7,16 +7,17 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
 import { formatTime, getElapsedTime, getRolLabel } from '@/lib/helpers'
-import { Check, ChefHat, Wine, Clock, AlertCircle } from 'lucide-react'
+import { Check, ChefHat, Wine, Clock, AlertCircle, Zap } from 'lucide-react'
 import { showToast } from '@/components/toast'
 import { Comanda, ItemComanda } from '@/lib/types'
 
 export function KDSPage() {
   const { state, dispatch, updateOrden, recargarOrdenes } = useApp()
-  const { comandas, usuarioActual, mesas, productos } = state
+  const { comandas, usuarioActual } = state
+  const [isLoading, setIsLoading] = useState(false)
   const [, setTick] = useState(0)
 
-  // Update elapsed time every second and refresh data
+  // Update elapsed time every second
   useEffect(() => {
     const interval = setInterval(() => {
       setTick(t => t + 1)
@@ -24,13 +25,18 @@ export function KDSPage() {
     return () => clearInterval(interval)
   }, [])
 
-  // Poll for new orders every 5 seconds
-  useEffect(() => {
-    const pollInterval = setInterval(() => {
-      recargarOrdenes()
-    }, 5000)
-    return () => clearInterval(pollInterval)
-  }, [recargarOrdenes])
+  // Manual refresh function
+  const handleRefresh = async () => {
+    setIsLoading(true)
+    try {
+      await recargarOrdenes()
+      showToast('Órdenes actualizadas', 'success')
+    } catch (error) {
+      showToast('Error al actualizar', 'error')
+    } finally {
+      setIsLoading(false)
+    }
+  }
 
   // Filter comandas that are in kitchen
   const comandasEnCocina = comandas.filter(c => c.estado === 'en_cocina')
@@ -62,13 +68,31 @@ export function KDSPage() {
   const showCocina = !usuarioActual || usuarioActual.rol === 'administrador' || usuarioActual.rol === 'cocina'
   const showBar = !usuarioActual || usuarioActual.rol === 'administrador' || usuarioActual.rol === 'bar'
 
-  const handleMarkReady = async (comandaId: string) => {
+  const handleMarkReady = async (comandaId: string, estado: string) => {
     const comanda = comandas.find(c => c.id === comandaId)
     if (!comanda) return
 
-    // Update in Neon
-    await updateOrden(comandaId, { estado: 'listo' })
-    showToast(`Comanda de ${comanda.mesaNombre || 'Mesa'} marcada como lista`, 'success')
+    if (estado === 'problema') {
+      // Show modal for problem resolution
+      showToast(`Comanda ${comanda.mesaNombre} tiene problema - notificando al mesero`, 'error')
+      // Create notification
+      dispatch({
+        type: 'ADD_NOTIFICACION',
+        payload: {
+          id: `notif_${Date.now()}`,
+          tipo: 'problema',
+          ordenId: comandaId,
+          mesaNombre: comanda.mesaNombre,
+          mensaje: `Problema en orden de ${comanda.mesaNombre}`,
+          timestamp: Date.now(),
+          vista: false
+        }
+      })
+    } else {
+      // Update order status in Neon
+      await updateOrden(comandaId, { estado })
+      showToast(`Comanda de ${comanda.mesaNombre} - ${estado === 'en_preparacion' ? 'En preparación' : 'Lista'}`, 'success')
+    }
   }
 
   // Check if comanda is new (less than 30 seconds old)
@@ -83,30 +107,41 @@ export function KDSPage() {
 
   return (
     <div className="min-h-screen bg-background p-4">
-      {/* Role-specific single column view */}
-      {(usuarioActual?.rol === 'cocina' || usuarioActual?.rol === 'bar') ? (
+      {/* Header with refresh button */}
+      <div className="mb-6 flex items-center justify-between">
+        <h1 className="flex items-center gap-2 text-3xl font-bold text-foreground">
+          {usuarioActual?.rol === 'cocina' ? (
+            <>
+              <ChefHat className="h-8 w-8 text-amber-500" />
+              Cocina
+            </>
+          ) : usuarioActual?.rol === 'bar' ? (
+            <>
+              <Wine className="h-8 w-8 text-amber-500" />
+              Bar
+            </>
+          ) : (
+            'Kitchen Display System'
+          )}
+        </h1>
+        <Button
+          onClick={handleRefresh}
+          disabled={isLoading}
+          variant="outline"
+          className="border-border"
+        >
+          {isLoading ? 'Actualizando...' : 'Refrescar'}
+        </Button>
+      </div>
+
+      {/* Role-specific view */}
+      {usuarioActual?.rol === 'cocina' || usuarioActual?.rol === 'bar' ? (
         <div className="mx-auto max-w-4xl">
-          <div className="mb-6 flex items-center justify-between">
-            <h1 className="flex items-center gap-2 text-2xl font-bold text-foreground">
-              {usuarioActual.rol === 'cocina' ? (
-                <>
-                  <ChefHat className="h-8 w-8 text-amber-500" />
-                  Cocina
-                </>
-              ) : (
-                <>
-                  <Wine className="h-8 w-8 text-amber-500" />
-                  Bar
-                </>
-              )}
-            </h1>
+          <div className="mb-4 flex items-center justify-between">
             <Badge variant="outline" className="text-lg px-4 py-2">
-              {usuarioActual.rol === 'cocina' ? comandasCocina.length : comandasBar.length} pendientes
+              {comandasEnCocina.length} pendientes
             </Badge>
           </div>
-
-          <div className="space-y-4">
-            {(usuarioActual.rol === 'cocina' ? comandasCocina : comandasBar).length === 0 ? (
               <div className="flex flex-col items-center justify-center rounded-lg border-2 border-dashed border-border p-12">
                 <Check className="h-12 w-12 text-green-500" />
                 <p className="mt-4 text-lg text-muted-foreground">No hay pedidos pendientes</p>
@@ -206,11 +241,22 @@ function ComandaCard({
   isBar = false
 }: {
   comanda: Comanda
-  onMarkReady: (id: string) => void
+  onMarkReady: (id: string, estado: string) => void
   isNew: boolean
   isDelayed: boolean
   isBar?: boolean
 }) {
+  const [isUpdating, setIsUpdating] = useState(false)
+
+  const handleStateChange = async (estado: string) => {
+    setIsUpdating(true)
+    try {
+      await onMarkReady(comanda.id, estado)
+    } finally {
+      setIsUpdating(false)
+    }
+  }
+
   return (
     <Card
       className={cn(
@@ -281,13 +327,35 @@ function ComandaCard({
           ))}
         </ul>
 
-        <Button
-          className="w-full bg-green-600 py-6 text-lg font-bold text-white hover:bg-green-500"
-          onClick={() => onMarkReady(comanda.id)}
-        >
-          <Check className="mr-2 h-6 w-6" />
-          Marcar como Lista
-        </Button>
+        {/* Action buttons */}
+        <div className="grid grid-cols-3 gap-2">
+          <Button
+            variant="outline"
+            className="border-border text-sm"
+            onClick={() => handleStateChange('en_preparacion')}
+            disabled={isUpdating}
+          >
+            <Zap className="mr-1 h-4 w-4" />
+            Preparando
+          </Button>
+          <Button
+            className="bg-green-600 text-sm text-white hover:bg-green-500"
+            onClick={() => handleStateChange('listo')}
+            disabled={isUpdating}
+          >
+            <Check className="mr-1 h-4 w-4" />
+            Listo
+          </Button>
+          <Button
+            variant="destructive"
+            className="text-sm"
+            onClick={() => handleStateChange('problema')}
+            disabled={isUpdating}
+          >
+            <AlertCircle className="mr-1 h-4 w-4" />
+            Problema
+          </Button>
+        </div>
       </CardContent>
     </Card>
   )

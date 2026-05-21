@@ -4,7 +4,9 @@ export type Rol = 'administrador' | 'admin' | 'mesero' | 'cocina' | 'bar' | 'caj
 
 export type EstadoMesa = 'libre' | 'ocupada' | 'reservada'
 
-export type EstadoComanda = 'pendiente' | 'en_cocina' | 'lista' | 'pagada'
+export type EstadoComanda = 'pendiente' | 'en_cocina' | 'en_preparacion' | 'listo' | 'problema' | 'pagada'
+
+export type EstadoItem = 'pendiente' | 'en_preparacion' | 'listo' | 'problema'
 
 export type MetodoPago = 'efectivo' | 'tarjeta' | 'qr'
 
@@ -70,6 +72,7 @@ export interface ItemComanda {
   notas: string
   precio: number
   variante?: string
+  estado: EstadoItem
 }
 
 export interface Comanda {
@@ -166,6 +169,16 @@ export interface Configuracion {
   modoMantenimiento: boolean
 }
 
+export interface Notificacion {
+  id: string
+  tipo: 'problema' | 'listo' | 'nueva_orden'
+  ordenId: string
+  mesaNombre: string
+  mensaje: string
+  timestamp: number
+  vista: boolean
+}
+
 export interface AppState {
   mesas: Mesa[]
   usuarios: Usuario[]
@@ -182,7 +195,7 @@ export interface AppState {
   usuarioActual: Usuario | null
   isOnline: boolean
   sincronizando: boolean
-}
+  notificaciones: Notificacion[]
 
 export type AppAction =
   | { type: 'SET_USUARIO'; payload: Usuario | null }
@@ -211,3 +224,6 @@ export type AppAction =
   | { type: 'SET_ONLINE'; payload: boolean }
   | { type: 'SET_SINCRONIZANDO'; payload: boolean }
   | { type: 'LOAD_STATE'; payload: Partial<AppState> }
+  | { type: 'ADD_NOTIFICACION'; payload: Notificacion }
+  | { type: 'MARCAR_NOTIFICACION_VISTA'; payload: string }
+  | { type: 'LIMPIAR_NOTIFICACIONES'; payload?: void }

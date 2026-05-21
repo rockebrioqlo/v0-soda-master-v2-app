@@ -44,6 +44,7 @@ const initialState: AppState = {
   usuarioActual: null,
   isOnline: true,
   sincronizando: false,
+  notificaciones: [],
 }
 
 function appReducer(state: AppState, action: AppAction): AppState {
@@ -115,6 +116,17 @@ function appReducer(state: AppState, action: AppAction): AppState {
       return { ...state, sincronizando: action.payload }
     case 'LOAD_STATE':
       return { ...state, ...action.payload }
+    case 'ADD_NOTIFICACION':
+      return { ...state, notificaciones: [...state.notificaciones, action.payload] }
+    case 'MARCAR_NOTIFICACION_VISTA':
+      return {
+        ...state,
+        notificaciones: state.notificaciones.map(n =>
+          n.id === action.payload ? { ...n, vista: true } : n
+        )
+      }
+    case 'LIMPIAR_NOTIFICACIONES':
+      return { ...state, notificaciones: state.notificaciones.filter(n => n.vista) }
     default:
       return state
   }
