@@ -649,7 +649,7 @@ export function POSPage() {
 
       {/* Burger Customization Dialog */}
       <Dialog open={showBurgerDialog} onOpenChange={setShowBurgerDialog}>
-        <DialogContent className="max-h-[90vh] overflow-auto border-zinc-700 bg-zinc-800 sm:max-w-lg">
+        <DialogContent aria-describedby={undefined} className="max-h-[90vh] overflow-auto border-zinc-700 bg-zinc-800 sm:max-w-lg">
           <DialogHeader>
             <DialogTitle className="text-foreground">
               Personalizar {selectedBurger?.nombre}
@@ -717,12 +717,12 @@ export function POSPage() {
             {/* Sauce */}
             <div>
               <label className="mb-2 block text-sm font-medium text-muted-foreground">Salsa</label>
-              <Select value={burgerSalsa} onValueChange={setBurgerSalsa}>
+              <Select value={burgerSalsa || "ninguna"} onValueChange={(v) => setBurgerSalsa(v === "ninguna" ? "" : v)}>
                 <SelectTrigger className="border-zinc-600 bg-zinc-700/50">
                   <SelectValue placeholder="Sin salsa" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="">Sin salsa</SelectItem>
+                  <SelectItem value="ninguna">Sin salsa</SelectItem>
                   {salsasDisponibles.map((salsa) => (
                     <SelectItem key={salsa} value={salsa}>{salsa}</SelectItem>
                   ))}
@@ -787,7 +787,7 @@ export function POSPage() {
 
       {/* Generic Item Dialog */}
       <Dialog open={showItemDialog} onOpenChange={setShowItemDialog}>
-        <DialogContent className="border-zinc-700 bg-zinc-800">
+        <DialogContent aria-describedby={undefined} className="border-zinc-700 bg-zinc-800">
           <DialogHeader>
             <DialogTitle className="text-foreground">
               Agregar {selectedItem?.nombre}
@@ -817,12 +817,12 @@ export function POSPage() {
             {(selectedItem?.categoria === 'entradas' || selectedItem?.categoria === 'acompañamientos') && (
               <div>
                 <label className="mb-2 block text-sm font-medium text-muted-foreground">Salsa</label>
-                <Select value={itemSalsa} onValueChange={setItemSalsa}>
+                <Select value={itemSalsa || "ninguna"} onValueChange={(v) => setItemSalsa(v === "ninguna" ? "" : v)}>
                   <SelectTrigger className="border-zinc-600 bg-zinc-700/50">
                     <SelectValue placeholder="Sin salsa" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="">Sin salsa</SelectItem>
+                    <SelectItem value="ninguna">Sin salsa</SelectItem>
                     {salsasDisponibles.map((salsa) => (
                       <SelectItem key={salsa} value={salsa}>{salsa}</SelectItem>
                     ))}
@@ -877,7 +877,7 @@ export function POSPage() {
 
       {/* Discount Dialog */}
       <Dialog open={showDescuentoDialog} onOpenChange={setShowDescuentoDialog}>
-        <DialogContent className="border-zinc-700 bg-zinc-800">
+        <DialogContent aria-describedby={undefined} className="border-zinc-700 bg-zinc-800">
           <DialogHeader>
             <DialogTitle className="text-foreground">Aplicar Descuento</DialogTitle>
           </DialogHeader>
@@ -929,7 +929,7 @@ export function POSPage() {
 
       {/* Auth Dialog for Discount */}
       <Dialog open={showAuthDialog} onOpenChange={setShowAuthDialog}>
-        <DialogContent className="border-zinc-700 bg-zinc-800">
+        <DialogContent aria-describedby={undefined} className="border-zinc-700 bg-zinc-800">
           <DialogHeader>
             <DialogTitle className="text-foreground">Autorización Requerida</DialogTitle>
           </DialogHeader>
