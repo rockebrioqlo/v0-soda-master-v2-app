@@ -184,11 +184,11 @@ export function InventarioPage() {
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
               placeholder="Buscar productos..."
-              className="border-zinc-600 bg-zinc-700/50 pl-10"
+              className="border-border bg-muted pl-10"
             />
           </div>
           <Select value={categoryFilter} onValueChange={setCategoryFilter}>
-            <SelectTrigger className="w-full border-zinc-600 bg-zinc-700/50 sm:w-48">
+            <SelectTrigger className="w-full border-border bg-muted sm:w-48">
               <SelectValue placeholder="Categoría" />
             </SelectTrigger>
             <SelectContent>
@@ -204,7 +204,7 @@ export function InventarioPage() {
         </div>
 
         {/* Inventory Section */}
-        <Card className="mb-6 border-zinc-700 bg-zinc-800/50">
+        <Card className="mb-6 border-border bg-card">
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-foreground">
               <Package className="h-5 w-5 text-amber-500" />
@@ -215,7 +215,7 @@ export function InventarioPage() {
             <div className="overflow-x-auto">
               <Table>
                 <TableHeader>
-                  <TableRow className="border-zinc-700">
+                  <TableRow className="border-border">
                     <TableHead className="text-muted-foreground">Nombre</TableHead>
                     <TableHead className="text-muted-foreground">Formato</TableHead>
                     <TableHead className="text-right text-muted-foreground">Cantidad</TableHead>
@@ -230,7 +230,7 @@ export function InventarioPage() {
                     <TableRow 
                       key={producto.id} 
                       className={cn(
-                        'border-zinc-700',
+                        'border-border',
                         producto.stock <= producto.stockMinimo && producto.stock > 0 && 'bg-red-500/10'
                       )}
                     >
@@ -287,7 +287,7 @@ export function InventarioPage() {
         </Card>
 
         {/* Products for Sale Section */}
-        <Card className="border-zinc-700 bg-zinc-800/50">
+        <Card className="border-border bg-card">
           <CardHeader>
             <CardTitle className="text-foreground">Productos para Venta</CardTitle>
           </CardHeader>
@@ -295,7 +295,7 @@ export function InventarioPage() {
             <div className="overflow-x-auto">
               <Table>
                 <TableHeader>
-                  <TableRow className="border-zinc-700">
+                  <TableRow className="border-border">
                     <TableHead className="text-muted-foreground">Nombre</TableHead>
                     <TableHead className="text-muted-foreground">Categoría</TableHead>
                     <TableHead className="text-right text-muted-foreground">Precio</TableHead>
@@ -305,10 +305,10 @@ export function InventarioPage() {
                 </TableHeader>
                 <TableBody>
                   {filteredProductos.map((producto) => (
-                    <TableRow key={producto.id} className="border-zinc-700">
+                    <TableRow key={producto.id} className="border-border">
                       <TableCell className="font-medium text-foreground">{producto.nombre}</TableCell>
                       <TableCell>
-                        <Badge variant="outline" className="border-zinc-600">
+                        <Badge variant="outline" className="border-border">
                           {producto.categoria}
                         </Badge>
                       </TableCell>
@@ -347,7 +347,7 @@ export function InventarioPage() {
 
         {/* Dialog for New/Edit Product */}
         <Dialog open={showDialog} onOpenChange={setShowDialog}>
-          <DialogContent className="border-zinc-700 bg-zinc-800">
+          <DialogContent className="border-border bg-card">
             <DialogHeader>
               <DialogTitle className="text-foreground">
                 {editingProducto ? 'Editar Producto' : 'Nuevo Producto'}
@@ -359,7 +359,7 @@ export function InventarioPage() {
                 <Input
                   value={formData.nombre}
                   onChange={(e) => setFormData({ ...formData, nombre: e.target.value })}
-                  className="border-zinc-600 bg-zinc-700/50"
+                  className="border-border bg-muted"
                 />
               </div>
               <div className="grid grid-cols-2 gap-4">
@@ -369,7 +369,7 @@ export function InventarioPage() {
                     value={formData.categoria}
                     onValueChange={(v) => setFormData({ ...formData, categoria: v as Producto['categoria'] })}
                   >
-                    <SelectTrigger className="border-zinc-600 bg-zinc-700/50">
+                    <SelectTrigger className="border-border bg-muted">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -388,7 +388,7 @@ export function InventarioPage() {
                     value={formData.formato}
                     onChange={(e) => setFormData({ ...formData, formato: e.target.value })}
                     placeholder="Ej: unidad, kg, litros"
-                    className="border-zinc-600 bg-zinc-700/50"
+                    className="border-border bg-muted"
                   />
                 </div>
               </div>
@@ -400,7 +400,7 @@ export function InventarioPage() {
                     value={formData.precio}
                     onChange={(e) => setFormData({ ...formData, precio: e.target.value })}
                     placeholder="0"
-                    className="border-zinc-600 bg-zinc-700/50"
+                    className="border-border bg-muted"
                   />
                 </div>
                 <div className="space-y-2">
@@ -410,7 +410,7 @@ export function InventarioPage() {
                     value={formData.stock}
                     onChange={(e) => setFormData({ ...formData, stock: e.target.value })}
                     placeholder="0"
-                    className="border-zinc-600 bg-zinc-700/50"
+                    className="border-border bg-muted"
                   />
                 </div>
                 <div className="space-y-2">
@@ -420,11 +420,11 @@ export function InventarioPage() {
                     value={formData.stockMinimo}
                     onChange={(e) => setFormData({ ...formData, stockMinimo: e.target.value })}
                     placeholder="10"
-                    className="border-zinc-600 bg-zinc-700/50"
+                    className="border-border bg-muted"
                   />
                 </div>
               </div>
-              <div className="flex items-center justify-between rounded-lg bg-zinc-700/50 p-4">
+              <div className="flex items-center justify-between rounded-lg bg-muted p-4">
                 <div>
                   <p className="font-medium text-foreground">Ingrediente Especial</p>
                   <p className="text-sm text-muted-foreground">
@@ -444,7 +444,7 @@ export function InventarioPage() {
                     value={formData.costoAdicional}
                     onChange={(e) => setFormData({ ...formData, costoAdicional: e.target.value })}
                     placeholder="0"
-                    className="border-zinc-600 bg-zinc-700/50"
+                    className="border-border bg-muted"
                   />
                 </div>
               )}
