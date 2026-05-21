@@ -22,6 +22,12 @@ import { showToast } from '@/components/toast'
 
 type PageType = 'dashboard' | 'mesas' | 'pos' | 'kds' | 'inventario' | 'usuarios' | 'pagos' | 'mermas' | 'reportes' | 'configuracion'
 
+// POS navigation state
+interface POSNavigationState {
+  mesaId: string | null
+  comandaId: string | null
+}
+
 const initialState: AppState = {
   mesas: initialMesas,
   usuarios: [],
@@ -124,6 +130,9 @@ interface AppContextType {
   currentPage: PageType
   setCurrentPage: (page: PageType) => void
   navigateTo: (page: PageType) => void
+  posNavigation: POSNavigationState
+  navigateToPOS: (mesaId: string, comandaId?: string) => void
+  clearPOSNavigation: () => void
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined)
@@ -156,6 +165,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [state, dispatch] = useReducer(appReducer, initialState)
   const [isInitialized, setIsInitialized] = useState(false)
   const [currentPage, setCurrentPage] = useState<PageType>('dashboard')
+  const [posNavigation, setPosNavigation] = useState<POSNavigationState>({ mesaId: null, comandaId: null })
 
   // Initialize database and users from Neon
   useEffect(() => {
@@ -288,6 +298,19 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     }
   }, [hasPermission])
 
+  const navigateToPOS = useCallback((mesaId: string, comandaId?: string) => {
+    if (hasPermission('pos')) {
+      setPosNavigation({ mesaId, comandaId: comandaId || null })
+      setCurrentPage('pos')
+    } else {
+      showToast('No tienes permisos para acceder al POS', 'error')
+    }
+  }, [hasPermission])
+
+  const clearPOSNavigation = useCallback(() => {
+    setPosNavigation({ mesaId: null, comandaId: null })
+  }, [])
+
   return (
     <AppContext.Provider value={{ 
       state, 
@@ -298,7 +321,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       isInitialized,
       currentPage,
       setCurrentPage,
-      navigateTo
+      navigateTo,
+      posNavigation,
+      navigateToPOS,
+      clearPOSNavigation
     }}>
       {children}
     </AppContext.Provider>

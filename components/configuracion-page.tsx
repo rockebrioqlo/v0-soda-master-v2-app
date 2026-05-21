@@ -35,10 +35,12 @@ import {
   Save,
   MapPin
 } from "lucide-react"
-import { Table as TableType } from "@/lib/types"
+import { Mesa } from "@/lib/types"
+import { showToast } from "@/components/toast"
 
 export function ConfiguracionPage() {
-  const { tables, setTables, showToast } = useApp()
+  const { state, dispatch } = useApp()
+  const { mesas } = state
   const [businessName, setBusinessName] = useState("Soda Master")
   const [businessAddress, setBusinessAddress] = useState("San Jose, Costa Rica")
   const [businessPhone, setBusinessPhone] = useState("+506 8888-8888")
@@ -56,10 +58,10 @@ export function ConfiguracionPage() {
 
   // Table management
   const [showTableDialog, setShowTableDialog] = useState(false)
-  const [editingTable, setEditingTable] = useState<TableType | null>(null)
+  const [editingTable, setEditingTable] = useState<Mesa | null>(null)
   const [tableForm, setTableForm] = useState({
-    name: "",
-    capacity: 4,
+    nombre: "",
+    capacidad: 4,
     area: "Interior",
   })
 
@@ -68,58 +70,58 @@ export function ConfiguracionPage() {
   }
 
   const handleAddTable = () => {
-    if (!tableForm.name.trim()) {
+    if (!tableForm.nombre.trim()) {
       showToast("El nombre de la mesa es requerido", "error")
       return
     }
 
     if (editingTable) {
-      setTables(
-        tables.map((t) =>
-          t.id === editingTable.id
-            ? { ...t, name: tableForm.name, capacity: tableForm.capacity, area: tableForm.area }
-            : t
-        )
-      )
+      const updated: Mesa = {
+        ...editingTable,
+        nombre: tableForm.nombre,
+        capacidad: tableForm.capacidad,
+        area: tableForm.area
+      }
+      dispatch({ type: 'UPDATE_MESA', payload: updated })
       showToast("Mesa actualizada", "success")
     } else {
-      const newTable: TableType = {
-        id: `table-${Date.now()}`,
-        name: tableForm.name,
-        capacity: tableForm.capacity,
-        status: "available",
+      const newMesa: Mesa = {
+        id: `mesa-${Date.now()}`,
+        nombre: tableForm.nombre,
+        capacidad: tableForm.capacidad,
+        estado: "libre",
         area: tableForm.area,
       }
-      setTables([...tables, newTable])
+      dispatch({ type: 'ADD_MESA', payload: newMesa })
       showToast("Mesa agregada", "success")
     }
 
-    setTableForm({ name: "", capacity: 4, area: "Interior" })
+    setTableForm({ nombre: "", capacidad: 4, area: "Interior" })
     setEditingTable(null)
     setShowTableDialog(false)
   }
 
-  const handleEditTable = (table: TableType) => {
-    setEditingTable(table)
+  const handleEditTable = (mesa: Mesa) => {
+    setEditingTable(mesa)
     setTableForm({
-      name: table.name,
-      capacity: table.capacity,
-      area: table.area || "Interior",
+      nombre: mesa.nombre,
+      capacidad: mesa.capacidad,
+      area: mesa.area || "Interior",
     })
     setShowTableDialog(true)
   }
 
-  const handleDeleteTable = (tableId: string) => {
-    const table = tables.find((t) => t.id === tableId)
-    if (table?.status === "occupied") {
+  const handleDeleteTable = (mesaId: string) => {
+    const mesa = mesas.find((m) => m.id === mesaId)
+    if (mesa?.estado === "ocupada") {
       showToast("No se puede eliminar una mesa ocupada", "error")
       return
     }
-    setTables(tables.filter((t) => t.id !== tableId))
+    dispatch({ type: 'DELETE_MESA', payload: mesaId })
     showToast("Mesa eliminada", "success")
   }
 
-  const areas = [...new Set(tables.map((t) => t.area || "Interior"))]
+  const areas = [...new Set(mesas.map((m) => m.area || "Interior"))]
 
   return (
     <div className="space-y-6">
@@ -234,7 +236,7 @@ export function ConfiguracionPage() {
                     <Button
                       onClick={() => {
                         setEditingTable(null)
-                        setTableForm({ name: "", capacity: 4, area: "Interior" })
+                        setTableForm({ nombre: "", capacidad: 4, area: "Interior" })
                       }}
                     >
                       <Plus className="mr-2 h-4 w-4" />
@@ -258,9 +260,9 @@ export function ConfiguracionPage() {
                         <Input
                           id="tableName"
                           placeholder="Ej: Mesa 1"
-                          value={tableForm.name}
+                          value={tableForm.nombre}
                           onChange={(e) =>
-                            setTableForm({ ...tableForm, name: e.target.value })
+                            setTableForm({ ...tableForm, nombre: e.target.value })
                           }
                         />
                       </div>
@@ -271,11 +273,11 @@ export function ConfiguracionPage() {
                           type="number"
                           min={1}
                           max={20}
-                          value={tableForm.capacity}
+                          value={tableForm.capacidad}
                           onChange={(e) =>
                             setTableForm({
                               ...tableForm,
-                              capacity: parseInt(e.target.value) || 1,
+                              capacidad: parseInt(e.target.value) || 1,
                             })
                           }
                         />
@@ -318,32 +320,32 @@ export function ConfiguracionPage() {
                       {area}
                     </h3>
                     <div className="grid gap-2 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4">
-                      {tables
-                        .filter((t) => (t.area || "Interior") === area)
-                        .map((table) => (
+                      {mesas
+                        .filter((m) => (m.area || "Interior") === area)
+                        .map((mesa) => (
                           <div
-                            key={table.id}
+                            key={mesa.id}
                             className="flex items-center justify-between rounded-lg border p-3"
                           >
                             <div>
-                              <p className="font-medium">{table.name}</p>
+                              <p className="font-medium">{mesa.nombre}</p>
                               <p className="text-sm text-muted-foreground">
-                                {table.capacity} personas
+                                {mesa.capacidad} personas
                               </p>
                             </div>
                             <div className="flex gap-1">
                               <Button
                                 variant="ghost"
                                 size="icon"
-                                onClick={() => handleEditTable(table)}
+                                onClick={() => handleEditTable(mesa)}
                               >
                                 <Edit className="h-4 w-4" />
                               </Button>
                               <Button
                                 variant="ghost"
                                 size="icon"
-                                onClick={() => handleDeleteTable(table.id)}
-                                disabled={table.status === "occupied"}
+                                onClick={() => handleDeleteTable(mesa.id)}
+                                disabled={mesa.estado === "ocupada"}
                               >
                                 <Trash2 className="h-4 w-4" />
                               </Button>

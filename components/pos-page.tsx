@@ -25,22 +25,16 @@ import {
 } from '@/components/ui/select'
 import { cn } from '@/lib/utils'
 import { formatCurrency, generateId, getEstadoComandaColor, getEstadoComandaLabel } from '@/lib/helpers'
-import { Plus, Minus, Trash2, Send, Printer, Percent, ChefHat, Wine, Star } from 'lucide-react'
+import { Plus, Minus, Trash2, Send, Printer, Percent, ChefHat, Wine, Star, ArrowLeft } from 'lucide-react'
 import { showToast } from '@/components/toast'
-import { useSearchParams, useRouter } from 'next/navigation'
 import { Comanda, ItemComanda, Producto, TipoDescuento } from '@/lib/types'
 import { ingredientesEstandar, salsasDisponibles } from '@/lib/initial-data'
 
 export function POSPage() {
-  const { state, dispatch, hasPermission } = useApp()
-  const searchParams = useSearchParams()
-  const router = useRouter()
+  const { state, dispatch, hasPermission, posNavigation, clearPOSNavigation, navigateTo } = useApp()
   const { mesas, productos, comandas, usuarioActual, permisosDescuento } = state
 
-  const mesaIdParam = searchParams.get('mesa')
-  const comandaIdParam = searchParams.get('comanda')
-
-  const [selectedMesaId, setSelectedMesaId] = useState<string | null>(mesaIdParam)
+  const [selectedMesaId, setSelectedMesaId] = useState<string | null>(posNavigation.mesaId)
   const [currentComanda, setCurrentComanda] = useState<Comanda | null>(null)
   const [activeTab, setActiveTab] = useState('comidas')
   
@@ -75,8 +69,8 @@ export function POSPage() {
 
   // Load or create comanda on mount
   useEffect(() => {
-    if (comandaIdParam) {
-      const existingComanda = comandas.find(c => c.id === comandaIdParam)
+    if (posNavigation.comandaId) {
+      const existingComanda = comandas.find(c => c.id === posNavigation.comandaId)
       if (existingComanda) {
         setCurrentComanda(existingComanda)
         setSelectedMesaId(existingComanda.mesaId)
@@ -84,19 +78,20 @@ export function POSPage() {
       }
     }
 
-    if (mesaIdParam) {
+    if (posNavigation.mesaId) {
+      setSelectedMesaId(posNavigation.mesaId)
       const existingComanda = comandas.find(
-        c => c.mesaId === mesaIdParam && c.estado !== 'pagada'
+        c => c.mesaId === posNavigation.mesaId && c.estado !== 'pagada'
       )
       if (existingComanda) {
         setCurrentComanda(existingComanda)
       } else {
         // Create new comanda
-        const mesa = mesas.find(m => m.id === mesaIdParam)
+        const mesa = mesas.find(m => m.id === posNavigation.mesaId)
         if (mesa && usuarioActual) {
           const newComanda: Comanda = {
             id: generateId(),
-            mesaId: mesaIdParam,
+            mesaId: posNavigation.mesaId,
             mesaNombre: mesa.nombre,
             usuarioId: usuarioActual.id,
             usuarioNombre: usuarioActual.nombre,
@@ -119,7 +114,7 @@ export function POSPage() {
         }
       }
     }
-  }, [mesaIdParam, comandaIdParam, comandas, mesas, usuarioActual, dispatch])
+  }, [posNavigation.mesaId, posNavigation.comandaId, comandas, mesas, usuarioActual, dispatch])
 
   // Sync currentComanda with global state
   useEffect(() => {
@@ -142,7 +137,38 @@ export function POSPage() {
 
   const handleSelectMesa = (mesaId: string) => {
     setSelectedMesaId(mesaId)
-    router.push(`/pos?mesa=${mesaId}`)
+    // Find or create comanda for this table
+    const existingComanda = comandas.find(
+      c => c.mesaId === mesaId && c.estado !== 'pagada'
+    )
+    if (existingComanda) {
+      setCurrentComanda(existingComanda)
+    } else {
+      const mesa = mesas.find(m => m.id === mesaId)
+      if (mesa && usuarioActual) {
+        const newComanda: Comanda = {
+          id: generateId(),
+          mesaId: mesaId,
+          mesaNombre: mesa.nombre,
+          usuarioId: usuarioActual.id,
+          usuarioNombre: usuarioActual.nombre,
+          estado: 'pendiente',
+          creadoAt: Date.now(),
+          items: [],
+          descuento: 0,
+          tipoDescuento: null,
+          propina: 0,
+          tipoPropina: 'porcentaje'
+        }
+        dispatch({ type: 'ADD_COMANDA', payload: newComanda })
+        setCurrentComanda(newComanda)
+        
+        dispatch({
+          type: 'UPDATE_MESA',
+          payload: { ...mesa, estado: 'ocupada' }
+        })
+      }
+    }
   }
 
   // Burger handling
@@ -373,7 +399,14 @@ export function POSPage() {
   // Go to payment
   const handleGoToPago = () => {
     if (!currentComanda) return
-    router.push(`/pagos?comanda=${currentComanda.id}`)
+    navigateTo('pagos')
+  }
+
+  // Go back to mesa selector
+  const handleChangeMesa = () => {
+    setSelectedMesaId(null)
+    setCurrentComanda(null)
+    clearPOSNavigation()
   }
 
   // If no mesa selected, show mesa selector
@@ -419,7 +452,8 @@ export function POSPage() {
                 </Badge>
               )}
             </div>
-            <Button variant="outline" size="sm" onClick={() => router.push('/mesas')}>
+                        <Button variant="outline" size="sm" onClick={handleChangeMesa}>
+              <ArrowLeft className="mr-2 h-4 w-4" />
               Cambiar Mesa
             </Button>
           </div>

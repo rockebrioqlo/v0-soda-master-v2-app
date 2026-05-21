@@ -23,12 +23,10 @@ import { cn } from '@/lib/utils'
 import { getEstadoMesaColor, getEstadoMesaLabel, generateId } from '@/lib/helpers'
 import { Plus, Users, Edit, Trash2, ShoppingCart } from 'lucide-react'
 import { showToast } from '@/components/toast'
-import { useRouter } from 'next/navigation'
 import { Mesa, EstadoMesa } from '@/lib/types'
 
 export function MesasPage() {
-  const { state, dispatch } = useApp()
-  const router = useRouter()
+  const { state, dispatch, navigateToPOS } = useApp()
   const { mesas, comandas } = state
 
   const [showDialog, setShowDialog] = useState(false)
@@ -102,13 +100,13 @@ export function MesasPage() {
     if (mesa.estado === 'ocupada') {
       const comanda = getComandaActiva(mesa.id)
       if (comanda) {
-        router.push(`/pos?mesa=${mesa.id}&comanda=${comanda.id}`)
+        navigateToPOS(mesa.id, comanda.id)
       } else {
-        router.push(`/pos?mesa=${mesa.id}`)
+        navigateToPOS(mesa.id)
       }
     } else if (mesa.estado === 'libre') {
       // Start new order for this table
-      router.push(`/pos?mesa=${mesa.id}`)
+      navigateToPOS(mesa.id)
     }
   }
 
