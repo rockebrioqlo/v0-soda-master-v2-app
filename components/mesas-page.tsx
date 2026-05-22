@@ -20,13 +20,19 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { cn } from '@/lib/utils'
-import { getEstadoMesaColor, getEstadoMesaLabel, generateId } from '@/lib/helpers'
+import { getEstadoMesaColor, getEstadoMesaLabel } from '@/lib/helpers'
 import { Plus, Users, Edit, Trash2, ShoppingCart } from 'lucide-react'
 import { showToast } from '@/components/toast'
 import { Mesa, EstadoMesa } from '@/lib/types'
 
 export function MesasPage() {
-  const { state, dispatch, navigateToPOS, updateMesa } = useApp()
+  const {
+    state,
+    navigateToPOS,
+    updateMesa,
+    crearMesaApi,
+    eliminarMesaApi,
+  } = useApp()
   const { mesas, comandas } = state
 
   const [showDialog, setShowDialog] = useState(false)
@@ -62,14 +68,18 @@ export function MesasPage() {
     setShowDialog(true)
   }
 
-  const handleDelete = (mesaId: string) => {
+  const handleDelete = async (mesaId: string) => {
     const comanda = getComandaActiva(mesaId)
     if (comanda) {
       showToast('No se puede eliminar una mesa con comanda activa', 'error')
       return
     }
-    dispatch({ type: 'DELETE_MESA', payload: mesaId })
-    showToast('Mesa eliminada', 'success')
+    try {
+      await eliminarMesaApi(mesaId)
+      showToast('Mesa eliminada', 'success')
+    } catch (error: any) {
+      showToast(error?.message || 'Error al eliminar mesa', 'error')
+    }
   }
 
   const handleSave = async () => {
@@ -78,25 +88,26 @@ export function MesasPage() {
       return
     }
 
-    if (editingMesa) {
-      await updateMesa(editingMesa.id, {
-        nombre: formData.nombre,
-        capacidad: parseInt(formData.capacidad),
-        estado: formData.estado
-      })
-      showToast('Mesa actualizada', 'success')
-    } else {
-      const newMesa: Mesa = {
-        id: generateId(),
-        nombre: formData.nombre,
-        capacidad: parseInt(formData.capacidad),
-        estado: formData.estado
+    try {
+      if (editingMesa) {
+        await updateMesa(editingMesa.id, {
+          capacidad: parseInt(formData.capacidad),
+          estado: formData.estado,
+        })
+        showToast('Mesa actualizada', 'success')
+      } else {
+        await crearMesaApi({
+          nombre: formData.nombre,
+          capacidad: parseInt(formData.capacidad),
+          estado: formData.estado,
+        })
+        showToast('Mesa creada', 'success')
       }
-      dispatch({ type: 'ADD_MESA', payload: newMesa })
-      showToast('Mesa creada', 'success')
-    }
 
-    setShowDialog(false)
+      setShowDialog(false)
+    } catch (error: any) {
+      showToast(error?.message || 'Error al guardar mesa', 'error')
+    }
   }
 
   const handleMesaClick = (mesa: Mesa) => {
@@ -152,14 +163,14 @@ export function MesasPage() {
         </div>
 
         {/* Mesas Grid */}
-        <div className="grid gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+        <div className="grid gap-3 grid-cols-2 md:gap-4 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
           {mesas.map((mesa) => {
             const comandaActiva = getComandaActiva(mesa.id)
             return (
               <Card
                 key={mesa.id}
                 className={cn(
-                  'cursor-pointer border-2 transition-all hover:scale-[1.02]',
+                  'cursor-pointer border-2 transition-all hover:scale-[1.02] min-h-[100px]',
                   mesa.estado === 'libre' && 'border-green-500/50 bg-green-500/10',
                   mesa.estado === 'ocupada' && 'border-red-500/50 bg-red-500/10',
                   mesa.estado === 'reservada' && 'border-yellow-500/50 bg-yellow-500/10'
@@ -167,9 +178,9 @@ export function MesasPage() {
                 onClick={() => handleMesaClick(mesa)}
               >
                 <CardHeader className="pb-2">
-                  <div className="flex items-center justify-between">
-                    <CardTitle className="text-lg text-foreground">{mesa.nombre}</CardTitle>
-                    <span className={cn('rounded-full px-2 py-1 text-xs text-white', getEstadoMesaColor(mesa.estado))}>
+                  <div className="flex items-center justify-between gap-2">
+                    <CardTitle className="text-lg font-bold text-foreground">{mesa.nombre}</CardTitle>
+                    <span className={cn('rounded-full px-2 py-1 text-[10px] font-medium text-white md:text-xs', getEstadoMesaColor(mesa.estado))}>
                       {getEstadoMesaLabel(mesa.estado)}
                     </span>
                   </div>

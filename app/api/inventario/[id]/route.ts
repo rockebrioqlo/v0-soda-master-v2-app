@@ -2,10 +2,10 @@ import { db } from '@/lib/db'
 
 export async function PATCH(
   request: Request,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const { id } = params
+    const { id } = await params
     const { cantidad } = await request.json()
     const inventario = await db.actualizarInventario(id, cantidad)
     return Response.json(inventario)

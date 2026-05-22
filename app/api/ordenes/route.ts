@@ -5,17 +5,31 @@ export async function GET(request: Request) {
     const { searchParams } = new URL(request.url)
     const mesaId = searchParams.get('mesa_id')
     const kds = searchParams.get('kds')
-    
+    const fecha = searchParams.get('fecha')
+    const limiteParam = searchParams.get('limite')
+    const ordenParam = searchParams.get('orden')
+
     if (kds === 'true') {
       const ordenes = await db.getOrdenesParaKDS()
       return Response.json(ordenes)
     }
-    
+
     if (mesaId) {
       const ordenes = await db.getOrdenesPorMesa(mesaId)
       return Response.json(ordenes)
     }
-    
+
+    if (fecha || limiteParam || ordenParam) {
+      const limite = limiteParam ? parseInt(limiteParam, 10) || undefined : undefined
+      const orden = ordenParam === 'asc' ? 'asc' : ordenParam === 'desc' ? 'desc' : undefined
+      const ordenes = await db.getOrdenes({
+        fecha: fecha || undefined,
+        limite,
+        orden,
+      })
+      return Response.json(ordenes)
+    }
+
     const ordenes = await db.getOrdenesPendientes()
     return Response.json(ordenes)
   } catch (error) {

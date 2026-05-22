@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { useApp } from "@/lib/app-context"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -39,12 +39,21 @@ import { Mesa } from "@/lib/types"
 import { showToast } from "@/components/toast"
 
 export function ConfiguracionPage() {
-  const { state, dispatch } = useApp()
-  const { mesas } = state
+  const {
+    state,
+    updateMesa,
+    crearMesaApi,
+    eliminarMesaApi,
+    cargarConfiguracion,
+    guardarConfiguracion,
+    guardarPermisosDescuento,
+  } = useApp()
+  const { mesas, usuarioActual } = state
+  const esAdmin = usuarioActual?.rol === 'admin' || usuarioActual?.rol === 'administrador'
   const [businessName, setBusinessName] = useState("Soda Master")
   const [businessAddress, setBusinessAddress] = useState("San Jose, Costa Rica")
   const [businessPhone, setBusinessPhone] = useState("+506 8888-8888")
-  const [currency, setCurrency] = useState("CRC")
+  const [currency, setCurrency] = useState("CLP")
   const [taxRate, setTaxRate] = useState("13")
   const [enableTax, setEnableTax] = useState(true)
   const [enableTips, setEnableTips] = useState(true)
@@ -56,6 +65,70 @@ export function ConfiguracionPage() {
   const [kdsAutoComplete, setKdsAutoComplete] = useState(false)
   const [kdsAutoCompleteTime, setKdsAutoCompleteTime] = useState("30")
 
+  type PermisoRow = { rol: string; puede_aplicar: boolean; limite_maximo: number; requiere_motivo: boolean }
+  const [permisosForm, setPermisosForm] = useState<PermisoRow[]>([])
+  const [permisosLoading, setPermisosLoading] = useState(false)
+  const [permisosSaving, setPermisosSaving] = useState(false)
+
+  useEffect(() => {
+    if (!esAdmin) return
+    setPermisosLoading(true)
+    fetch('/api/permisos-descuento')
+      .then(r => r.json())
+      .then((data) => {
+        if (Array.isArray(data)) {
+          const filtrados = data
+            .map((p: any) => ({
+              rol: String(p.rol),
+              puede_aplicar: !!p.puede_aplicar,
+              limite_maximo: Number(p.limite_maximo) || 0,
+              requiere_motivo: !!p.requiere_motivo,
+            }))
+            .sort((a, b) => a.rol.localeCompare(b.rol))
+          setPermisosForm(filtrados)
+        }
+      })
+      .catch(() => {})
+      .finally(() => setPermisosLoading(false))
+  }, [esAdmin])
+
+  const handleSavePermisos = async () => {
+    setPermisosSaving(true)
+    const ok = await guardarPermisosDescuento(permisosForm)
+    setPermisosSaving(false)
+    if (ok) showToast('Permisos de descuento actualizados', 'success')
+  }
+
+  const updatePermisoField = (rol: string, field: keyof PermisoRow, value: any) => {
+    setPermisosForm(prev => prev.map(p => p.rol === rol ? { ...p, [field]: value } : p))
+  }
+
+  const formatRol = (rol: string) =>
+    ({ admin: 'Administrador', administrador: 'Administrador', cajero: 'Cajero', mesero: 'Mesero', cocina: 'Cocina', bar: 'Bar' } as Record<string, string>)[rol] || rol
+
+  useEffect(() => {
+    (async () => {
+      const config = await cargarConfiguracion()
+      if (!config || typeof config !== 'object') return
+      if (config.nombre_negocio !== undefined) setBusinessName(String(config.nombre_negocio))
+      if (config.direccion !== undefined) setBusinessAddress(String(config.direccion))
+      if (config.telefono !== undefined) setBusinessPhone(String(config.telefono))
+      setCurrency('CLP')
+      if (config.tasa_impuesto !== undefined) setTaxRate(String(config.tasa_impuesto))
+      if (config.impuesto_habilitado !== undefined) setEnableTax(!!config.impuesto_habilitado)
+      if (config.propinas_habilitadas !== undefined) setEnableTips(!!config.propinas_habilitadas)
+      if (config.propina_default !== undefined) setDefaultTip(String(config.propina_default))
+      if (config.impresora_habilitada !== undefined) setPrinterEnabled(!!config.impresora_habilitada)
+      if (config.impresora_ip !== undefined) setPrinterIP(String(config.impresora_ip))
+      if (config.notificaciones_habilitadas !== undefined)
+        setNotificationsEnabled(!!config.notificaciones_habilitadas)
+      if (config.sonido_habilitado !== undefined) setSoundEnabled(!!config.sonido_habilitado)
+      if (config.kds_auto_completar !== undefined) setKdsAutoComplete(!!config.kds_auto_completar)
+      if (config.kds_tiempo_auto_completar !== undefined)
+        setKdsAutoCompleteTime(String(config.kds_tiempo_auto_completar))
+    })()
+  }, [cargarConfiguracion])
+
   // Table management
   const [showTableDialog, setShowTableDialog] = useState(false)
   const [editingTable, setEditingTable] = useState<Mesa | null>(null)
@@ -65,40 +138,59 @@ export function ConfiguracionPage() {
     area: "Interior",
   })
 
-  const handleSaveSettings = () => {
-    showToast("Configuracion guardada exitosamente", "success")
+  const handleSaveSettings = async () => {
+    const ok = await guardarConfiguracion({
+      nombre_negocio: businessName,
+      direccion: businessAddress,
+      telefono: businessPhone,
+      moneda: currency,
+      tasa_impuesto: Number(taxRate) || 0,
+      impuesto_habilitado: enableTax,
+      propinas_habilitadas: enableTips,
+      propina_default: Number(defaultTip) || 0,
+      impresora_habilitada: printerEnabled,
+      impresora_ip: printerIP,
+      notificaciones_habilitadas: notificationsEnabled,
+      sonido_habilitado: soundEnabled,
+      kds_auto_completar: kdsAutoComplete,
+      kds_tiempo_auto_completar: Number(kdsAutoCompleteTime) || 0,
+    })
+    if (ok) {
+      showToast("Configuracion guardada exitosamente", "success")
+    } else {
+      showToast("Error al guardar la configuracion", "error")
+    }
   }
 
-  const handleAddTable = () => {
+  const handleAddTable = async () => {
     if (!tableForm.nombre.trim()) {
       showToast("El nombre de la mesa es requerido", "error")
       return
     }
 
-    if (editingTable) {
-      const updated: Mesa = {
-        ...editingTable,
-        nombre: tableForm.nombre,
-        capacidad: tableForm.capacidad,
-        area: tableForm.area
+    try {
+      if (editingTable) {
+        await updateMesa(editingTable.id, {
+          capacidad: tableForm.capacidad,
+          area: tableForm.area,
+        })
+        showToast("Mesa actualizada", "success")
+      } else {
+        await crearMesaApi({
+          nombre: tableForm.nombre,
+          capacidad: tableForm.capacidad,
+          area: tableForm.area,
+          estado: "libre",
+        })
+        showToast("Mesa agregada", "success")
       }
-      dispatch({ type: 'UPDATE_MESA', payload: updated })
-      showToast("Mesa actualizada", "success")
-    } else {
-      const newMesa: Mesa = {
-        id: `mesa-${Date.now()}`,
-        nombre: tableForm.nombre,
-        capacidad: tableForm.capacidad,
-        estado: "libre",
-        area: tableForm.area,
-      }
-      dispatch({ type: 'ADD_MESA', payload: newMesa })
-      showToast("Mesa agregada", "success")
-    }
 
-    setTableForm({ nombre: "", capacidad: 4, area: "Interior" })
-    setEditingTable(null)
-    setShowTableDialog(false)
+      setTableForm({ nombre: "", capacidad: 4, area: "Interior" })
+      setEditingTable(null)
+      setShowTableDialog(false)
+    } catch (error: any) {
+      showToast(error?.message || "Error al guardar mesa", "error")
+    }
   }
 
   const handleEditTable = (mesa: Mesa) => {
@@ -111,14 +203,18 @@ export function ConfiguracionPage() {
     setShowTableDialog(true)
   }
 
-  const handleDeleteTable = (mesaId: string) => {
+  const handleDeleteTable = async (mesaId: string) => {
     const mesa = mesas.find((m) => m.id === mesaId)
     if (mesa?.estado === "ocupada") {
       showToast("No se puede eliminar una mesa ocupada", "error")
       return
     }
-    dispatch({ type: 'DELETE_MESA', payload: mesaId })
-    showToast("Mesa eliminada", "success")
+    try {
+      await eliminarMesaApi(mesaId)
+      showToast("Mesa eliminada", "success")
+    } catch (error: any) {
+      showToast(error?.message || "Error al eliminar mesa", "error")
+    }
   }
 
   const areas = [...new Set(mesas.map((m) => m.area || "Interior"))]
@@ -134,12 +230,13 @@ export function ConfiguracionPage() {
       </div>
 
       <Tabs defaultValue="negocio" className="space-y-4">
-        <TabsList className="grid w-full grid-cols-5">
+        <TabsList className={`grid w-full ${esAdmin ? 'grid-cols-6' : 'grid-cols-5'}`}>
           <TabsTrigger value="negocio">Negocio</TabsTrigger>
           <TabsTrigger value="mesas">Mesas</TabsTrigger>
           <TabsTrigger value="impresion">Impresion</TabsTrigger>
           <TabsTrigger value="pagos">Pagos</TabsTrigger>
           <TabsTrigger value="notificaciones">Notificaciones</TabsTrigger>
+          {esAdmin && <TabsTrigger value="descuentos">Descuentos</TabsTrigger>}
         </TabsList>
 
         <TabsContent value="negocio">
@@ -192,8 +289,7 @@ export function ConfiguracionPage() {
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="CRC">Colones (CRC)</SelectItem>
-                      <SelectItem value="USD">Dolares (USD)</SelectItem>
+                      <SelectItem value="CLP">Pesos chilenos (CLP)</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
@@ -442,16 +538,8 @@ export function ConfiguracionPage() {
                     <Switch defaultChecked disabled />
                   </div>
                   <div className="flex items-center justify-between rounded-lg border p-3">
-                    <span>Tarjeta</span>
-                    <Switch defaultChecked />
-                  </div>
-                  <div className="flex items-center justify-between rounded-lg border p-3">
-                    <span>Sinpe Movil</span>
-                    <Switch defaultChecked />
-                  </div>
-                  <div className="flex items-center justify-between rounded-lg border p-3">
-                    <span>Transferencia</span>
-                    <Switch defaultChecked />
+                    <span>Tarjeta (Transbank)</span>
+                    <Switch defaultChecked disabled />
                   </div>
                 </div>
               </div>
@@ -517,6 +605,104 @@ export function ConfiguracionPage() {
             </CardContent>
           </Card>
         </TabsContent>
+
+        {esAdmin && (
+          <TabsContent value="descuentos">
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <DollarSign className="h-5 w-5" />
+                  Permisos de Descuento
+                </CardTitle>
+                <CardDescription>
+                  Configura qué roles pueden aplicar descuentos y su límite máximo
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                {permisosLoading ? (
+                  <p className="text-sm text-muted-foreground">Cargando...</p>
+                ) : permisosForm.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">Sin permisos configurados</p>
+                ) : (
+                  <div className="space-y-4">
+                    {permisosForm.map((p) => {
+                      const esRolAdmin = p.rol === 'admin' || p.rol === 'administrador'
+                      return (
+                        <div
+                          key={p.rol}
+                          className="rounded-lg border border-border bg-muted/30 p-4 space-y-3"
+                        >
+                          <div className="flex items-center justify-between">
+                            <h4 className="font-semibold text-foreground">{formatRol(p.rol)}</h4>
+                            {esRolAdmin && (
+                              <span className="rounded bg-amber-500/20 px-2 py-0.5 text-xs text-amber-300">
+                                Acceso total (no editable)
+                              </span>
+                            )}
+                          </div>
+                          <div className="grid gap-3 md:grid-cols-3">
+                            <div className="flex items-center justify-between rounded-md border border-border bg-background px-3 py-2">
+                              <Label htmlFor={`puede-${p.rol}`} className="text-sm">
+                                Puede aplicar descuentos
+                              </Label>
+                              <Switch
+                                id={`puede-${p.rol}`}
+                                checked={p.puede_aplicar}
+                                disabled={esRolAdmin}
+                                onCheckedChange={(v) =>
+                                  updatePermisoField(p.rol, 'puede_aplicar', !!v)
+                                }
+                              />
+                            </div>
+                            <div className="space-y-1">
+                              <Label htmlFor={`limite-${p.rol}`} className="text-sm">
+                                Límite máximo (%)
+                              </Label>
+                              <Input
+                                id={`limite-${p.rol}`}
+                                type="number"
+                                min={0}
+                                max={100}
+                                disabled={esRolAdmin || !p.puede_aplicar}
+                                value={p.limite_maximo}
+                                onChange={(e) =>
+                                  updatePermisoField(
+                                    p.rol,
+                                    'limite_maximo',
+                                    Math.max(0, Math.min(100, Number(e.target.value) || 0))
+                                  )
+                                }
+                              />
+                            </div>
+                            <div className="flex items-center justify-between rounded-md border border-border bg-background px-3 py-2">
+                              <Label htmlFor={`motivo-${p.rol}`} className="text-sm">
+                                Requiere motivo
+                              </Label>
+                              <Switch
+                                id={`motivo-${p.rol}`}
+                                checked={p.requiere_motivo}
+                                disabled={esRolAdmin}
+                                onCheckedChange={(v) =>
+                                  updatePermisoField(p.rol, 'requiere_motivo', !!v)
+                                }
+                              />
+                            </div>
+                          </div>
+                        </div>
+                      )
+                    })}
+                    <div className="flex justify-end">
+                      <Button onClick={handleSavePermisos} disabled={permisosSaving}>
+                        <Save className="mr-2 h-4 w-4" />
+                        {permisosSaving ? 'Guardando...' : 'Guardar permisos'}
+                      </Button>
+                    </div>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </TabsContent>
+        )}
       </Tabs>
     </div>
   )

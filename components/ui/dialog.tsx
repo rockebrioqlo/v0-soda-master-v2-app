@@ -60,7 +60,11 @@ function DialogContent({
       <DialogPrimitive.Content
         data-slot="dialog-content"
         className={cn(
-          'bg-background data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 fixed top-[50%] left-[50%] z-50 grid w-full max-w-[calc(100%-2rem)] translate-x-[-50%] translate-y-[-50%] gap-4 rounded-lg border p-6 shadow-lg duration-200 sm:max-w-lg',
+          'bg-background data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 fixed z-50 grid gap-4 shadow-lg duration-200',
+          // Mobile: fullscreen
+          'inset-0 w-full max-w-full overflow-y-auto rounded-none border-0 p-4 pt-6',
+          // Tablet+ (md): centered popup
+          'md:inset-auto md:top-[50%] md:left-[50%] md:w-full md:max-w-[calc(100%-2rem)] md:translate-x-[-50%] md:translate-y-[-50%] md:rounded-lg md:border md:p-6 md:data-[state=closed]:zoom-out-95 md:data-[state=open]:zoom-in-95 sm:max-w-lg',
           className,
         )}
         {...props}
@@ -96,6 +100,10 @@ function DialogFooter({ className, ...props }: React.ComponentProps<'div'>) {
       data-slot="dialog-footer"
       className={cn(
         'flex flex-col-reverse gap-2 sm:flex-row sm:justify-end',
+        // Mobile: sticky bottom with safe-area
+        'sticky bottom-0 -mx-4 -mb-4 border-t border-border bg-background px-4 pt-3 pb-[max(env(safe-area-inset-bottom),1rem)]',
+        // Reset on md+
+        'md:static md:mx-0 md:mb-0 md:border-0 md:px-0 md:pt-0 md:pb-0',
         className,
       )}
       {...props}

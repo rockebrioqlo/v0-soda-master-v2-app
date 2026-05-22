@@ -11,6 +11,7 @@ import { KDSPage } from "@/components/kds-page"
 import { InventarioPage } from "@/components/inventario-page"
 import { UsuariosPage } from "@/components/usuarios-page"
 import { PagosPage } from "@/components/pagos-page"
+import { MermasPage } from "@/components/mermas-page"
 import { ReportesPage } from "@/components/reportes-page"
 import { ConfiguracionPage } from "@/components/configuracion-page"
 import { ToastContainer } from "@/components/toast"
@@ -60,6 +61,8 @@ function AppContent() {
         return <UsuariosPage />
       case "pagos":
         return <PagosPage />
+      case "mermas":
+        return <MermasPage />
       case "reportes":
         return <ReportesPage />
       case "configuracion":

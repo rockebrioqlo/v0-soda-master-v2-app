@@ -93,6 +93,8 @@ function appReducer(state: AppState, action: AppAction): AppState {
       return { ...state, usuarios: state.usuarios.filter(u => u.id !== action.payload) }
     case 'ADD_PAGO':
       return { ...state, pagos: [...state.pagos, action.payload] }
+    case 'SET_PAGOS':
+      return { ...state, pagos: action.payload }
     case 'ADD_MERMA':
       return { ...state, mermas: [...state.mermas, action.payload] }
     case 'UPDATE_MERMA':
@@ -143,6 +145,8 @@ interface AppContextType {
   clearPOSNavigation: () => void
   // API functions for persistence
   updateMesa: (id: string, updates: any) => Promise<void>
+  crearMesaApi: (mesa: any) => Promise<any>
+  eliminarMesaApi: (id: string) => Promise<boolean>
   crearOrden: (orden: any) => Promise<any>
   updateOrden: (id: string, updates: any) => Promise<void>
   enviarOrdenACocina: (ordenId: string) => Promise<void>
@@ -151,6 +155,25 @@ interface AppContextType {
   eliminarItemOrden: (id: string) => Promise<void>
   recargarOrdenes: () => Promise<void>
   recargarMesas: () => Promise<void>
+  crearUsuarioApi: (payload: any) => Promise<any>
+  actualizarUsuarioApi: (id: string, updates: any) => Promise<any>
+  eliminarUsuarioApi: (id: string) => Promise<boolean>
+  recargarUsuarios: () => Promise<void>
+  crearPagoApi: (pago: any) => Promise<any>
+  recargarPagos: (fecha?: string) => Promise<any[]>
+  cargarConfiguracion: () => Promise<Record<string, any>>
+  guardarConfiguracion: (data: Record<string, any>) => Promise<boolean>
+  recargarPermisosDescuento: () => Promise<void>
+  guardarPermisosDescuento: (
+    items: Array<{ rol: string; puede_aplicar: boolean; limite_maximo: number; requiere_motivo: boolean }>
+  ) => Promise<boolean>
+  crearDescuentoApi: (payload: {
+    orden_id: string
+    tipo: string
+    valor: number
+    motivo: string
+    autorizado_por?: string | null
+  }) => Promise<any | null>
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined)
@@ -162,19 +185,47 @@ function mapOrdenToComanda(orden: any, mesas: any[]): any {
   // Map Neon items_orden rows → ItemComanda shape expected by the frontend
   const rawItems: any[] = Array.isArray(orden.items) ? orden.items : []
   const mappedItems = rawItems
-    .filter((i: any) => i && i.id)   // filter null rows from LEFT JOIN when no items
-    .map((i: any) => ({
-      id: i.id,
-      productoId: i.producto_id,
-      productoNombre: i.producto_nombre || i.nombre || '',
-      cantidad: i.cantidad || 1,
-      precio: parseFloat(i.precio_unitario) || 0,
-      ingredientesEstandar: Array.isArray(i.modificadores) ? i.modificadores : [],
-      ingredientesEspeciales: [],
-      salsaSeleccionada: i.notas_especiales || '',
-      notas: i.notas_especiales || '',
-      estado: i.estado_item || 'pendiente',
-    }))
+    .filter((i: any) => i && i.id)
+    .map((i: any) => {
+      let salsa = ''
+      let notas = ''
+      let notaEspecial = ''
+      let ingredientesEspeciales: Array<{ id: string; nombre: string; costoAdicional: number }> = []
+      const raw = i.notas_especiales
+      if (typeof raw === 'string' && raw.trim().startsWith('{')) {
+        try {
+          const meta = JSON.parse(raw)
+          salsa = meta.salsa || ''
+          notas = meta.notas || ''
+          notaEspecial = meta.notaEspecial || ''
+          ingredientesEspeciales = Array.isArray(meta.ingredientesEspeciales)
+            ? meta.ingredientesEspeciales.map((esp: any) => ({
+                id: String(esp.id ?? ''),
+                nombre: String(esp.nombre ?? ''),
+                costoAdicional: Number(esp.costoAdicional) || 0,
+              }))
+            : []
+        } catch {
+          notas = raw
+        }
+      } else if (typeof raw === 'string') {
+        notas = raw
+      }
+
+      return {
+        id: i.id,
+        productoId: i.producto_id,
+        productoNombre: i.producto_nombre || i.nombre || '',
+        cantidad: i.cantidad || 1,
+        precio: parseFloat(i.precio_unitario) || 0,
+        ingredientesEstandar: Array.isArray(i.modificadores) ? i.modificadores : [],
+        ingredientesEspeciales,
+        salsaSeleccionada: salsa,
+        notas,
+        notaEspecial,
+        estado: i.estado_item || 'pendiente',
+      }
+    })
 
   return {
     id: orden.id,
@@ -218,6 +269,8 @@ const defaultPageByRole: Record<Rol, PageType> = {
   cocina: 'kds',
   bar: 'kds',
 }
+
+const isRol = (rol: unknown): rol is Rol => typeof rol === 'string' && rol in defaultPageByRole
 
 export function AppProvider({ children }: { children: React.ReactNode }) {
   const [state, dispatch] = useReducer(appReducer, initialState)
@@ -296,6 +349,27 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           }
         }
 
+        try {
+          const permisosRes = await fetch('/api/permisos-descuento')
+          if (permisosRes.ok) {
+            const permisosData = await permisosRes.json()
+            if (Array.isArray(permisosData)) {
+              const permisos = { ...initialPermisosDescuento }
+              for (const item of permisosData) {
+                const rol = String(item.rol) as Rol
+                permisos[rol] = {
+                  puede: !!item.puede_aplicar,
+                  limiteMax: Number(item.limite_maximo) || 0,
+                  requiereMotivo: !!item.requiere_motivo,
+                }
+              }
+              if (!permisos.administrador) permisos.administrador = permisos.admin
+              if (!permisos.admin) permisos.admin = permisos.administrador
+              dispatch({ type: 'SET_PERMISOS_DESCUENTO', payload: permisos })
+            }
+          }
+        } catch {}
+
         // Restore session if exists
         const savedSession = sessionStorage.getItem('soda_master_session')
         if (savedSession) {
@@ -305,8 +379,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             const usuarios = await usuariosRes.json()
             const user = usuarios.find((u: any) => u.id === sessionData.userId)
             if (user && user.activo) {
+              const userRole: unknown = user.rol
               dispatch({ type: 'SET_USUARIO', payload: user })
-              setCurrentPage(sessionData.currentPage || defaultPageByRole[user.rol])
+              setCurrentPage(sessionData.currentPage || (isRol(userRole) ? defaultPageByRole[userRole] : 'dashboard'))
             }
           } catch {
             sessionStorage.removeItem('soda_master_session')
@@ -361,9 +436,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       const usuario = await response.json()
       dispatch({ type: 'UPDATE_USUARIO', payload: { ...usuario, intentosFallidos: 0, bloqueadoHasta: null } })
       dispatch({ type: 'SET_USUARIO', payload: usuario })
+      void recargarPermisosDescuento()
       
       // Set default page based on role
-      const defaultPage = defaultPageByRole[usuario.rol]
+      const usuarioRole: unknown = usuario.rol
+      const defaultPage = isRol(usuarioRole) ? defaultPageByRole[usuarioRole] : 'dashboard'
       setCurrentPage(defaultPage)
       
       // Save session to sessionStorage
@@ -565,6 +642,225 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     }
   }, [])
 
+  const recargarUsuarios = useCallback(async () => {
+    try {
+      const res = await fetch('/api/usuarios')
+      if (res.ok) {
+        const usuarios = await res.json()
+        if (Array.isArray(usuarios)) {
+          dispatch({ type: 'SET_USUARIOS', payload: usuarios as Usuario[] })
+        }
+      }
+    } catch (error) {
+      console.error('Error loading usuarios:', error)
+    }
+  }, [])
+
+  const crearUsuarioApi = useCallback(async (payload: any) => {
+    const res = await fetch('/api/usuarios', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}))
+      throw new Error(data?.error || 'Error al crear usuario')
+    }
+    const usuario = await res.json()
+    dispatch({ type: 'ADD_USUARIO', payload: usuario })
+    return usuario
+  }, [])
+
+  const actualizarUsuarioApi = useCallback(async (id: string, updates: any) => {
+    const res = await fetch(`/api/usuarios/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(updates),
+    })
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}))
+      throw new Error(data?.error || 'Error al actualizar usuario')
+    }
+    const usuario = await res.json()
+    dispatch({ type: 'UPDATE_USUARIO', payload: usuario })
+    return usuario
+  }, [])
+
+  const eliminarUsuarioApi = useCallback(async (id: string) => {
+    const res = await fetch(`/api/usuarios/${id}`, { method: 'DELETE' })
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}))
+      throw new Error(data?.error || 'Error al eliminar usuario')
+    }
+    dispatch({ type: 'DELETE_USUARIO', payload: id })
+    return true
+  }, [])
+
+  const crearMesaApi = useCallback(async (mesa: any) => {
+    const res = await fetch('/api/mesas', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(mesa),
+    })
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}))
+      throw new Error(data?.error || 'Error al crear mesa')
+    }
+    const nueva = await res.json()
+    dispatch({ type: 'ADD_MESA', payload: nueva })
+    return nueva
+  }, [])
+
+  const eliminarMesaApi = useCallback(async (id: string) => {
+    const res = await fetch(`/api/mesas/${id}`, { method: 'DELETE' })
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}))
+      throw new Error(data?.error || 'Error al eliminar mesa')
+    }
+    dispatch({ type: 'DELETE_MESA', payload: id })
+    return true
+  }, [])
+
+  const crearPagoApi = useCallback(async (pago: any) => {
+    const res = await fetch('/api/pagos', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(pago),
+    })
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}))
+      throw new Error(data?.error || 'Error al registrar pago')
+    }
+    return await res.json()
+  }, [])
+
+  const recargarPagos = useCallback(async (fecha?: string) => {
+    try {
+      const url = fecha ? `/api/pagos?fecha=${encodeURIComponent(fecha)}` : '/api/pagos'
+      const res = await fetch(url)
+      if (!res.ok) return []
+      const pagos = await res.json()
+      if (Array.isArray(pagos)) {
+        dispatch({ type: 'SET_PAGOS', payload: pagos as any })
+      }
+      return Array.isArray(pagos) ? pagos : []
+    } catch (error) {
+      console.error('Error loading pagos:', error)
+      return []
+    }
+  }, [])
+
+  const cargarConfiguracion = useCallback(async () => {
+    try {
+      const res = await fetch('/api/configuracion')
+      if (!res.ok) return {}
+      const data = await res.json()
+      if (data && typeof data === 'object') {
+        dispatch({ type: 'SET_CONFIGURACION', payload: data as any })
+      }
+      return data || {}
+    } catch (error) {
+      console.error('Error loading configuracion:', error)
+      return {}
+    }
+  }, [])
+
+  const recargarPermisosDescuento = useCallback(async () => {
+    try {
+      const res = await fetch('/api/permisos-descuento', { cache: 'no-store' })
+      if (!res.ok) return
+      const data = await res.json()
+      if (!Array.isArray(data)) return
+      const permisos = { ...initialPermisosDescuento }
+      for (const item of data) {
+        const rol = String(item.rol) as Rol
+        permisos[rol] = {
+          puede: !!item.puede_aplicar,
+          limiteMax: Number(item.limite_maximo) || 0,
+          requiereMotivo: !!item.requiere_motivo,
+        }
+      }
+      if (!permisos.administrador) permisos.administrador = permisos.admin
+      if (!permisos.admin) permisos.admin = permisos.administrador
+      dispatch({ type: 'SET_PERMISOS_DESCUENTO', payload: permisos })
+    } catch (error) {
+      console.error('Error loading permisos-descuento:', error)
+    }
+  }, [])
+
+  const guardarPermisosDescuento = useCallback(
+    async (
+      items: Array<{ rol: string; puede_aplicar: boolean; limite_maximo: number; requiere_motivo: boolean }>
+    ) => {
+      const usuarioId = state.usuarioActual?.id
+      if (!usuarioId) return false
+      try {
+        const res = await fetch('/api/permisos-descuento', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ usuario_id: usuarioId, permisos: items }),
+        })
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}))
+          showToast(err?.error || 'Error al guardar permisos', 'error')
+          return false
+        }
+        await recargarPermisosDescuento()
+        return true
+      } catch (error) {
+        console.error('Error saving permisos-descuento:', error)
+        return false
+      }
+    },
+    [state.usuarioActual?.id, recargarPermisosDescuento]
+  )
+
+  const crearDescuentoApi = useCallback(
+    async (payload: { orden_id: string; tipo: string; valor: number; motivo: string; autorizado_por?: string | null }) => {
+      const usuarioId = state.usuarioActual?.id
+      if (!usuarioId) return null
+      try {
+        const res = await fetch('/api/descuentos', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ...payload, aplicado_por: usuarioId }),
+        })
+        const data = await res.json().catch(() => null)
+        if (!res.ok) {
+          showToast(data?.error || 'Error al aplicar descuento', 'error')
+          return null
+        }
+        return data
+      } catch (error) {
+        console.error('Error creating descuento:', error)
+        return null
+      }
+    },
+    [state.usuarioActual?.id]
+  )
+
+  const guardarConfiguracion = useCallback(async (data: Record<string, any>) => {
+    try {
+      const res = await fetch('/api/configuracion', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+      })
+      if (!res.ok) {
+        const errPayload = await res.json().catch(() => ({}))
+        throw new Error(errPayload?.error || 'Error al guardar configuración')
+      }
+      const updated = await res.json()
+      if (updated && typeof updated === 'object') {
+        dispatch({ type: 'SET_CONFIGURACION', payload: updated as any })
+      }
+      return true
+    } catch (error) {
+      console.error('Error saving configuracion:', error)
+      return false
+    }
+  }, [])
+
   return (
     <AppContext.Provider value={{ 
       state, 
@@ -580,6 +876,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       navigateToPOS,
       clearPOSNavigation,
       updateMesa,
+      crearMesaApi,
+      eliminarMesaApi,
       crearOrden,
       updateOrden,
       enviarOrdenACocina,
@@ -588,6 +886,17 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       eliminarItemOrden,
       recargarOrdenes,
       recargarMesas,
+      crearUsuarioApi,
+      actualizarUsuarioApi,
+      eliminarUsuarioApi,
+      recargarUsuarios,
+      crearPagoApi,
+      recargarPagos,
+      cargarConfiguracion,
+      guardarConfiguracion,
+      recargarPermisosDescuento,
+      guardarPermisosDescuento,
+      crearDescuentoApi,
     }}>
       {children}
     </AppContext.Provider>

@@ -25,7 +25,7 @@ import {
 } from '@/components/ui/select'
 import { cn } from '@/lib/utils'
 import { formatCurrency, generateId, getEstadoComandaColor, getEstadoComandaLabel } from '@/lib/helpers'
-import { Plus, Minus, Trash2, Send, Printer, Percent, ChefHat, Wine, Star, ArrowLeft, Beer, GlassWater } from 'lucide-react'
+import { Plus, Minus, Trash2, Send, Printer, Percent, ChefHat, Wine, Star, ArrowLeft, Beer, GlassWater, ShoppingCart, X } from 'lucide-react'
 import { showToast } from '@/components/toast'
 import { Comanda, ItemComanda, Producto, TipoDescuento } from '@/lib/types'
 import { ingredientesEstandar, quesosDisponibles, salsasDisponibles } from '@/lib/initial-data'
@@ -41,13 +41,13 @@ export function POSPage() {
   const {
     state,
     dispatch,
-    hasPermission,
     posNavigation,
     clearPOSNavigation,
     navigateTo,
     updateMesa,
     crearOrden,
     crearItemOrden,
+    crearDescuentoApi,
   } = useApp()
   const { mesas, productos, comandas, usuarioActual, permisosDescuento } = state
 
@@ -55,28 +55,28 @@ export function POSPage() {
   const [currentComanda, setCurrentComanda] = useState<Comanda | null>(null)
   const [activeTab, setActiveTab] = useState('comidas')
 
-  // Burger dialog state
   const [showBurgerDialog, setShowBurgerDialog] = useState(false)
   const [selectedBurger, setSelectedBurger] = useState<Producto | null>(null)
   const [burgerQuesos, setBurgerQuesos] = useState<string[]>([])
   const [burgerIngredientes, setBurgerIngredientes] = useState<string[]>([])
   const [burgerSalsas, setBurgerSalsas] = useState<string[]>([])
   const [burgerEspeciales, setBurgerEspeciales] = useState<string[]>([])
-  const [burgerNotas, setBurgerNotas] = useState('')
+  const [burgerNotaEspecial, setBurgerNotaEspecial] = useState('')
 
-  // Generic item dialog
   const [showItemDialog, setShowItemDialog] = useState(false)
   const [selectedItem, setSelectedItem] = useState<Producto | null>(null)
   const [itemVariante, setItemVariante] = useState('')
   const [itemNotas, setItemNotas] = useState('')
+  const [itemNotaEspecial, setItemNotaEspecial] = useState('')
+  const [itemEspeciales, setItemEspeciales] = useState<string[]>([])
   const [itemCantidad, setItemCantidad] = useState(1)
 
   // Discount dialog
+  const [showComandaDrawer, setShowComandaDrawer] = useState(false)
   const [showDescuentoDialog, setShowDescuentoDialog] = useState(false)
   const [descuentoTipo, setDescuentoTipo] = useState<TipoDescuento>('porcentaje')
   const [descuentoValor, setDescuentoValor] = useState('')
   const [descuentoMotivo, setDescuentoMotivo] = useState('')
-  const [showAuthDialog, setShowAuthDialog] = useState(false)
   const [authPin, setAuthPin] = useState('')
 
   // Special ingredients from products
@@ -188,7 +188,7 @@ export function POSPage() {
     setBurgerIngredientes([])
     setBurgerSalsas([])
     setBurgerEspeciales([])
-    setBurgerNotas('')
+    setBurgerNotaEspecial('')
     setShowBurgerDialog(true)
   }
 
@@ -216,15 +216,28 @@ export function POSPage() {
     )
   }
 
+  const toggleItemEspecial = (id: string) => {
+    setItemEspeciales(prev =>
+      prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]
+    )
+  }
+
+  const especialesSeleccionados = (ids: string[]) =>
+    ids
+      .map(id => ingredientesEspeciales.find(i => i.id === id))
+      .filter((esp): esp is Producto => Boolean(esp))
+      .map(esp => ({
+        id: esp.id,
+        nombre: esp.nombre,
+        costoAdicional: Number(esp.costoAdicional) || 0,
+      }))
+
   const handleConfirmBurger = () => {
     if (!selectedBurger || !currentComanda) return
 
-    const costoEspeciales = burgerEspeciales.reduce((sum, espId) => {
-      const esp = ingredientesEspeciales.find(i => i.id === espId)
-      return sum + (esp?.costoAdicional || 0)
-    }, 0)
+    const especiales = especialesSeleccionados(burgerEspeciales)
+    const costoEspeciales = especiales.reduce((sum, esp) => sum + esp.costoAdicional, 0)
 
-    // Combine quesos + ingredientes for ingredientesEstandar
     const allIngredientes = [...burgerQuesos, ...burgerIngredientes]
 
     const newItem: ItemComanda = {
@@ -233,9 +246,10 @@ export function POSPage() {
       productoNombre: selectedBurger.nombre,
       cantidad: 1,
       ingredientesEstandar: allIngredientes,
-      ingredientesEspeciales: burgerEspeciales.map(id => ingredientesEspeciales.find(i => i.id === id)?.nombre || ''),
+      ingredientesEspeciales: especiales,
       salsaSeleccionada: burgerSalsas.join(', '),
-      notas: burgerNotas,
+      notas: '',
+      notaEspecial: burgerNotaEspecial,
       precio: selectedBurger.precio + costoEspeciales,
       estado: 'pendiente',
     }
@@ -256,6 +270,8 @@ export function POSPage() {
     setSelectedItem(item)
     setItemVariante(item.variantes?.[0]?.nombre || '')
     setItemNotas('')
+    setItemNotaEspecial('')
+    setItemEspeciales([])
     setItemCantidad(1)
     setShowItemDialog(true)
   }
@@ -264,7 +280,9 @@ export function POSPage() {
     if (!selectedItem || !currentComanda) return
 
     const variante = selectedItem.variantes?.find(v => v.nombre === itemVariante)
-    const precio = variante?.precio || selectedItem.precio
+    const precioBase = variante?.precio || selectedItem.precio
+    const especiales = especialesSeleccionados(itemEspeciales)
+    const costoEspeciales = especiales.reduce((sum, esp) => sum + esp.costoAdicional, 0)
 
     const newItem: ItemComanda = {
       id: generateId(),
@@ -272,10 +290,11 @@ export function POSPage() {
       productoNombre: selectedItem.nombre,
       cantidad: itemCantidad,
       ingredientesEstandar: [],
-      ingredientesEspeciales: [],
+      ingredientesEspeciales: especiales,
       salsaSeleccionada: '',
       notas: itemNotas,
-      precio,
+      notaEspecial: itemNotaEspecial,
+      precio: precioBase + costoEspeciales,
       variante: itemVariante || undefined,
       estado: 'pendiente',
     }
@@ -311,9 +330,20 @@ export function POSPage() {
 
   // ─── Totals ───────────────────────────────────────────
   const subtotal = currentComanda?.items.reduce((sum, item) => sum + item.precio * item.cantidad, 0) || 0
-  const descuentoMonto = currentComanda?.tipoDescuento === 'porcentaje'
-    ? subtotal * (currentComanda.descuento / 100)
-    : (currentComanda?.descuento || 0)
+  const descuentoMonto = (() => {
+    if (!currentComanda || !currentComanda.tipoDescuento) return 0
+    switch (currentComanda.tipoDescuento) {
+      case 'porcentaje':
+        return subtotal * (currentComanda.descuento / 100)
+      case 'monto_fijo':
+      case 'cortesia_parcial':
+        return Math.min(currentComanda.descuento || 0, subtotal)
+      case 'cortesia_total':
+        return subtotal
+      default:
+        return 0
+    }
+  })()
   const propinaMonto = currentComanda?.tipoPropina === 'porcentaje'
     ? subtotal * (currentComanda.propina / 100)
     : (currentComanda?.propina || 0)
@@ -342,13 +372,19 @@ export function POSPage() {
 
       if (nuevaOrden) {
         for (const item of currentComanda.items) {
+          const metadata = {
+            salsa: item.salsaSeleccionada || '',
+            notas: item.notas || '',
+            notaEspecial: item.notaEspecial || '',
+            ingredientesEspeciales: item.ingredientesEspeciales || [],
+          }
           await crearItemOrden({
             orden_id: nuevaOrden.id,
             producto_id: item.productoId,
             cantidad: item.cantidad,
             precio_unitario: item.precio,
             modificadores: item.ingredientesEstandar || [],
-            notas_especiales: [item.salsaSeleccionada, item.notas].filter(Boolean).join(' | '),
+            notas_especiales: JSON.stringify(metadata),
             estado_item: 'pendiente',
           })
         }
@@ -372,47 +408,112 @@ export function POSPage() {
   }
 
   // ─── Discount ─────────────────────────────────────────
+  const permisoActual = usuarioActual ? permisosDescuento[usuarioActual.rol] : null
+  const tieneDescuento =
+    !!currentComanda && currentComanda.descuento > 0 && !!currentComanda.tipoDescuento
+  const valorNumDescuento = Number(descuentoValor)
+  const valorEsValido = Number.isFinite(valorNumDescuento) && valorNumDescuento > 0
+  const esCortesia = descuentoTipo === 'cortesia_total' || descuentoTipo === 'cortesia_parcial'
+  const requiereAdmin = !permisoActual?.puede ||
+    (descuentoTipo === 'porcentaje' && valorEsValido && valorNumDescuento > (permisoActual?.limiteMax ?? 0)) ||
+    descuentoTipo === 'cortesia_total'
+
   const handleOpenDescuento = () => {
     if (!usuarioActual) return
-    const permisos = permisosDescuento[usuarioActual.rol]
-    if (!permisos.puede) { setShowAuthDialog(true); return }
+    if (tieneDescuento && currentComanda) {
+      setDescuentoTipo((currentComanda.tipoDescuento as TipoDescuento) || 'porcentaje')
+      setDescuentoValor(String(currentComanda.descuento))
+      setDescuentoMotivo(currentComanda.motivoDescuento || '')
+    } else {
+      setDescuentoTipo('porcentaje')
+      setDescuentoValor('')
+      setDescuentoMotivo('')
+    }
+    setAuthPin('')
     setShowDescuentoDialog(true)
   }
 
-  const handleApplyDescuento = () => {
+  const persistirDescuento = async (
+    valor: number,
+    tipo: TipoDescuento,
+    motivo: string,
+    autorizadoPorId?: string | null
+  ) => {
     if (!currentComanda || !usuarioActual) return
-    const valor = parseFloat(descuentoValor)
-    if (isNaN(valor) || valor <= 0) { showToast('Ingresa un valor válido', 'error'); return }
-    const permisos = permisosDescuento[usuarioActual.rol]
-    if (permisos.requiereMotivo && !descuentoMotivo.trim()) { showToast('El motivo es requerido', 'error'); return }
-    if (descuentoTipo === 'porcentaje' && valor > permisos.limiteMax) {
-      showToast(`Descuento máximo: ${permisos.limiteMax}%`, 'error')
-      setShowAuthDialog(true)
-      setShowDescuentoDialog(false)
-      return
-    }
+    const result = await crearDescuentoApi({
+      orden_id: currentComanda.id,
+      tipo,
+      valor,
+      motivo,
+      autorizado_por: autorizadoPorId || null,
+    })
+    if (!result) return
     const updatedComanda: Comanda = {
       ...currentComanda,
       descuento: valor,
-      tipoDescuento: descuentoTipo,
-      motivoDescuento: descuentoMotivo,
+      tipoDescuento: tipo,
+      motivoDescuento: motivo,
       descuentoAplicadoPor: usuarioActual.nombre,
+      descuentoAutorizadoPor: autorizadoPorId
+        ? state.usuarios.find((u) => u.id === autorizadoPorId)?.nombre
+        : undefined,
     }
     dispatch({ type: 'UPDATE_COMANDA', payload: updatedComanda })
     setCurrentComanda(updatedComanda)
     setShowDescuentoDialog(false)
+    setAuthPin('')
     showToast('Descuento aplicado', 'success')
   }
 
-  const handleAuthDescuento = async () => {
-    const { compare } = await import('bcryptjs')
-    const admin = state.usuarios.find(u => u.rol === 'administrador')
-    if (!admin) { showToast('No hay administrador registrado', 'error'); return }
-    const isValid = await compare(authPin, admin.pinHash)
-    if (!isValid) { showToast('PIN incorrecto', 'error'); return }
-    setShowAuthDialog(false)
-    setAuthPin('')
-    setShowDescuentoDialog(true)
+  const handleApplyDescuento = async () => {
+    if (!currentComanda || !usuarioActual || !permisoActual) return
+    if (!valorEsValido) {
+      showToast('Ingresa un valor válido', 'error')
+      return
+    }
+    if (descuentoTipo === 'porcentaje' && valorNumDescuento > 100) {
+      showToast('El porcentaje no puede superar 100%', 'error')
+      return
+    }
+    if (permisoActual.requiereMotivo && !descuentoMotivo.trim()) {
+      showToast('El motivo es requerido', 'error')
+      return
+    }
+
+    if (!requiereAdmin) {
+      await persistirDescuento(valorNumDescuento, descuentoTipo, descuentoMotivo.trim() || '—')
+      return
+    }
+
+    if (!authPin) {
+      showToast('Ingresa el PIN del administrador', 'error')
+      return
+    }
+    const admin = state.usuarios.find((u) => u.rol === 'admin' || u.rol === 'administrador')
+    if (!admin?.email) {
+      showToast('No hay administrador configurado', 'error')
+      return
+    }
+    try {
+      const res = await fetch('/api/auth/verificar-pin', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: admin.email, pin: authPin }),
+      })
+      const data = await res.json().catch(() => null)
+      if (!res.ok || !data?.valido || (data.usuario.rol !== 'admin' && data.usuario.rol !== 'administrador')) {
+        showToast('PIN incorrecto', 'error')
+        return
+      }
+      await persistirDescuento(
+        valorNumDescuento,
+        descuentoTipo,
+        descuentoMotivo.trim() || 'Autorizado por administrador',
+        data.usuario.id
+      )
+    } catch {
+      showToast('Error de conexión', 'error')
+    }
   }
 
   const handlePrintTicket = () => { showToast('Imprimiendo comanda...', 'info'); window.print() }
@@ -458,12 +559,15 @@ export function POSPage() {
   }
 
   // ─── Main POS ─────────────────────────────────────────
+  const cantidadItems =
+    currentComanda?.items.reduce((sum, it) => sum + it.cantidad, 0) || 0
+
   return (
     <>
-      <div className="flex h-[calc(100vh-3.5rem-5rem)] flex-col lg:h-[calc(100vh-3.5rem-1.5rem)] lg:flex-row gap-4">
+      <div className="flex h-[calc(100vh-3.5rem-5rem)] flex-col md:h-[calc(100vh-3.5rem-1.5rem)] md:flex-row gap-4">
 
         {/* ── Products ── */}
-        <div className="flex-1 overflow-auto border-b border-border p-4 lg:border-b-0 lg:border-r">
+        <div className="flex-1 overflow-auto md:border-r md:border-border p-4">
           <div className="mb-4 flex items-center justify-between">
             <div className="flex items-center gap-3">
               <h2 className="text-xl font-bold text-foreground">{selectedMesa?.nombre}</h2>
@@ -526,8 +630,8 @@ export function POSPage() {
           </div>
         </div>
 
-        {/* ── Order summary ── */}
-        <div className="flex w-full flex-col bg-muted/30 lg:w-96">
+        {/* ── Order summary (side panel for md+) ── */}
+        <aside className="hidden flex-col bg-muted/30 md:flex md:w-80 lg:w-96">
           <div className="border-b border-border p-4">
             <h3 className="font-semibold text-foreground">Resumen de Comanda</h3>
           </div>
@@ -552,7 +656,13 @@ export function POSPage() {
                         )}
                         {item.ingredientesEspeciales.length > 0 && (
                           <p className="text-xs text-amber-500 mt-0.5">
-                            Extra: {item.ingredientesEspeciales.join(', ')}
+                            ⭐ {item.ingredientesEspeciales
+                              .map(esp =>
+                                esp.costoAdicional > 0
+                                  ? `${esp.nombre} (+${formatCurrency(esp.costoAdicional)})`
+                                  : esp.nombre
+                              )
+                              .join(', ')}
                           </p>
                         )}
                         {item.salsaSeleccionada && (
@@ -563,6 +673,11 @@ export function POSPage() {
                         {item.notas && (
                           <p className="text-xs italic text-muted-foreground mt-0.5">
                             Nota: {item.notas}
+                          </p>
+                        )}
+                        {item.notaEspecial && (
+                          <p className="text-xs italic text-amber-500 mt-0.5">
+                            📝 {item.notaEspecial}
                           </p>
                         )}
                       </div>
@@ -605,7 +720,16 @@ export function POSPage() {
               </div>
               {(currentComanda?.descuento ?? 0) > 0 && (
                 <div className="flex justify-between text-green-500">
-                  <span>Descuento ({currentComanda!.tipoDescuento === 'porcentaje' ? `${currentComanda!.descuento}%` : 'fijo'})</span>
+                  <span>
+                    Descuento{' '}
+                    {currentComanda!.tipoDescuento === 'porcentaje'
+                      ? `(${currentComanda!.descuento}%)`
+                      : currentComanda!.tipoDescuento === 'cortesia_total'
+                        ? '(cortesía total)'
+                        : currentComanda!.tipoDescuento === 'cortesia_parcial'
+                          ? '(cortesía parcial)'
+                          : '(fijo)'}
+                  </span>
                   <span>-{formatCurrency(descuentoMonto)}</span>
                 </div>
               )}
@@ -623,7 +747,8 @@ export function POSPage() {
               <Button variant="outline" className="border-border"
                 onClick={handleOpenDescuento}
                 disabled={!currentComanda || currentComanda.items.length === 0}>
-                <Percent className="mr-2 h-4 w-4" /> Descuento
+                <Percent className="mr-2 h-4 w-4" />
+                {tieneDescuento ? 'Editar descuento' : 'Aplicar descuento'}
               </Button>
               <Button variant="outline" className="border-border"
                 onClick={handlePrintTicket}
@@ -648,8 +773,229 @@ export function POSPage() {
               </Button>
             </div>
           </div>
-        </div>
+        </aside>
       </div>
+
+      {/* ── Mobile "Ver comanda" FAB ── */}
+      {cantidadItems > 0 && !showComandaDrawer && (
+        <button
+          type="button"
+          onClick={() => setShowComandaDrawer(true)}
+          className="fixed bottom-20 right-4 z-30 flex items-center gap-2 rounded-full bg-amber-500 px-5 py-3 text-sm font-bold text-zinc-900 shadow-xl shadow-amber-500/30 hover:bg-amber-400 md:hidden"
+          style={{ bottom: 'calc(env(safe-area-inset-bottom) + 5rem)' }}
+        >
+          <ShoppingCart className="h-4 w-4" />
+          Ver comanda ({cantidadItems})
+          {total > 0 && (
+            <span className="ml-1 rounded-full bg-zinc-900/15 px-2 py-0.5 text-xs">
+              {formatCurrency(total)}
+            </span>
+          )}
+        </button>
+      )}
+
+      {/* ── Mobile order drawer ── */}
+      {showComandaDrawer && (
+        <div className="fixed inset-0 z-40 md:hidden">
+          <div
+            className="absolute inset-0 bg-black/60"
+            onClick={() => setShowComandaDrawer(false)}
+          />
+          <aside
+            className="absolute inset-x-0 bottom-0 flex max-h-[85vh] flex-col rounded-t-2xl border-t border-border bg-card shadow-2xl"
+            style={{ height: '85vh' }}
+          >
+            <div className="flex items-center justify-between border-b border-border p-4">
+              <h3 className="font-semibold text-foreground">Resumen de Comanda</h3>
+              <button
+                type="button"
+                onClick={() => setShowComandaDrawer(false)}
+                className="rounded-md p-1 text-muted-foreground hover:bg-muted"
+                aria-label="Cerrar"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <div className="flex-1 overflow-auto bg-muted/30 p-4">
+              {!currentComanda || currentComanda.items.length === 0 ? (
+                <p className="text-center text-sm text-muted-foreground">
+                  No hay items en la comanda
+                </p>
+              ) : (
+                <ul className="space-y-3">
+                  {currentComanda.items.map((item) => (
+                    <li
+                      key={item.id}
+                      className="rounded-lg border border-border bg-card p-3"
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate font-medium text-foreground">
+                            {item.productoNombre}
+                            {item.variante && (
+                              <span className="text-xs text-muted-foreground">
+                                {' '}({item.variante})
+                              </span>
+                            )}
+                          </p>
+                          {item.ingredientesEstandar.length > 0 && (
+                            <p className="mt-0.5 text-xs text-muted-foreground">
+                              + {item.ingredientesEstandar.join(', ')}
+                            </p>
+                          )}
+                          {item.ingredientesEspeciales.length > 0 && (
+                            <p className="mt-0.5 text-xs text-amber-500">
+                              ⭐{' '}
+                              {item.ingredientesEspeciales
+                                .map((esp) =>
+                                  esp.costoAdicional > 0
+                                    ? `${esp.nombre} (+${formatCurrency(esp.costoAdicional)})`
+                                    : esp.nombre
+                                )
+                                .join(', ')}
+                            </p>
+                          )}
+                          {item.salsaSeleccionada && (
+                            <p className="mt-0.5 text-xs text-muted-foreground">
+                              Salsas: {item.salsaSeleccionada}
+                            </p>
+                          )}
+                          {item.notas && (
+                            <p className="mt-0.5 text-xs italic text-muted-foreground">
+                              Nota: {item.notas}
+                            </p>
+                          )}
+                          {item.notaEspecial && (
+                            <p className="mt-0.5 text-xs italic text-amber-500">
+                              📝 {item.notaEspecial}
+                            </p>
+                          )}
+                        </div>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8 shrink-0 text-red-500 hover:text-red-600"
+                          onClick={() => handleRemoveItem(item.id)}
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </div>
+                      <div className="mt-2 flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <Button
+                            variant="outline"
+                            size="icon"
+                            className="h-9 w-9"
+                            onClick={() => handleUpdateItemQty(item.id, -1)}
+                          >
+                            <Minus className="h-4 w-4" />
+                          </Button>
+                          <span className="w-6 text-center text-base font-medium text-foreground">
+                            {item.cantidad}
+                          </span>
+                          <Button
+                            variant="outline"
+                            size="icon"
+                            className="h-9 w-9"
+                            onClick={() => handleUpdateItemQty(item.id, 1)}
+                          >
+                            <Plus className="h-4 w-4" />
+                          </Button>
+                        </div>
+                        <span className="font-semibold text-foreground">
+                          {formatCurrency(item.precio * item.cantidad)}
+                        </span>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+            <div
+              className="border-t border-border bg-card p-4"
+              style={{ paddingBottom: 'calc(env(safe-area-inset-bottom) + 1rem)' }}
+            >
+              <div className="space-y-1.5 text-sm">
+                <div className="flex justify-between text-muted-foreground">
+                  <span>Subtotal</span>
+                  <span>{formatCurrency(subtotal)}</span>
+                </div>
+                {(currentComanda?.descuento ?? 0) > 0 && (
+                  <div className="flex justify-between text-green-500">
+                    <span>
+                      Descuento{' '}
+                      {currentComanda!.tipoDescuento === 'porcentaje'
+                        ? `(${currentComanda!.descuento}%)`
+                        : currentComanda!.tipoDescuento === 'cortesia_total'
+                          ? '(cortesía total)'
+                          : currentComanda!.tipoDescuento === 'cortesia_parcial'
+                            ? '(cortesía parcial)'
+                            : '(fijo)'}
+                    </span>
+                    <span>-{formatCurrency(descuentoMonto)}</span>
+                  </div>
+                )}
+                {(currentComanda?.propina ?? 0) > 0 && (
+                  <div className="flex justify-between text-muted-foreground">
+                    <span>Propina</span>
+                    <span>+{formatCurrency(propinaMonto)}</span>
+                  </div>
+                )}
+                <div className="flex justify-between border-t border-border pt-2 text-lg font-bold text-foreground">
+                  <span>Total</span>
+                  <span>{formatCurrency(total)}</span>
+                </div>
+              </div>
+
+              <div className="mt-4 grid grid-cols-2 gap-2">
+                <Button
+                  variant="outline"
+                  className="min-h-[48px] border-border"
+                  onClick={handleOpenDescuento}
+                  disabled={!currentComanda || currentComanda.items.length === 0}
+                >
+                  <Percent className="mr-2 h-4 w-4" />
+                  {tieneDescuento ? 'Editar' : 'Descuento'}
+                </Button>
+                <Button
+                  variant="outline"
+                  className="min-h-[48px] border-border"
+                  onClick={handlePrintTicket}
+                  disabled={!currentComanda || currentComanda.items.length === 0}
+                >
+                  <Printer className="mr-2 h-4 w-4" /> Imprimir
+                </Button>
+              </div>
+              <div className="mt-2 grid grid-cols-2 gap-2">
+                <Button
+                  className="min-h-[56px] bg-amber-500 font-semibold text-zinc-900 hover:bg-amber-400"
+                  onClick={() => {
+                    handleEnviarCocina()
+                    setShowComandaDrawer(false)
+                  }}
+                  disabled={
+                    !currentComanda ||
+                    currentComanda.items.length === 0 ||
+                    currentComanda.estado !== 'pendiente'
+                  }
+                >
+                  <Send className="mr-2 h-4 w-4" /> Enviar
+                </Button>
+                <Button
+                  className="min-h-[56px] bg-green-600 font-semibold text-white hover:bg-green-500"
+                  onClick={() => {
+                    handleGoToPago()
+                    setShowComandaDrawer(false)
+                  }}
+                  disabled={!currentComanda || currentComanda.items.length === 0}
+                >
+                  Ir a Pago
+                </Button>
+              </div>
+            </div>
+          </aside>
+        </div>
+      )}
 
       {/* ── Burger dialog ── */}
       <Dialog open={showBurgerDialog} onOpenChange={setShowBurgerDialog}>
@@ -730,12 +1076,14 @@ export function POSPage() {
               </div>
             </div>
 
-            {/* INGREDIENTES ESPECIALES */}
             {ingredientesEspeciales.length > 0 && (
               <div>
                 <h4 className="mb-2 flex items-center gap-1.5 text-sm font-semibold uppercase tracking-wide text-amber-500">
-                  <Star className="h-4 w-4" /> Extras con costo adicional
+                  <Star className="h-4 w-4" /> Ingredientes Especiales
                 </h4>
+                <p className="mb-2 text-xs text-muted-foreground">
+                  Sin límite. No cuentan para los 3 ingredientes estándar.
+                </p>
                 <div className="flex flex-wrap gap-2">
                   {ingredientesEspeciales.map(esp => (
                     <Badge
@@ -749,39 +1097,59 @@ export function POSPage() {
                       )}
                       onClick={() => toggleEspecial(esp.id)}
                     >
-                      {esp.nombre} +{formatCurrency(esp.costoAdicional)}
+                      {esp.nombre}
+                      {esp.costoAdicional > 0 && (
+                        <span className="ml-1 font-semibold">
+                          + {formatCurrency(esp.costoAdicional)}
+                        </span>
+                      )}
                     </Badge>
                   ))}
                 </div>
               </div>
             )}
 
-            {/* NOTAS */}
             <div>
-              <label className="mb-1.5 block text-sm font-medium text-muted-foreground">
-                Notas especiales
+              <label className="mb-1.5 block text-sm font-medium text-amber-500">
+                📝 Nota especial
               </label>
               <Textarea
-                value={burgerNotas}
-                onChange={(e) => setBurgerNotas(e.target.value)}
-                placeholder="Ej: sin sal, bien cocida..."
+                value={burgerNotaEspecial}
+                onChange={(e) => setBurgerNotaEspecial(e.target.value)}
+                placeholder="Sin sal, bien cocida, sin gluten..."
                 className="border-border bg-muted"
                 rows={2}
               />
             </div>
 
-            {/* Summary */}
-            {(burgerEspeciales.length > 0) && (
-              <div className="rounded-lg bg-muted p-3 text-sm">
-                <div className="flex justify-between font-bold text-foreground">
-                  <span>Total:</span>
-                  <span>{formatCurrency(
-                    (selectedBurger?.precio || 0) +
-                    burgerEspeciales.reduce((sum, id) => {
-                      const esp = ingredientesEspeciales.find(i => i.id === id)
-                      return sum + (esp?.costoAdicional || 0)
-                    }, 0)
-                  )}</span>
+            {burgerEspeciales.length > 0 && (
+              <div className="space-y-1 rounded-lg bg-muted p-3 text-sm">
+                <div className="flex justify-between text-muted-foreground">
+                  <span>Precio base</span>
+                  <span>{formatCurrency(selectedBurger?.precio || 0)}</span>
+                </div>
+                <div className="flex justify-between text-amber-500">
+                  <span>Especiales</span>
+                  <span>
+                    +{formatCurrency(
+                      burgerEspeciales.reduce((sum, id) => {
+                        const esp = ingredientesEspeciales.find(i => i.id === id)
+                        return sum + (Number(esp?.costoAdicional) || 0)
+                      }, 0)
+                    )}
+                  </span>
+                </div>
+                <div className="flex justify-between border-t border-border pt-1 font-bold text-foreground">
+                  <span>Total ítem</span>
+                  <span>
+                    {formatCurrency(
+                      (selectedBurger?.precio || 0) +
+                        burgerEspeciales.reduce((sum, id) => {
+                          const esp = ingredientesEspeciales.find(i => i.id === id)
+                          return sum + (Number(esp?.costoAdicional) || 0)
+                        }, 0)
+                    )}
+                  </span>
                 </div>
               </div>
             )}
@@ -844,6 +1212,49 @@ export function POSPage() {
                 rows={2}
               />
             </div>
+
+            {ingredientesEspeciales.length > 0 && (
+              <div>
+                <h4 className="mb-2 flex items-center gap-1.5 text-sm font-semibold uppercase tracking-wide text-amber-500">
+                  <Star className="h-4 w-4" /> Ingredientes Especiales
+                </h4>
+                <div className="flex flex-wrap gap-2">
+                  {ingredientesEspeciales.map(esp => (
+                    <Badge
+                      key={esp.id}
+                      variant={itemEspeciales.includes(esp.id) ? 'default' : 'outline'}
+                      className={cn(
+                        'cursor-pointer py-1.5 px-3',
+                        itemEspeciales.includes(esp.id)
+                          ? 'bg-amber-500 text-zinc-900 hover:bg-amber-400'
+                          : 'border-border hover:border-amber-500 text-foreground'
+                      )}
+                      onClick={() => toggleItemEspecial(esp.id)}
+                    >
+                      {esp.nombre}
+                      {esp.costoAdicional > 0 && (
+                        <span className="ml-1 font-semibold">
+                          + {formatCurrency(esp.costoAdicional)}
+                        </span>
+                      )}
+                    </Badge>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div>
+              <label className="mb-2 block text-sm font-medium text-amber-500">
+                📝 Nota especial
+              </label>
+              <Textarea
+                value={itemNotaEspecial}
+                onChange={(e) => setItemNotaEspecial(e.target.value)}
+                placeholder="Sin sal, bien cocida, sin gluten..."
+                className="border-border bg-muted"
+                rows={2}
+              />
+            </div>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setShowItemDialog(false)}>Cancelar</Button>
@@ -858,9 +1269,22 @@ export function POSPage() {
       <Dialog open={showDescuentoDialog} onOpenChange={setShowDescuentoDialog}>
         <DialogContent aria-describedby={undefined} className="border-border bg-card">
           <DialogHeader>
-            <DialogTitle className="text-foreground">Aplicar Descuento</DialogTitle>
+            <DialogTitle className="text-foreground">
+              {tieneDescuento ? 'Editar descuento' : 'Aplicar descuento'}
+            </DialogTitle>
           </DialogHeader>
           <div className="space-y-4 py-4">
+            {permisoActual && !permisoActual.puede && (
+              <div className="rounded-md border border-amber-500/50 bg-amber-500/10 p-3 text-sm text-amber-200">
+                Tu rol no puede aplicar descuentos. Necesitas autorización del administrador.
+              </div>
+            )}
+            {permisoActual?.puede && (
+              <div className="rounded-md border border-border bg-muted/50 p-3 text-xs text-muted-foreground">
+                Tu límite como <span className="font-semibold text-foreground">{usuarioActual?.rol}</span>:{' '}
+                <span className="font-semibold text-foreground">{permisoActual.limiteMax}%</span>. Si superas el límite o aplicas cortesía total se requerirá PIN del admin.
+              </div>
+            )}
             <div>
               <label className="mb-2 block text-sm font-medium text-muted-foreground">Tipo</label>
               <Select value={descuentoTipo} onValueChange={(v) => setDescuentoTipo(v as TipoDescuento)}>
@@ -868,22 +1292,30 @@ export function POSPage() {
                 <SelectContent>
                   <SelectItem value="porcentaje">Porcentaje (%)</SelectItem>
                   <SelectItem value="monto_fijo">Monto fijo ($)</SelectItem>
+                  <SelectItem value="cortesia_parcial">Cortesía parcial</SelectItem>
+                  <SelectItem value="cortesia_total">Cortesía total</SelectItem>
                 </SelectContent>
               </Select>
             </div>
-            <div>
-              <label className="mb-2 block text-sm font-medium text-muted-foreground">Valor</label>
-              <Input
-                type="number"
-                value={descuentoValor}
-                onChange={(e) => setDescuentoValor(e.target.value)}
-                placeholder={descuentoTipo === 'porcentaje' ? 'Ej: 10' : 'Ej: 1000'}
-                className="border-border bg-muted"
-              />
-            </div>
+            {descuentoTipo !== 'cortesia_total' && (
+              <div>
+                <label className="mb-2 block text-sm font-medium text-muted-foreground">
+                  Valor {descuentoTipo === 'porcentaje' ? '(%)' : '($)'}
+                </label>
+                <Input
+                  type="number"
+                  value={descuentoValor}
+                  onChange={(e) => setDescuentoValor(e.target.value)}
+                  placeholder={descuentoTipo === 'porcentaje' ? 'Ej: 10' : 'Ej: 1000'}
+                  className="border-border bg-muted"
+                  min={0}
+                  max={descuentoTipo === 'porcentaje' ? 100 : undefined}
+                />
+              </div>
+            )}
             <div>
               <label className="mb-2 block text-sm font-medium text-muted-foreground">
-                Motivo {permisosDescuento[usuarioActual?.rol || 'mesero']?.requiereMotivo && '*'}
+                Motivo {(esCortesia || permisoActual?.requiereMotivo || requiereAdmin) && <span className="text-red-400">*</span>}
               </label>
               <Textarea
                 value={descuentoMotivo}
@@ -892,36 +1324,30 @@ export function POSPage() {
                 className="border-border bg-muted"
               />
             </div>
+            {requiereAdmin && valorEsValido && (
+              <div className="rounded-md border border-red-500/50 bg-red-500/10 p-3">
+                <p className="mb-2 text-sm font-medium text-red-200">
+                  Requiere autorización del administrador
+                </p>
+                <Input
+                  type="password"
+                  value={authPin}
+                  onChange={(e) => setAuthPin(e.target.value)}
+                  placeholder="PIN del administrador"
+                  className="border-border bg-muted"
+                  onKeyDown={(e) => e.key === 'Enter' && handleApplyDescuento()}
+                />
+              </div>
+            )}
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setShowDescuentoDialog(false)}>Cancelar</Button>
-            <Button onClick={handleApplyDescuento} className="bg-amber-500 text-zinc-900 hover:bg-amber-400">Aplicar</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* ── Auth dialog ── */}
-      <Dialog open={showAuthDialog} onOpenChange={setShowAuthDialog}>
-        <DialogContent aria-describedby={undefined} className="border-border bg-card">
-          <DialogHeader>
-            <DialogTitle className="text-foreground">Autorización Requerida</DialogTitle>
-          </DialogHeader>
-          <div className="space-y-4 py-4">
-            <p className="text-sm text-muted-foreground">
-              Ingresa el PIN del administrador para autorizar el descuento.
-            </p>
-            <Input
-              type="password"
-              value={authPin}
-              onChange={(e) => setAuthPin(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && handleAuthDescuento()}
-              placeholder="PIN del administrador"
-              className="border-border bg-muted"
-            />
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => { setShowAuthDialog(false); setAuthPin('') }}>Cancelar</Button>
-            <Button onClick={handleAuthDescuento} className="bg-amber-500 text-zinc-900 hover:bg-amber-400">Verificar</Button>
+            <Button
+              onClick={handleApplyDescuento}
+              className="bg-amber-500 text-zinc-900 hover:bg-amber-400"
+            >
+              {requiereAdmin ? 'Verificar y aplicar' : 'Aplicar'}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -984,18 +1410,18 @@ function ProductSection({
           <h4 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">{title}</h4>
         </div>
       )}
-      <div className="grid grid-cols-2 gap-2 md:grid-cols-3 lg:grid-cols-2 xl:grid-cols-3">
+      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 md:grid-cols-2 lg:grid-cols-2 xl:grid-cols-3">
         {items.map((item) => (
           <Button
             key={item.id}
             variant="outline"
-            className="h-auto min-h-[4.5rem] flex-col items-start justify-start border-border p-2 text-left hover:border-amber-500 hover:bg-amber-500/10"
+            className="h-auto min-h-[64px] md:min-h-[72px] flex-col items-start justify-start border-border p-3 text-left hover:border-amber-500 hover:bg-amber-500/10"
             onClick={() => onSelect(item)}
           >
-            <span className="w-full text-xs font-medium leading-tight text-foreground sm:text-sm">
+            <span className="w-full text-sm font-medium leading-tight text-foreground md:text-base">
               {item.nombre}
             </span>
-            <span className="mt-1 text-xs font-semibold text-amber-500">{formatCurrency(item.precio)}</span>
+            <span className="mt-1 text-sm font-semibold text-amber-500">{formatCurrency(item.precio)}</span>
             {item.variantes && item.variantes.length > 0 && (
               <span className="mt-0.5 text-[10px] leading-tight text-muted-foreground">
                 {item.variantes.map(v => v.nombre).join(' / ')}

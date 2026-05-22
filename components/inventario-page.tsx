@@ -29,8 +29,9 @@ import {
 } from '@/components/ui/table'
 import { cn } from '@/lib/utils'
 import { formatCurrency } from '@/lib/helpers'
-import { Plus, Edit, AlertTriangle, Package, Search, RefreshCw } from 'lucide-react'
+import { Edit, AlertTriangle, Package, Search, RefreshCw, Star } from 'lucide-react'
 import { showToast } from '@/components/toast'
+import { Switch } from '@/components/ui/switch'
 
 interface InventarioRow {
   id: string
@@ -41,8 +42,9 @@ interface InventarioRow {
   stock_minimo: number
   unidad_medida: string
   updated_at: string
-  // from productos join
   precio?: number
+  es_ingrediente_especial?: boolean
+  costo_adicional?: number
 }
 
 const CATEGORIAS = [
@@ -63,7 +65,13 @@ export function InventarioPage() {
   const [showDialog, setShowDialog]     = useState(false)
   const [editing, setEditing]           = useState<InventarioRow | null>(null)
   const [saving, setSaving]             = useState(false)
-  const [formData, setFormData]         = useState({ stock_actual: '', stock_minimo: '', unidad_medida: 'unidad' })
+  const [formData, setFormData]         = useState({
+    stock_actual: '',
+    stock_minimo: '',
+    unidad_medida: 'unidad',
+    es_ingrediente_especial: false,
+    costo_adicional: '0',
+  })
 
   const loadInventario = useCallback(async () => {
     setLoading(true)
@@ -98,6 +106,8 @@ export function InventarioPage() {
       stock_actual:  item.stock_actual.toString(),
       stock_minimo:  item.stock_minimo.toString(),
       unidad_medida: item.unidad_medida || 'unidad',
+      es_ingrediente_especial: !!item.es_ingrediente_especial,
+      costo_adicional: ((item.costo_adicional ?? 0) || 0).toString(),
     })
     setShowDialog(true)
   }
@@ -114,18 +124,35 @@ export function InventarioPage() {
       showToast('Stock mínimo debe ser un número mayor o igual a 0', 'error')
       return
     }
+    const costoAdicional = formData.es_ingrediente_especial
+      ? Number(formData.costo_adicional)
+      : 0
+    if (formData.es_ingrediente_especial && (!Number.isFinite(costoAdicional) || costoAdicional < 0)) {
+      showToast('Costo adicional debe ser un número mayor o igual a 0', 'error')
+      return
+    }
     setSaving(true)
     try {
-      const res = await fetch('/api/inventario', {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          producto_id:  editing.producto_id,
-          stock_actual,
-          stock_minimo,
+      const [inventarioRes, productoRes] = await Promise.all([
+        fetch('/api/inventario', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            producto_id:  editing.producto_id,
+            stock_actual,
+            stock_minimo,
+          }),
         }),
-      })
-      if (res.ok) {
+        fetch(`/api/productos/${editing.producto_id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            es_ingrediente_especial: formData.es_ingrediente_especial,
+            costo_adicional: costoAdicional,
+          }),
+        }),
+      ])
+      if (inventarioRes.ok && productoRes.ok) {
         showToast(`${editing.producto_nombre} actualizado`, 'success')
         setShowDialog(false)
         await loadInventario()
@@ -269,7 +296,22 @@ export function InventarioPage() {
                         item.stock_actual > 0 && item.stock_actual <= item.stock_minimo && 'bg-orange-500/10',
                       )}
                     >
-                      <TableCell className="font-medium text-foreground">{item.producto_nombre}</TableCell>
+                      <TableCell className="font-medium text-foreground">
+                        <div className="flex items-center gap-2">
+                          <span>{item.producto_nombre}</span>
+                          {item.es_ingrediente_especial && (
+                            <Badge
+                              variant="outline"
+                              className="border-amber-500/40 bg-amber-500/10 text-amber-500"
+                              title={`Ingrediente especial${item.costo_adicional ? ` +${formatCurrency(item.costo_adicional)}` : ''}`}
+                            >
+                              <Star className="mr-1 h-3 w-3" />
+                              Especial
+                              {item.costo_adicional ? ` +${formatCurrency(item.costo_adicional)}` : ''}
+                            </Badge>
+                          )}
+                        </div>
+                      </TableCell>
                       <TableCell>
                         <Badge variant="outline" className="border-border text-xs capitalize">
                           {item.categoria?.replace('_', ' ')}
@@ -342,6 +384,46 @@ export function InventarioPage() {
                 placeholder="unidad, kg, litros..."
                 className="border-border bg-muted"
               />
+            </div>
+
+            <div className="space-y-3 rounded-lg border border-border bg-muted/40 p-3">
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2">
+                  <Star className="h-4 w-4 text-amber-500" />
+                  <label htmlFor="es-ingrediente-especial" className="text-sm font-medium text-foreground">
+                    Disponible como ingrediente especial
+                  </label>
+                </div>
+                <Switch
+                  id="es-ingrediente-especial"
+                  checked={formData.es_ingrediente_especial}
+                  onCheckedChange={(checked) =>
+                    setFormData({ ...formData, es_ingrediente_especial: !!checked })
+                  }
+                />
+              </div>
+              {formData.es_ingrediente_especial && (
+                <div className="space-y-1.5">
+                  <label className="text-xs text-muted-foreground">
+                    Costo adicional ($) — aplicado al usarlo como extra en el POS
+                  </label>
+                  <Input
+                    type="number"
+                    min="0"
+                    step="100"
+                    value={formData.costo_adicional}
+                    onChange={(e) => setFormData({ ...formData, costo_adicional: e.target.value })}
+                    placeholder="0"
+                    className="border-border bg-card"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Vista previa:{' '}
+                    <span className="font-medium text-amber-500">
+                      +{formatCurrency(Number(formData.costo_adicional) || 0)}
+                    </span>
+                  </p>
+                </div>
+              )}
             </div>
           </div>
           <DialogFooter>

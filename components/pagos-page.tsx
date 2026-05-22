@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useApp } from '@/lib/app-context'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -23,17 +23,27 @@ import {
 } from '@/components/ui/select'
 import { cn } from '@/lib/utils'
 import { formatCurrency, formatDate, getEstadoComandaLabel, getEstadoComandaColor } from '@/lib/helpers'
-import { CreditCard, DollarSign, QrCode, Receipt, Calculator, Check, Users } from 'lucide-react'
+import { CreditCard, DollarSign, Receipt, Calculator, Check, Users } from 'lucide-react'
 import { showToast } from '@/components/toast'
 import { useSearchParams, useRouter } from 'next/navigation'
-import { Comanda, MetodoPago, Pago } from '@/lib/types'
-import { generateId } from '@/lib/helpers'
+import { MetodoPago } from '@/lib/types'
 
 export function PagosPage() {
-  const { state, dispatch } = useApp()
+  const {
+    state,
+    dispatch,
+    crearPagoApi,
+    recargarPagos,
+    updateOrden,
+    updateMesa,
+  } = useApp()
   const searchParams = useSearchParams()
   const router = useRouter()
   const { comandas, mesas, pagos, usuarioActual } = state
+
+  useEffect(() => {
+    recargarPagos()
+  }, [recargarPagos])
 
   const comandaIdParam = searchParams.get('comanda')
 
@@ -49,7 +59,6 @@ export function PagosPage() {
   const [dividirCuenta, setDividirCuenta] = useState(false)
   const [numPersonas, setNumPersonas] = useState('2')
   const [efectivoRecibido, setEfectivoRecibido] = useState('')
-  const [showQRDialog, setShowQRDialog] = useState(false)
   const [showBoletaDialog, setShowBoletaDialog] = useState(false)
 
   // Calculate totals
@@ -73,64 +82,65 @@ export function PagosPage() {
 
   // Comandas pending payment
   const comandasPendientes = comandas.filter(c => 
-    c.estado === 'lista' || c.estado === 'en_cocina'
+    c.estado === 'listo' || c.estado === 'en_cocina'
   )
 
   const handleSelectComanda = (comandaId: string) => {
     router.push(`/pagos?comanda=${comandaId}`)
   }
 
-  const handleConfirmarPago = () => {
+  const handleConfirmarPago = async () => {
     if (!comandaAPagar || !usuarioActual) return
 
-    // Create payment record
-    const nuevoPago: Pago = {
-      id: generateId(),
-      comandaId: comandaAPagar.id,
-      metodo: metodoPago,
-      total: total,
-      propina: propinaCalculada,
-      descuento: descuentoMonto,
-      divididoEn: dividirCuenta ? parseInt(numPersonas) : 1,
-      fecha: Date.now()
-    }
-
-    dispatch({ type: 'ADD_PAGO', payload: nuevoPago })
-
-    // Update comanda status to paid
-    dispatch({
-      type: 'UPDATE_COMANDA',
-      payload: { ...comandaAPagar, estado: 'pagada' }
-    })
-
-    // Free the table
-    const mesa = mesas.find(m => m.id === comandaAPagar.mesaId)
-    if (mesa) {
-      dispatch({
-        type: 'UPDATE_MESA',
-        payload: { ...mesa, estado: 'libre' }
+    try {
+      const nuevoPago = await crearPagoApi({
+        orden_id: comandaAPagar.id,
+        metodo: metodoPago,
+        monto: total,
+        total,
+        propina: propinaCalculada,
+        descuento: descuentoMonto,
+        dividido_en: dividirCuenta ? parseInt(numPersonas) : 1,
+        vuelto: metodoPago === 'efectivo' && parseFloat(efectivoRecibido) >= total ? vuelto : null,
+        referencia: null,
+        aprobado: true,
       })
-    }
+      dispatch({ type: 'ADD_PAGO', payload: nuevoPago })
 
-    showToast('Pago confirmado exitosamente', 'success')
-    setShowBoletaDialog(true)
+      await updateOrden(comandaAPagar.id, { estado: 'pagado' })
+      dispatch({
+        type: 'UPDATE_COMANDA',
+        payload: { ...comandaAPagar, estado: 'pagada' },
+      })
+
+      const mesa = mesas.find((m) => m.id === comandaAPagar.mesaId)
+      if (mesa) {
+        await updateMesa(mesa.id, { estado: 'libre' })
+        dispatch({
+          type: 'UPDATE_MESA',
+          payload: { ...mesa, estado: 'libre' },
+        })
+      }
+
+      showToast('Pago confirmado exitosamente', 'success')
+      setShowBoletaDialog(true)
+    } catch (error: any) {
+      showToast(error?.message || 'Error al registrar pago', 'error')
+    }
   }
 
-  const handleCerrarCaja = () => {
-    const hoy = new Date()
-    const pagosHoy = pagos.filter(p => {
-      const pagoDate = new Date(p.fecha)
-      return pagoDate.toDateString() === hoy.toDateString()
-    })
-
-    const totalVentas = pagosHoy.reduce((sum, p) => sum + p.total, 0)
-    const totalPropinas = pagosHoy.reduce((sum, p) => sum + p.propina, 0)
-    const totalDescuentos = pagosHoy.reduce((sum, p) => sum + p.descuento, 0)
-
-    showToast(
-      `Caja cerrada: ${pagosHoy.length} pagos, ${formatCurrency(totalVentas)} en ventas`,
-      'success'
-    )
+  const handleCerrarCaja = async () => {
+    try {
+      const pagosHoy = await recargarPagos('hoy')
+      const totalVentas = pagosHoy.reduce((sum: number, p: any) => sum + Number(p.total ?? p.monto ?? 0), 0)
+      const totalPropinas = pagosHoy.reduce((sum: number, p: any) => sum + Number(p.propina ?? 0), 0)
+      showToast(
+        `Caja cerrada: ${pagosHoy.length} pagos, ${formatCurrency(totalVentas)} en ventas, ${formatCurrency(totalPropinas)} en propinas`,
+        'success'
+      )
+    } catch (error: any) {
+      showToast(error?.message || 'Error al cerrar caja', 'error')
+    }
   }
 
   // If no comanda selected, show list of pending comandas
@@ -255,10 +265,21 @@ export function PagosPage() {
                         <p className="text-xs text-muted-foreground">+ {item.ingredientesEstandar.join(', ')}</p>
                       )}
                       {item.ingredientesEspeciales.length > 0 && (
-                        <p className="text-xs text-amber-500">⭐ {item.ingredientesEspeciales.join(', ')}</p>
+                        <p className="text-xs text-amber-500">
+                          ⭐ {item.ingredientesEspeciales
+                            .map(esp =>
+                              esp.costoAdicional > 0
+                                ? `${esp.nombre} (+${formatCurrency(esp.costoAdicional)})`
+                                : esp.nombre
+                            )
+                            .join(', ')}
+                        </p>
                       )}
                       {item.notas && (
                         <p className="text-xs italic text-muted-foreground">{item.notas}</p>
+                      )}
+                      {item.notaEspecial && (
+                        <p className="text-xs italic text-amber-500">📝 {item.notaEspecial}</p>
                       )}
                     </div>
                     <p className="font-medium text-foreground">{formatCurrency(item.precio * item.cantidad)}</p>
@@ -382,7 +403,7 @@ export function PagosPage() {
                 <CardTitle className="text-foreground">Método de Pago</CardTitle>
               </CardHeader>
               <CardContent>
-                <div className="grid grid-cols-3 gap-3">
+                <div className="grid grid-cols-2 gap-3">
                   <Button
                     variant={metodoPago === 'efectivo' ? 'default' : 'outline'}
                     onClick={() => setMetodoPago('efectivo')}
@@ -404,17 +425,6 @@ export function PagosPage() {
                   >
                     <CreditCard className="h-6 w-6" />
                     Tarjeta
-                  </Button>
-                  <Button
-                    variant={metodoPago === 'qr' ? 'default' : 'outline'}
-                    onClick={() => { setMetodoPago('qr'); setShowQRDialog(true) }}
-                    className={cn(
-                      'flex h-20 flex-col gap-2',
-                      metodoPago === 'qr' && 'bg-amber-500 text-zinc-900'
-                    )}
-                  >
-                    <QrCode className="h-6 w-6" />
-                    QR
                   </Button>
                 </div>
 
@@ -452,32 +462,6 @@ export function PagosPage() {
             </Button>
           </div>
         </div>
-
-        {/* QR Dialog */}
-        <Dialog open={showQRDialog} onOpenChange={setShowQRDialog}>
-          <DialogContent className="border-border bg-card">
-            <DialogHeader>
-              <DialogTitle className="text-foreground">Pago con QR</DialogTitle>
-            </DialogHeader>
-            <div className="flex flex-col items-center py-8">
-              <div className="mb-4 flex h-48 w-48 items-center justify-center rounded-lg bg-white">
-                <QrCode className="h-32 w-32 text-zinc-900" />
-              </div>
-              <p className="text-center text-sm text-muted-foreground">
-                Escanea el código QR con tu aplicación de pago
-              </p>
-              <p className="mt-2 text-2xl font-bold text-amber-500">{formatCurrency(total)}</p>
-            </div>
-            <DialogFooter>
-              <Button variant="outline" onClick={() => setShowQRDialog(false)}>
-                Cancelar
-              </Button>
-              <Button onClick={() => setShowQRDialog(false)} className="bg-amber-500 text-zinc-900 hover:bg-amber-400">
-                Pago Confirmado
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
 
         {/* Boleta Dialog */}
         <Dialog open={showBoletaDialog} onOpenChange={setShowBoletaDialog}>

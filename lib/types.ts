@@ -8,7 +8,7 @@ export type EstadoComanda = 'pendiente' | 'en_cocina' | 'en_preparacion' | 'list
 
 export type EstadoItem = 'pendiente' | 'en_preparacion' | 'listo' | 'problema'
 
-export type MetodoPago = 'efectivo' | 'tarjeta' | 'qr'
+export type MetodoPago = 'efectivo' | 'tarjeta'
 
 export type TipoMerma = 
   | 'accidente' 
@@ -19,7 +19,7 @@ export type TipoMerma =
   | 'error_preparacion' 
   | 'robo'
 
-export type TipoDescuento = 'porcentaje' | 'monto_fijo'
+export type TipoDescuento = 'porcentaje' | 'monto_fijo' | 'cortesia_parcial' | 'cortesia_total'
 
 export type Consecuencia = 'descuento_liquidacion' | 'solo_registro' | 'amonestacion'
 
@@ -28,7 +28,8 @@ export interface Usuario {
   nombre: string
   email: string
   rol: Rol
-  pinHash: string
+  pinHash?: string
+  pin_hash?: string
   activo: boolean
   intentosFallidos: number
   bloqueadoHasta: number | null
@@ -37,8 +38,10 @@ export interface Usuario {
 export interface Mesa {
   id: string
   nombre: string
+  numero?: number
   capacidad: number
   estado: EstadoMesa
+  area?: string
 }
 
 export interface Producto {
@@ -61,15 +64,22 @@ export interface Ingrediente {
   stockMinimo: number
 }
 
+export interface IngredienteEspecialItem {
+  id: string
+  nombre: string
+  costoAdicional: number
+}
+
 export interface ItemComanda {
   id: string
   productoId: string
   productoNombre: string
   cantidad: number
   ingredientesEstandar: string[]
-  ingredientesEspeciales: string[]
+  ingredientesEspeciales: IngredienteEspecialItem[]
   salsaSeleccionada?: string
   notas: string
+  notaEspecial: string
   precio: number
   variante?: string
   estado: EstadoItem
@@ -96,12 +106,56 @@ export interface Comanda {
 export interface Pago {
   id: string
   comandaId: string
+  orden_id?: string
   metodo: MetodoPago
   total: number
+  monto?: number
   propina: number
   descuento: number
+  vuelto?: number
+  referencia?: string
+  aprobado?: boolean
   divididoEn: number
   fecha: number
+}
+
+export interface Orden {
+  id: string
+  mesa_id: string
+  usuario_id: string
+  estado: EstadoComanda
+  subtotal: number
+  impuesto: number
+  total: number
+  notas?: string
+  enviado_a_cocina?: boolean
+  hora_envio?: string | null
+  numero_orden?: number
+  created_at?: string
+  updated_at?: string
+  items?: ItemOrden[]
+}
+
+export interface ItemOrden {
+  id: string
+  orden_id: string
+  producto_id: string
+  cantidad: number
+  precio_unitario: number
+  modificadores: string[]
+  notas_especiales?: string
+  estado_item: EstadoItem
+  created_at?: string
+}
+
+export interface Inventario {
+  id: string
+  producto_id: string
+  stock_actual: number
+  stock_minimo: number
+  unidad_medida?: string
+  created_at?: string
+  updated_at?: string
 }
 
 export interface Merma {
@@ -196,6 +250,7 @@ export interface AppState {
   isOnline: boolean
   sincronizando: boolean
   notificaciones: Notificacion[]
+}
 
 export type AppAction =
   | { type: 'SET_USUARIO'; payload: Usuario | null }
@@ -216,6 +271,7 @@ export type AppAction =
   | { type: 'UPDATE_USUARIO'; payload: Usuario }
   | { type: 'DELETE_USUARIO'; payload: string }
   | { type: 'ADD_PAGO'; payload: Pago }
+  | { type: 'SET_PAGOS'; payload: Pago[] }
   | { type: 'ADD_MERMA'; payload: Merma }
   | { type: 'UPDATE_MERMA'; payload: Merma }
   | { type: 'ADD_DESCUENTO'; payload: RegistroDescuento }

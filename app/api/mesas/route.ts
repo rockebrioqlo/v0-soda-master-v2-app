@@ -23,3 +23,18 @@ export async function PATCH(request: Request) {
     return Response.json({ error: 'Error en servidor' }, { status: 500 })
   }
 }
+
+export async function POST(request: Request) {
+  try {
+    const body = await request.json()
+    const mesa = await db.crearMesa(body || {})
+    return Response.json(mesa, { status: 201 })
+  } catch (error: any) {
+    console.error('Create mesa error:', error)
+    const message = String(error?.message ?? '')
+    if (message.includes('mesas_numero_key') || message.includes('duplicate key')) {
+      return Response.json({ error: 'Número de mesa ya existe' }, { status: 409 })
+    }
+    return Response.json({ error: 'Error en servidor' }, { status: 500 })
+  }
+}

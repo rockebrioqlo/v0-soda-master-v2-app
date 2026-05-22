@@ -16,13 +16,24 @@ import {
   LogOut,
   Menu,
   X,
-  Wifi,
-  WifiOff
+  WifiOff,
+  AlertTriangle,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { useState } from 'react'
+import { BottomNav } from '@/components/bottom-nav'
 
-type PageType = 'dashboard' | 'mesas' | 'pos' | 'kds' | 'inventario' | 'usuarios' | 'pagos' | 'mermas' | 'reportes' | 'configuracion'
+type PageType =
+  | 'dashboard'
+  | 'mesas'
+  | 'pos'
+  | 'kds'
+  | 'inventario'
+  | 'usuarios'
+  | 'pagos'
+  | 'mermas'
+  | 'reportes'
+  | 'configuracion'
 
 interface NavItem {
   page: PageType
@@ -39,23 +50,15 @@ const navItems: NavItem[] = [
   { page: 'inventario', label: 'Inventario', icon: <Package className="h-5 w-5" />, modulo: 'inventario' },
   { page: 'usuarios', label: 'Usuarios', icon: <Users className="h-5 w-5" />, modulo: 'usuarios' },
   { page: 'pagos', label: 'Pagos', icon: <CreditCard className="h-5 w-5" />, modulo: 'pagos' },
+  { page: 'mermas', label: 'Mermas', icon: <AlertTriangle className="h-5 w-5" />, modulo: 'mermas' },
   { page: 'reportes', label: 'Reportes', icon: <BarChart3 className="h-5 w-5" />, modulo: 'reportes' },
   { page: 'configuracion', label: 'Config', icon: <Settings className="h-5 w-5" />, modulo: 'configuracion' },
 ]
 
-// Mobile-optimized nav for specific roles
-const mobileNavByRole: Record<string, PageType[]> = {
-  mesero: ['mesas', 'pos'],
-  cocina: ['kds'],
-  bar: ['kds'],
-  cajero: ['dashboard', 'mesas', 'pos', 'pagos', 'reportes'],
-  administrador: ['dashboard', 'mesas', 'pos', 'kds', 'inventario', 'usuarios', 'pagos', 'reportes', 'configuracion'],
-  admin: ['dashboard', 'mesas', 'pos', 'kds', 'inventario', 'usuarios', 'pagos', 'reportes', 'configuracion'],
-}
-
 export function MainLayout({ children }: { children: React.ReactNode }) {
   const { state, logout, hasPermission, currentPage, navigateTo } = useApp()
-  const [sidebarOpen, setSidebarOpen] = useState(false)
+  // Tablet sidebar expansion (overlay)
+  const [tabletExpanded, setTabletExpanded] = useState(false)
 
   const { usuarioActual, isOnline, configuracion } = state
 
@@ -91,133 +94,129 @@ export function MainLayout({ children }: { children: React.ReactNode }) {
     )
   }
 
-  const filteredNavItems = navItems.filter(item => hasPermission(item.modulo))
-  const mobileNavModulos = mobileNavByRole[usuarioActual.rol] || ['dashboard', 'mesas', 'pos']
-  const mobileNavItems = navItems.filter(item => 
-    mobileNavModulos.includes(item.page) && hasPermission(item.modulo)
-  )
+  const filteredNavItems = navItems.filter((item) => hasPermission(item.modulo))
+
+  const renderNavButton = (item: NavItem, opts?: { collapsed?: boolean; onAfter?: () => void }) => {
+    const collapsed = !!opts?.collapsed
+    const active = currentPage === item.page
+    return (
+      <button
+        key={item.page}
+        onClick={() => {
+          navigateTo(item.page)
+          opts?.onAfter?.()
+        }}
+        title={collapsed ? item.label : undefined}
+        className={cn(
+          'flex items-center gap-3 rounded-lg text-sm transition-colors w-full',
+          collapsed ? 'justify-center px-2 py-3' : 'px-3 py-2 text-left',
+          active
+            ? 'bg-amber-500/20 text-amber-500'
+            : 'text-muted-foreground hover:bg-secondary hover:text-foreground'
+        )}
+      >
+        {item.icon}
+        {!collapsed && <span>{item.label}</span>}
+      </button>
+    )
+  }
 
   return (
     <div className="min-h-screen bg-background">
       {/* Offline Banner */}
       {!isOnline && (
-        <div className="bg-yellow-500/20 px-4 py-2 text-center text-sm text-yellow-500">
+        <div className="bg-yellow-500/20 px-4 py-2 text-center text-xs text-yellow-500 md:text-sm">
           <WifiOff className="mr-2 inline h-4 w-4" />
-          Modo offline activo - trabajando con datos locales
+          Modo offline activo
         </div>
       )}
 
       {/* Header */}
-      <header className="sticky top-0 z-50 flex h-14 items-center justify-between border-b border-border bg-card px-4 lg:px-6">
-        <div className="flex items-center gap-4">
+      <header className="sticky top-0 z-30 flex h-14 items-center justify-between border-b border-border bg-card px-3 md:px-4 lg:px-6">
+        <div className="flex items-center gap-2 md:gap-4">
+          {/* Tablet hamburger (md..lg) */}
           <Button
             variant="ghost"
             size="icon"
-            className="lg:hidden"
-            onClick={() => setSidebarOpen(!sidebarOpen)}
+            className="hidden md:inline-flex lg:hidden"
+            onClick={() => setTabletExpanded((v) => !v)}
+            aria-label="Menú"
           >
-            {sidebarOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
+            {tabletExpanded ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
           </Button>
-          <button 
-            onClick={() => navigateTo('dashboard')} 
+          <button
+            onClick={() => navigateTo(hasPermission('dashboard') ? 'dashboard' : 'mesas')}
             className="flex items-center gap-2"
           >
-            <span className="text-lg font-bold text-amber-500">{configuracion.nombreRestaurante}</span>
+            <span className="truncate text-base font-bold text-amber-500 md:text-lg">
+              {configuracion.nombreRestaurante}
+            </span>
           </button>
         </div>
-        <div className="flex items-center gap-4">
-          {isOnline ? (
-            <Wifi className="h-4 w-4 text-green-500" />
-          ) : (
-            <WifiOff className="h-4 w-4 text-yellow-500" />
-          )}
-          <span className="hidden text-sm text-muted-foreground sm:inline">
-            {usuarioActual.nombre} ({getRolLabel(usuarioActual.rol)})
+        <div className="flex items-center gap-2 md:gap-4">
+          {/* Connection: mobile = dot, desktop = icon */}
+          <span
+            className={cn(
+              'inline-block h-2.5 w-2.5 rounded-full md:hidden',
+              isOnline ? 'bg-green-500' : 'bg-red-500'
+            )}
+            aria-label={isOnline ? 'Conectado' : 'Sin conexión'}
+            title={isOnline ? 'Conectado' : 'Sin conexión'}
+          />
+          <span className="hidden text-sm text-muted-foreground md:inline">
+            {usuarioActual.nombre} <span className="text-xs">({getRolLabel(usuarioActual.rol)})</span>
           </span>
-          <Button variant="ghost" size="sm" onClick={logout}>
+          {/* Mobile: short user name only */}
+          <span className="max-w-[7rem] truncate text-sm text-muted-foreground md:hidden">
+            {usuarioActual.nombre}
+          </span>
+          <Button variant="ghost" size="sm" onClick={logout} aria-label="Salir">
             <LogOut className="h-4 w-4" />
-            <span className="ml-2 hidden sm:inline">Salir</span>
+            <span className="ml-2 hidden lg:inline">Salir</span>
           </Button>
         </div>
       </header>
 
       <div className="flex">
-        {/* Sidebar - Desktop */}
-        <aside className="hidden w-64 border-r border-border bg-card lg:block">
+        {/* Sidebar - Desktop (lg+) full width */}
+        <aside className="hidden w-64 shrink-0 border-r border-border bg-card lg:block">
           <nav className="flex flex-col gap-1 p-4">
-            {filteredNavItems.map((item) => (
-              <button
-                key={item.page}
-                onClick={() => navigateTo(item.page)}
-                className={cn(
-                  'flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors text-left w-full',
-                  currentPage === item.page
-                    ? 'bg-amber-500/20 text-amber-500'
-                    : 'text-muted-foreground hover:bg-secondary hover:text-foreground'
-                )}
-              >
-                {item.icon}
-                {item.label}
-              </button>
-            ))}
+            {filteredNavItems.map((item) => renderNavButton(item))}
           </nav>
         </aside>
 
-        {/* Mobile Sidebar Overlay */}
-        {sidebarOpen && (
-          <div className="fixed inset-0 z-40 lg:hidden">
-            <div className="fixed inset-0 bg-black/50" onClick={() => setSidebarOpen(false)} />
-            <aside className="fixed left-0 top-14 h-[calc(100vh-3.5rem)] w-64 border-r border-border bg-card">
+        {/* Sidebar - Tablet (md..lg) collapsed (icons only) */}
+        <aside className="hidden w-16 shrink-0 border-r border-border bg-card md:block lg:hidden">
+          <nav className="flex flex-col gap-1 p-2">
+            {filteredNavItems.map((item) => renderNavButton(item, { collapsed: true }))}
+          </nav>
+        </aside>
+
+        {/* Tablet expanded overlay (md..lg) */}
+        {tabletExpanded && (
+          <div className="fixed inset-0 z-40 hidden md:block lg:hidden">
+            <div
+              className="absolute inset-0 bg-black/50"
+              onClick={() => setTabletExpanded(false)}
+            />
+            <aside className="absolute left-0 top-14 h-[calc(100vh-3.5rem)] w-64 border-r border-border bg-card shadow-xl">
               <nav className="flex flex-col gap-1 p-4">
-                {filteredNavItems.map((item) => (
-                  <button
-                    key={item.page}
-                    onClick={() => {
-                      navigateTo(item.page)
-                      setSidebarOpen(false)
-                    }}
-                    className={cn(
-                      'flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors text-left w-full',
-                      currentPage === item.page
-                        ? 'bg-amber-500/20 text-amber-500'
-                        : 'text-muted-foreground hover:bg-secondary hover:text-foreground'
-                    )}
-                  >
-                    {item.icon}
-                    {item.label}
-                  </button>
-                ))}
+                {filteredNavItems.map((item) =>
+                  renderNavButton(item, { onAfter: () => setTabletExpanded(false) })
+                )}
               </nav>
             </aside>
           </div>
         )}
 
         {/* Main Content */}
-        <main className="flex-1 p-4 pb-20 lg:p-6 lg:pb-6">
+        <main className="flex-1 p-3 pb-24 md:p-4 md:pb-4 lg:p-6">
           {children}
         </main>
       </div>
 
-      {/* Mobile Bottom Navigation */}
-      <nav className="fixed bottom-0 left-0 right-0 z-50 border-t border-border bg-card lg:hidden">
-        <div className="flex items-center justify-around">
-          {mobileNavItems.slice(0, 5).map((item) => (
-            <button
-              key={item.page}
-              onClick={() => navigateTo(item.page)}
-              className={cn(
-                'flex flex-1 flex-col items-center gap-1 py-3 text-xs transition-colors',
-                currentPage === item.page
-                  ? 'text-amber-500'
-                  : 'text-muted-foreground'
-              )}
-            >
-              {item.icon}
-              <span>{item.label}</span>
-            </button>
-          ))}
-        </div>
-      </nav>
+      {/* Mobile bottom tab bar (< md) */}
+      <BottomNav />
     </div>
   )
 }

@@ -31,14 +31,20 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { cn } from '@/lib/utils'
-import { generateId, getRolLabel } from '@/lib/helpers'
+import { getRolLabel } from '@/lib/helpers'
 import { Plus, Edit, Trash2, UserCheck, UserX, Shield } from 'lucide-react'
 import { showToast } from '@/components/toast'
 import { Usuario, Rol, PermisosDescuento } from '@/lib/types'
 import { hash } from 'bcryptjs'
 
 export function UsuariosPage() {
-  const { state, dispatch } = useApp()
+  const {
+    state,
+    dispatch,
+    crearUsuarioApi,
+    actualizarUsuarioApi,
+    eliminarUsuarioApi,
+  } = useApp()
   const { usuarios, permisosDescuento } = state
 
   const [showDialog, setShowDialog] = useState(false)
@@ -78,28 +84,30 @@ export function UsuariosPage() {
     setShowDialog(true)
   }
 
-  const handleDelete = (usuarioId: string) => {
+  const handleDelete = async (usuarioId: string) => {
     if (usuarioId === state.usuarioActual?.id) {
       showToast('No puedes eliminar tu propio usuario', 'error')
       return
     }
-    dispatch({ type: 'DELETE_USUARIO', payload: usuarioId })
-    showToast('Usuario eliminado', 'success')
+    try {
+      await eliminarUsuarioApi(usuarioId)
+      showToast('Usuario eliminado', 'success')
+    } catch (error: any) {
+      showToast(error?.message || 'Error al eliminar usuario', 'error')
+    }
   }
 
-  const handleToggleActivo = (usuario: Usuario) => {
+  const handleToggleActivo = async (usuario: Usuario) => {
     if (usuario.id === state.usuarioActual?.id) {
       showToast('No puedes desactivar tu propio usuario', 'error')
       return
     }
-    dispatch({
-      type: 'UPDATE_USUARIO',
-      payload: { ...usuario, activo: !usuario.activo }
-    })
-    showToast(
-      usuario.activo ? 'Usuario desactivado' : 'Usuario activado',
-      'success'
-    )
+    try {
+      await actualizarUsuarioApi(usuario.id, { activo: !usuario.activo })
+      showToast(usuario.activo ? 'Usuario desactivado' : 'Usuario activado', 'success')
+    } catch (error: any) {
+      showToast(error?.message || 'Error al actualizar usuario', 'error')
+    }
   }
 
   const handleSave = async () => {
@@ -118,31 +126,35 @@ export function UsuariosPage() {
       return
     }
 
-    let pinHash = editingUsuario?.pinHash || ''
-    if (formData.pin) {
-      pinHash = await hash(formData.pin, 10)
-    }
+    try {
+      if (editingUsuario) {
+        const updates: any = {
+          nombre: formData.nombre,
+          email: formData.email,
+          rol: formData.rol,
+          activo: formData.activo,
+        }
+        if (formData.pin) {
+          updates.pinHash = await hash(formData.pin, 10)
+        }
+        await actualizarUsuarioApi(editingUsuario.id, updates)
+        showToast('Usuario actualizado', 'success')
+      } else {
+        const pinHash = await hash(formData.pin, 10)
+        await crearUsuarioApi({
+          nombre: formData.nombre,
+          email: formData.email,
+          rol: formData.rol,
+          activo: formData.activo,
+          pinHash,
+        })
+        showToast('Usuario creado', 'success')
+      }
 
-    const usuarioData: Usuario = {
-      id: editingUsuario?.id || generateId(),
-      nombre: formData.nombre,
-      email: formData.email,
-      rol: formData.rol,
-      pinHash,
-      activo: formData.activo,
-      intentosFallidos: editingUsuario?.intentosFallidos || 0,
-      bloqueadoHasta: editingUsuario?.bloqueadoHasta || null
+      setShowDialog(false)
+    } catch (error: any) {
+      showToast(error?.message || 'Error al guardar usuario', 'error')
     }
-
-    if (editingUsuario) {
-      dispatch({ type: 'UPDATE_USUARIO', payload: usuarioData })
-      showToast('Usuario actualizado', 'success')
-    } else {
-      dispatch({ type: 'ADD_USUARIO', payload: usuarioData })
-      showToast('Usuario creado', 'success')
-    }
-
-    setShowDialog(false)
   }
 
   const handleSavePermisos = () => {
@@ -154,6 +166,7 @@ export function UsuariosPage() {
   const getRolBadgeColor = (rol: Rol) => {
     const colors: Record<Rol, string> = {
       administrador: 'bg-purple-500',
+      admin: 'bg-purple-500',
       mesero: 'bg-blue-500',
       cocina: 'bg-orange-500',
       bar: 'bg-pink-500',

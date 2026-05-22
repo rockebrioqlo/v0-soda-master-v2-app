@@ -24,6 +24,11 @@ Sistema POS completo para sodas y restaurantes desarrollado con Next.js 16, Reac
 - [x] Top 5 productos vendidos
 - [x] Alertas de bajo stock
 - [x] Ordenes recientes
+- [x] KPIs 100% reales desde Neon (sin mocks)
+- [x] Gráfico ventas 7 días con días en cero reales
+- [x] Top 5 productos desde items_orden real
+- [x] Skeletons de carga y estados vacíos
+- [x] Órdenes recientes desde BD
 
 ### 3. Gestion de Mesas
 - [x] Visualizacion de mesas por area (Interior, Terraza, Barra, VIP)
@@ -68,7 +73,7 @@ Sistema POS completo para sodas y restaurantes desarrollado con Next.js 16, Reac
 - [x] Cambio de PIN
 
 ### 8. Pagos y Caja
-- [x] Metodos de pago: efectivo, tarjeta, Sinpe, transferencia
+- [x] Metodos de pago: efectivo, tarjeta (Transbank)
 - [x] Pago dividido
 - [x] Propinas
 - [x] Calculo de cambio
@@ -84,6 +89,12 @@ Sistema POS completo para sodas y restaurantes desarrollado con Next.js 16, Reac
 - [x] Metodos de pago utilizados
 - [x] Estado del inventario
 - [x] Exportacion a CSV
+- [x] Endpoints /api/reportes/* (ventas, top-productos, ventas-categoria, metodos-pago, ventas-semana)
+- [x] Filtros: Hoy, Esta semana, Este mes, Rango personalizado
+- [x] Re-fetch automático al cambiar período
+- [x] Export CSV con datos reales de Neon
+- [x] Mensajes de estado vacío cuando no hay datos
+- [x] Métodos de pago: solo Efectivo y Tarjeta (Transbank)
 
 ### 10. Configuracion
 - [x] Informacion del negocio
@@ -93,6 +104,18 @@ Sistema POS completo para sodas y restaurantes desarrollado con Next.js 16, Reac
 - [x] Propinas
 - [x] Notificaciones
 - [x] Moneda y tasa de impuesto
+
+### 11. Menu Publico (/menu)
+- [x] Pagina publica sin login, accesible en `/menu`
+- [x] Mobile-first, responsive (360px en adelante)
+- [x] Tema oscuro con acentos ambar, layout independiente del SPA
+- [x] 7 categorias en orden: burgers, entradas, acompañamientos, postres, cervezas, jugos_bebidas, tragos
+- [x] Solo muestra productos activos con stock > 0
+- [x] Precios en formato chileno ($4.500, sin decimales, punto de miles)
+- [x] Nav horizontal con scroll suave entre categorias
+- [x] IntersectionObserver resalta la categoria visible al hacer scroll
+- [x] Header con nombre del negocio desde configuracion en Neon
+- [x] Footer con leyenda "Precios incluyen IVA"
 
 ---
 
@@ -239,6 +262,38 @@ Sistema POS completo para sodas y restaurantes desarrollado con Next.js 16, Reac
 4. **[CORREGIDO]** KDS no ve órdenes nuevas sin refrescar
    - **Causa:** Sin mecanismo de polling
    - **Solución:** Polling automático cada 5 segundos
+
+5. **[CORREGIDO]** TypeScript compila sin errores (ignoreBuildErrors eliminado)
+   - **Causa:** `next.config.mjs` tenía `typescript.ignoreBuildErrors = true` enmascarando errores reales (interfaces incompletas, handlers de rutas dinámicas con firma legacy, comparaciones de estado inconsistentes).
+   - **Solución:** Cerrar interfaces (`AppState`, `Orden`, `ItemOrden`, `Inventario`), agregar campos faltantes en `Mesa` y `Pago`, migrar handlers `[id]` a `params: Promise<{ id: string }>`, alinear strings de estado (`libre`, `listo`) y remover `ignoreBuildErrors`. `npx tsc --noEmit` pasa limpio.
+
+6. **[CORREGIDO]** Estados de mesa funcionan en BD
+   - **Causa:** El constraint `mesas_estado_check` exige `disponible|ocupada|reservada|limpiando`, pero el frontend usa `libre`.
+   - **Solución:** Helpers `toDatabaseMesaEstado` y `mapMesa` en `lib/db.ts` traducen `libre <-> disponible` de forma transparente en todas las queries de mesas.
+
+7. **[CORREGIDO]** PIN hash no se expone al cliente
+   - **Causa:** `/api/auth/login` y `/api/usuarios` devolvían el objeto crudo con `pin_hash`.
+   - **Solución:** `mapUsuario` filtra `pin_hash`, `pinHash`, `pin` y `password` antes de devolver al cliente. Verificado en login y listados.
+
+8. **[CORREGIDO]** Usuarios persisten en Neon (CRUD completo)
+   - **Causa:** `usuarios-page.tsx` solo despachaba al reducer local, los cambios se perdían al refrescar.
+   - **Solución:** Endpoints `POST /api/usuarios`, `PATCH /api/usuarios/[id]` y `DELETE /api/usuarios/[id]` con `bcrypt` para PIN (hasheado antes de enviarse). La UI llama a la API en crear, editar, toggle activo, cambio de PIN y eliminar.
+
+9. **[CORREGIDO]** Pagos persisten en Neon con `descuento` y `dividido_en`
+   - **Causa:** `handleConfirmarPago` solo despachaba `ADD_PAGO`; la tabla `pagos` no tenía columnas para descuento ni división de cuenta.
+   - **Solución:** `ALTER TABLE soda_master.pagos ADD COLUMN descuento NUMERIC(10,2) DEFAULT 0, dividido_en INTEGER DEFAULT 1`. Secuencia atómica en la UI: `POST /api/pagos` → `PATCH /api/ordenes/[id] estado='pagado'` → `PATCH /api/mesas/[id] estado='libre'`. Historial y cierre de caja usan `GET /api/pagos?fecha=hoy`.
+
+10. **[CORREGIDO]** Mesas crear/eliminar persisten en Neon
+    - **Causa:** `mesas-page.tsx` y `configuracion-page.tsx` solo despachaban `ADD_MESA`/`DELETE_MESA` al estado local.
+    - **Solución:** `POST /api/mesas` (resuelve `numero` desde el nombre o usa `MAX(numero)+1`) y `DELETE /api/mesas/[id]` (con `409` si hay órdenes asociadas). Ambas pantallas llaman a la API.
+
+11. **[CORREGIDO]** Configuración persiste en Neon (14 claves)
+    - **Causa:** `configuracion-page.tsx` mostraba un toast pero no guardaba en BD.
+    - **Solución:** Endpoint `/api/configuracion` con `GET` y `PATCH` sobre la tabla `configuracion` (key/value tipado: string/number/boolean/json) usando `INSERT ... ON CONFLICT (clave) DO UPDATE`. La pantalla carga al montar y persiste 14 claves (nombre_negocio, direccion, telefono, moneda, tasa_impuesto, impuesto_habilitado, propinas_habilitadas, propina_default, impresora_habilitada, impresora_ip, notificaciones_habilitadas, sonido_habilitado, kds_auto_completar, kds_tiempo_auto_completar).
+
+12. **[CORREGIDO]** Métodos de pago simplificados a efectivo/tarjeta (Transbank)
+    - **Causa:** El sistema arrastraba métodos no usados en Chile (qr, sinpe, transferencia, voucher) con un constraint laxo en BD.
+    - **Solución:** `ALTER TABLE pagos DROP CONSTRAINT pagos_metodo_check; ADD CONSTRAINT pagos_metodo_check CHECK (metodo IN ('efectivo','tarjeta'))`. UI con dos botones (Efectivo y Tarjeta), eliminados el dialog QR, los toggles de Sinpe/Transferencia en configuración y el slice "Sinpe" en reportes. `MetodoPago` ahora es `'efectivo' | 'tarjeta'` y `normalizarMetodoPago` ya no traduce métodos extranjeros.
 
 ---
 

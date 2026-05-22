@@ -97,32 +97,32 @@ export function KDSPage() {
   const comandasRol = isRolCocina ? comandasCocina : comandasBar
 
   return (
-    <div className="min-h-screen bg-background p-4">
+    <div className="min-h-screen bg-background p-3 md:p-4">
       {/* Header */}
-      <div className="mb-6 flex items-center justify-between">
-        <h1 className="flex items-center gap-2 text-3xl font-bold text-foreground">
+      <div className="mb-4 flex items-center justify-between gap-2 md:mb-6">
+        <h1 className="flex items-center gap-2 text-2xl font-bold text-foreground md:text-3xl">
           {isRolCocina ? (
             <>
-              <ChefHat className="h-8 w-8 text-amber-500" />
+              <ChefHat className="h-7 w-7 text-amber-500 md:h-8 md:w-8" />
               Cocina
             </>
           ) : isRolBar ? (
             <>
-              <Wine className="h-8 w-8 text-amber-500" />
+              <Wine className="h-7 w-7 text-amber-500 md:h-8 md:w-8" />
               Bar
             </>
           ) : (
-            'Kitchen Display System'
+            'KDS'
           )}
         </h1>
         <Button
           onClick={handleRefresh}
           disabled={isLoading}
           variant="outline"
-          className="gap-2 border-border"
+          className="gap-2 border-border min-h-[44px]"
         >
           <RefreshCw className={cn('h-4 w-4', isLoading && 'animate-spin')} />
-          {isLoading ? 'Actualizando...' : 'Refrescar'}
+          <span className="hidden sm:inline">{isLoading ? 'Actualizando...' : 'Refrescar'}</span>
         </Button>
       </div>
 
@@ -151,8 +151,8 @@ export function KDSPage() {
           </div>
         </div>
       ) : (
-        /* Admin view - two columns */
-        <div className="grid gap-6 lg:grid-cols-2">
+        /* Admin view - two columns on lg, one column below */
+        <div className="grid gap-4 md:gap-6 lg:grid-cols-2">
           {/* Cocina */}
           <div>
             <div className="mb-4 flex items-center justify-between">
@@ -290,7 +290,7 @@ function ComandaCard({
           {comanda.items.map((item) => (
             <li key={item.id} className="rounded-lg bg-muted p-3">
               <div className="flex items-start justify-between">
-                <span className="text-base font-bold text-foreground">
+                <span className="text-lg font-bold text-foreground">
                   {item.cantidad}x {item.productoNombre}
                 </span>
                 {item.variante && (
@@ -304,7 +304,12 @@ function ComandaCard({
               )}
               {item.ingredientesEspeciales?.length > 0 && (
                 <p className="mt-1 text-sm text-amber-500">
-                  Especiales: {item.ingredientesEspeciales.join(', ')}
+                  ⭐ Especiales: {item.ingredientesEspeciales.map(esp => esp.nombre).join(', ')}
+                </p>
+              )}
+              {item.notaEspecial && (
+                <p className="mt-1 rounded bg-amber-500/15 p-2 text-sm font-medium text-amber-600">
+                  📝 {item.notaEspecial}
                 </p>
               )}
               {item.salsaSeleccionada && (
@@ -321,35 +326,32 @@ function ComandaCard({
           ))}
         </ul>
 
-        {/* Action buttons */}
+        {/* Action buttons — touch-friendly */}
         <div className="grid grid-cols-3 gap-2">
           <Button
             variant="outline"
-            size="sm"
-            className="border-border text-xs"
+            className="border-border min-h-[56px] text-sm font-semibold"
             onClick={() => handleStateChange('en_preparacion')}
             disabled={isUpdating}
           >
-            <Zap className="mr-1 h-3 w-3" />
+            <Zap className="mr-1 h-4 w-4" />
             Preparando
           </Button>
           <Button
-            size="sm"
-            className="bg-green-600 text-xs text-white hover:bg-green-500"
+            className="bg-green-600 min-h-[56px] text-base font-bold text-white hover:bg-green-500"
             onClick={() => handleStateChange('listo')}
             disabled={isUpdating}
           >
-            <Check className="mr-1 h-3 w-3" />
+            <Check className="mr-1 h-5 w-5" />
             Listo
           </Button>
           <Button
-            size="sm"
             variant="destructive"
-            className="text-xs"
+            className="min-h-[56px] text-sm font-semibold"
             onClick={() => handleStateChange('problema')}
             disabled={isUpdating}
           >
-            <AlertCircle className="mr-1 h-3 w-3" />
+            <AlertCircle className="mr-1 h-4 w-4" />
             Problema
           </Button>
         </div>
