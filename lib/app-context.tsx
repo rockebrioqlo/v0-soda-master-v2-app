@@ -114,8 +114,21 @@ function appReducer(state: AppState, action: AppAction): AppState {
       return { ...state, sincronizando: action.payload }
     case 'LOAD_STATE':
       return { ...state, ...action.payload }
+    case 'RESET_SESSION_DATA':
+      return {
+        ...state,
+        usuarioActual: null,
+        comandas: [],
+        pagos: [],
+        mermas: [],
+        comandasNoPagadas: [],
+        descuentos: [],
+        conflictLog: [],
+        notificaciones: [],
+        sincronizando: false,
+      }
     case 'ADD_NOTIFICACION':
-      return { ...state, notificaciones: [...state.notificaciones, action.payload] }
+      return { ...state, notificaciones: [...state.notificaciones, action.payload].slice(-50) }
     case 'MARCAR_NOTIFICACION_VISTA':
       return {
         ...state,
@@ -174,6 +187,15 @@ interface AppContextType {
     motivo: string
     autorizado_por?: string | null
   }) => Promise<any | null>
+  crearNotificacionApi: (payload: {
+    tipo: 'problema' | 'listo' | 'nueva_orden'
+    orden_id?: string | null
+    mesa_nombre?: string | null
+    mensaje: string
+    destinatario_usuario_id?: string | null
+    destinatario_rol?: string | null
+  }) => Promise<any | null>
+  marcarNotificacionVistaApi: (id: string) => Promise<void>
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined)
@@ -216,6 +238,7 @@ function mapOrdenToComanda(orden: any, mesas: any[]): any {
         id: i.id,
         productoId: i.producto_id,
         productoNombre: i.producto_nombre || i.nombre || '',
+        categoria: i.categoria || '',
         cantidad: i.cantidad || 1,
         precio: parseFloat(i.precio_unitario) || 0,
         ingredientesEstandar: Array.isArray(i.modificadores) ? i.modificadores : [],
@@ -331,7 +354,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             // Fix mesa states: if a mesa is 'ocupada' but has no active comanda, reset it to 'libre'
             const mesasConComandaActiva = new Set(
               comandas
-                .filter((c: any) => !['pagada', 'pagado', 'cancelado'].includes(c.estado))
+                .filter((c: any) => !['pagado', 'cancelado'].includes(c.estado))
                 .map((c: any) => c.mesaId)
             )
             for (const mesa of loadedMesas) {
@@ -457,10 +480,40 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }, [])
 
   const logout = useCallback(() => {
-    dispatch({ type: 'SET_USUARIO', payload: null })
+    dispatch({ type: 'RESET_SESSION_DATA' })
+    setPosNavigation({ mesaId: null, comandaId: null })
     setCurrentPage('dashboard')
     sessionStorage.removeItem('soda_master_session')
   }, [])
+
+  useEffect(() => {
+    if (!state.usuarioActual) return
+    let cancelled = false
+
+    const verifyActiveUser = async () => {
+      try {
+        const res = await fetch('/api/usuarios', { cache: 'no-store' })
+        if (!res.ok) return
+        const usuarios = await res.json()
+        if (!Array.isArray(usuarios) || cancelled) return
+        const current = usuarios.find((u: any) => u.id === state.usuarioActual?.id)
+        if (!current || current.activo === false) {
+          showToast('Tu usuario fue desactivado. Sesión cerrada.', 'error')
+          logout()
+        }
+      } catch {
+        // If the network fails, keep the current session and let API errors surface.
+      }
+    }
+
+    window.addEventListener('focus', verifyActiveUser)
+    const interval = window.setInterval(verifyActiveUser, 60000)
+    return () => {
+      cancelled = true
+      window.removeEventListener('focus', verifyActiveUser)
+      window.clearInterval(interval)
+    }
+  }, [state.usuarioActual, logout])
 
   const hasPermission = useCallback((modulo: string): boolean => {
     if (!state.usuarioActual) return false
@@ -594,13 +647,20 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           const comandas = ordenes
             .map((o: any) => mapOrdenToComanda(o, mesas))
             .filter((c: any) => c.items.length > 0)
-          dispatch({ type: 'SET_COMANDAS', payload: comandas })
+          const mesasConComandaRemota = new Set(comandas.map((c: any) => c.mesaId))
+          const comandasLocalesPendientes = state.comandas.filter(
+            (c: any) =>
+              c.estado === 'pendiente' &&
+              !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(c.id) &&
+              !mesasConComandaRemota.has(c.mesaId)
+          )
+          dispatch({ type: 'SET_COMANDAS', payload: [...comandasLocalesPendientes, ...comandas] })
         }
       }
     } catch (error) {
       console.error('Error loading ordenes:', error)
     }
-  }, [])
+  }, [state.comandas])
 
   const crearItemOrden = useCallback(async (item: any) => {
     try {
@@ -612,8 +672,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       if (res.ok) {
         return await res.json()
       }
+      const err = await res.json().catch(() => ({}))
+      throw new Error(err?.error || 'Error al crear item')
     } catch (error) {
       console.error('Error creating item:', error)
+      if (error instanceof Error) {
+        showToast(error.message, 'error')
+      }
     }
     return null
   }, [])
@@ -839,6 +904,116 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     [state.usuarioActual?.id]
   )
 
+  // ── Notificaciones cross-device ────────────────────────────────────────────
+  // Cuando cocina marca "problema" o "listo", se persiste en BD una
+  // notificación dirigida al mesero dueño de la orden. Este cliente hace
+  // polling cada N segundos para traer las pendientes y dispatcharlas, así
+  // el toast aparece aunque el mesero esté en otra pestaña/dispositivo.
+
+  const crearNotificacionApi = useCallback(
+    async (payload: {
+      tipo: 'problema' | 'listo' | 'nueva_orden'
+      orden_id?: string | null
+      mesa_nombre?: string | null
+      mensaje: string
+      destinatario_usuario_id?: string | null
+      destinatario_rol?: string | null
+    }) => {
+      try {
+        const res = await fetch('/api/notificaciones', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        })
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}))
+          console.error('Error creating notificacion:', data?.error)
+          return null
+        }
+        return await res.json()
+      } catch (error) {
+        console.error('Error creating notificacion:', error)
+        return null
+      }
+    },
+    [],
+  )
+
+  const marcarNotificacionVistaApi = useCallback(async (id: string) => {
+    dispatch({ type: 'MARCAR_NOTIFICACION_VISTA', payload: id })
+    // Las notificaciones locales (ej. fallback antiguo) usan ids "notif_<ts>"
+    // que no son UUID válidos. Sólo persistimos las que vienen de la BD.
+    const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+    if (!UUID_RE.test(id)) return
+    try {
+      await fetch(`/api/notificaciones/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ vista: true }),
+      })
+    } catch (error) {
+      console.error('Error marking notificacion vista:', error)
+    }
+  }, [])
+
+  // Polling de notificaciones para el usuario activo.
+  useEffect(() => {
+    const usuario = state.usuarioActual
+    if (!usuario?.id) return
+    let cancelled = false
+    let running = false
+    const knownIds = new Set<string>()
+
+    const fetchNotificaciones = async () => {
+      if (cancelled || running) return
+      if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return
+      running = true
+      try {
+        const params = new URLSearchParams()
+        params.set('usuario_id', usuario.id)
+        if (usuario.rol) params.set('rol', usuario.rol)
+        params.set('solo_pendientes', 'true')
+        const res = await fetch(`/api/notificaciones?${params.toString()}`, {
+          cache: 'no-store',
+        })
+        if (!res.ok) return
+        const rows = await res.json()
+        if (!Array.isArray(rows) || cancelled) return
+        for (const row of rows) {
+          if (!row?.id || knownIds.has(row.id)) continue
+          knownIds.add(row.id)
+          dispatch({
+            type: 'ADD_NOTIFICACION',
+            payload: {
+              id: String(row.id),
+              tipo: row.tipo,
+              ordenId: row.orden_id || '',
+              mesaNombre: row.mesa_nombre || '',
+              mensaje: row.mensaje || '',
+              timestamp: Number(row.creado_ts) || Date.now(),
+              vista: false,
+            },
+          })
+        }
+      } catch {
+        // silenciar para no spamear la consola en redes inestables
+      } finally {
+        running = false
+      }
+    }
+
+    void fetchNotificaciones()
+    const interval = window.setInterval(fetchNotificaciones, 10000)
+    const onFocus = () => fetchNotificaciones()
+    window.addEventListener('focus', onFocus)
+
+    return () => {
+      cancelled = true
+      window.clearInterval(interval)
+      window.removeEventListener('focus', onFocus)
+    }
+  }, [state.usuarioActual])
+
   const guardarConfiguracion = useCallback(async (data: Record<string, any>) => {
     try {
       const res = await fetch('/api/configuracion', {
@@ -897,6 +1072,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       recargarPermisosDescuento,
       guardarPermisosDescuento,
       crearDescuentoApi,
+      crearNotificacionApi,
+      marcarNotificacionVistaApi,
     }}>
       {children}
     </AppContext.Provider>

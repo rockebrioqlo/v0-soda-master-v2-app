@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useApp } from '@/lib/app-context'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -25,8 +25,13 @@ import { cn } from '@/lib/utils'
 import { formatCurrency, formatDate, getEstadoComandaLabel, getEstadoComandaColor } from '@/lib/helpers'
 import { CreditCard, DollarSign, Receipt, Calculator, Check, Users } from 'lucide-react'
 import { showToast } from '@/components/toast'
-import { useSearchParams, useRouter } from 'next/navigation'
 import { MetodoPago } from '@/lib/types'
+import { PrintPreviewDialog } from '@/components/print-preview-dialog'
+import {
+  comandaToTicketItems,
+  readPrintConfigFromState,
+  type TicketData,
+} from '@/lib/print-ticket'
 
 export function PagosPage() {
   const {
@@ -37,19 +42,20 @@ export function PagosPage() {
     updateOrden,
     updateMesa,
   } = useApp()
-  const searchParams = useSearchParams()
-  const router = useRouter()
-  const { comandas, mesas, pagos, usuarioActual } = state
+  const { comandas, mesas, pagos, usuarioActual, configuracion } = state
+  const impuestoHabilitado = configuracion.impuesto_habilitado === true
+  const tasaImpuesto = Number(configuracion.tasa_impuesto) || 0
+  const propinasHabilitadas = configuracion.propinas_habilitadas !== false
 
   useEffect(() => {
     recargarPagos()
   }, [recargarPagos])
 
-  const comandaIdParam = searchParams.get('comanda')
+  const [selectedComandaId, setSelectedComandaId] = useState<string | null>(null)
 
   // Get comanda to pay
-  const comandaAPagar = comandaIdParam 
-    ? comandas.find(c => c.id === comandaIdParam)
+  const comandaAPagar = selectedComandaId
+    ? comandas.find(c => c.id === selectedComandaId)
     : null
 
   // State for payment
@@ -60,6 +66,12 @@ export function PagosPage() {
   const [numPersonas, setNumPersonas] = useState('2')
   const [efectivoRecibido, setEfectivoRecibido] = useState('')
   const [showBoletaDialog, setShowBoletaDialog] = useState(false)
+  const [showPrintDialog, setShowPrintDialog] = useState(false)
+  const printConfig = readPrintConfigFromState(configuracion)
+
+  useEffect(() => {
+    setPropinaValor(String(propinasHabilitadas ? Number(configuracion.propina_default) || 0 : 0))
+  }, [configuracion.propina_default, propinasHabilitadas])
 
   // Calculate totals
   const subtotal = comandaAPagar?.items.reduce((sum, item) => sum + (item.precio * item.cantidad), 0) || 0
@@ -67,13 +79,68 @@ export function PagosPage() {
     ? subtotal * ((comandaAPagar?.descuento || 0) / 100)
     : (comandaAPagar?.descuento || 0)
   
+  const baseImponible = Math.max(subtotal - descuentoMonto, 0)
+  const impuestoMonto = impuestoHabilitado ? baseImponible * (tasaImpuesto / 100) : 0
   const propinaCalculada = propinaTipo === 'porcentaje'
-    ? (subtotal - descuentoMonto) * (parseFloat(propinaValor) / 100)
+    ? baseImponible * (parseFloat(propinaValor) / 100)
     : parseFloat(propinaValor) || 0
   
-  const total = subtotal - descuentoMonto + propinaCalculada
+  const total = baseImponible + impuestoMonto + propinaCalculada
   const montoPorPersona = dividirCuenta ? total / (parseInt(numPersonas) || 1) : total
   const vuelto = parseFloat(efectivoRecibido) - total
+
+  const ticketDataBoleta = useMemo<TicketData | null>(() => {
+    if (!comandaAPagar) return null
+    const efectivoNum = parseFloat(efectivoRecibido)
+    return {
+      tipo: 'boleta',
+      nombre_negocio:
+        configuracion.nombre_negocio || configuracion.nombreRestaurante || 'Soda Master',
+      mesa: comandaAPagar.mesaNombre,
+      atendido_por: comandaAPagar.usuarioNombre,
+      fecha: Date.now(),
+      metodo_pago: metodoPago,
+      dividido_en: dividirCuenta ? parseInt(numPersonas) || 1 : 1,
+      monto_por_persona: dividirCuenta ? montoPorPersona : null,
+      items: comandaToTicketItems(comandaAPagar),
+      totales: {
+        subtotal,
+        descuento: descuentoMonto,
+        descuento_label:
+          comandaAPagar.tipoDescuento === 'porcentaje'
+            ? `Descuento (${comandaAPagar.descuento}%)`
+            : 'Descuento',
+        impuesto: impuestoMonto,
+        impuesto_label: impuestoHabilitado ? `Impuesto (${tasaImpuesto}%)` : null,
+        propina: propinaCalculada,
+        total,
+        pagado:
+          metodoPago === 'efectivo' && Number.isFinite(efectivoNum) && efectivoNum >= total
+            ? efectivoNum
+            : null,
+        vuelto:
+          metodoPago === 'efectivo' && Number.isFinite(efectivoNum) && efectivoNum >= total
+            ? vuelto
+            : null,
+      },
+    }
+  }, [
+    comandaAPagar,
+    configuracion,
+    metodoPago,
+    dividirCuenta,
+    numPersonas,
+    montoPorPersona,
+    subtotal,
+    descuentoMonto,
+    impuestoMonto,
+    impuestoHabilitado,
+    tasaImpuesto,
+    propinaCalculada,
+    total,
+    efectivoRecibido,
+    vuelto,
+  ])
 
   // Recent payments
   const pagosRecientes = pagos
@@ -82,11 +149,11 @@ export function PagosPage() {
 
   // Comandas pending payment
   const comandasPendientes = comandas.filter(c => 
-    c.estado === 'listo' || c.estado === 'en_cocina'
+    c.estado === 'listo' || c.estado === 'en_cocina' || c.estado === 'en_preparacion'
   )
 
   const handleSelectComanda = (comandaId: string) => {
-    router.push(`/pagos?comanda=${comandaId}`)
+    setSelectedComandaId(comandaId)
   }
 
   const handleConfirmarPago = async () => {
@@ -97,7 +164,6 @@ export function PagosPage() {
         orden_id: comandaAPagar.id,
         metodo: metodoPago,
         monto: total,
-        total,
         propina: propinaCalculada,
         descuento: descuentoMonto,
         dividido_en: dividirCuenta ? parseInt(numPersonas) : 1,
@@ -110,7 +176,7 @@ export function PagosPage() {
       await updateOrden(comandaAPagar.id, { estado: 'pagado' })
       dispatch({
         type: 'UPDATE_COMANDA',
-        payload: { ...comandaAPagar, estado: 'pagada' },
+        payload: { ...comandaAPagar, estado: 'pagado' },
       })
 
       const mesa = mesas.find((m) => m.id === comandaAPagar.mesaId)
@@ -132,7 +198,7 @@ export function PagosPage() {
   const handleCerrarCaja = async () => {
     try {
       const pagosHoy = await recargarPagos('hoy')
-      const totalVentas = pagosHoy.reduce((sum: number, p: any) => sum + Number(p.total ?? p.monto ?? 0), 0)
+      const totalVentas = pagosHoy.reduce((sum: number, p: any) => sum + Number(p.monto ?? 0), 0)
       const totalPropinas = pagosHoy.reduce((sum: number, p: any) => sum + Number(p.propina ?? 0), 0)
       showToast(
         `Caja cerrada: ${pagosHoy.length} pagos, ${formatCurrency(totalVentas)} en ventas, ${formatCurrency(totalPropinas)} en propinas`,
@@ -219,7 +285,7 @@ export function PagosPage() {
                               {formatDate(pago.fecha)} • {pago.metodo}
                             </p>
                           </div>
-                          <p className="font-bold text-green-500">{formatCurrency(pago.total)}</p>
+                          <p className="font-bold text-green-500">{formatCurrency(pago.monto)}</p>
                         </div>
                       )
                     })}
@@ -236,7 +302,7 @@ export function PagosPage() {
   return (
     <div className="space-y-6">
       <div>
-        <Button variant="ghost" onClick={() => router.push('/pagos')}>
+        <Button variant="ghost" onClick={() => setSelectedComandaId(null)}>
           Volver a lista
         </Button>
       </div>
@@ -298,6 +364,12 @@ export function PagosPage() {
                     <span>-{formatCurrency(descuentoMonto)}</span>
                   </div>
                 )}
+                {impuestoMonto > 0 && (
+                  <div className="flex justify-between text-muted-foreground">
+                    <span>Impuesto ({tasaImpuesto}%)</span>
+                    <span>+{formatCurrency(impuestoMonto)}</span>
+                  </div>
+                )}
                 <div className="flex justify-between text-muted-foreground">
                   <span>Propina ({propinaTipo === 'porcentaje' ? `${propinaValor}%` : 'fijo'})</span>
                   <span>+{formatCurrency(propinaCalculada)}</span>
@@ -324,10 +396,16 @@ export function PagosPage() {
                 <CardTitle className="text-foreground">Propina</CardTitle>
               </CardHeader>
               <CardContent>
+                {!propinasHabilitadas && (
+                  <p className="mb-3 rounded bg-muted p-2 text-sm text-muted-foreground">
+                    Propinas deshabilitadas en configuración.
+                  </p>
+                )}
                 <div className="mb-4 flex gap-2">
                   <Button
                     variant={propinaTipo === 'porcentaje' ? 'default' : 'outline'}
                     onClick={() => setPropinaTipo('porcentaje')}
+                    disabled={!propinasHabilitadas}
                     className={propinaTipo === 'porcentaje' ? 'bg-amber-500 text-zinc-900' : ''}
                   >
                     Porcentaje
@@ -335,6 +413,7 @@ export function PagosPage() {
                   <Button
                     variant={propinaTipo === 'monto' ? 'default' : 'outline'}
                     onClick={() => setPropinaTipo('monto')}
+                    disabled={!propinasHabilitadas}
                     className={propinaTipo === 'monto' ? 'bg-amber-500 text-zinc-900' : ''}
                   >
                     Monto Fijo
@@ -348,6 +427,7 @@ export function PagosPage() {
                           key={pct}
                           variant={propinaValor === pct ? 'default' : 'outline'}
                           onClick={() => setPropinaValor(pct)}
+                          disabled={!propinasHabilitadas}
                           className={propinaValor === pct ? 'bg-amber-500 text-zinc-900' : ''}
                         >
                           {pct}%
@@ -359,6 +439,7 @@ export function PagosPage() {
                       type="number"
                       value={propinaValor}
                       onChange={e => setPropinaValor(e.target.value)}
+                      disabled={!propinasHabilitadas}
                       placeholder="Monto"
                       className="border-border bg-muted"
                     />
@@ -502,6 +583,12 @@ export function PagosPage() {
                   <span>-{formatCurrency(descuentoMonto)}</span>
                 </div>
               )}
+              {impuestoMonto > 0 && (
+                <div className="flex justify-between">
+                  <span>Impuesto ({tasaImpuesto}%)</span>
+                  <span>+{formatCurrency(impuestoMonto)}</span>
+                </div>
+              )}
               {propinaCalculada > 0 && (
                 <div className="flex justify-between">
                   <span>Propina</span>
@@ -524,15 +611,22 @@ export function PagosPage() {
               <p className="text-center text-muted-foreground">{state.configuracion.pieTicket}</p>
             </div>
             <DialogFooter>
-              <Button variant="outline" onClick={() => { setShowBoletaDialog(false); router.push('/pagos') }}>
+              <Button variant="outline" onClick={() => { setShowBoletaDialog(false); setSelectedComandaId(null) }}>
                 Cerrar
               </Button>
-              <Button onClick={() => window.print()} className="bg-amber-500 text-zinc-900 hover:bg-amber-400">
+              <Button onClick={() => setShowPrintDialog(true)} className="bg-amber-500 text-zinc-900 hover:bg-amber-400">
                 Imprimir
               </Button>
             </DialogFooter>
           </DialogContent>
         </Dialog>
+
+        <PrintPreviewDialog
+          open={showPrintDialog}
+          onOpenChange={setShowPrintDialog}
+          data={ticketDataBoleta}
+          config={printConfig}
+        />
     </div>
   )
 }

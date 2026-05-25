@@ -4,7 +4,7 @@ export type Rol = 'administrador' | 'admin' | 'mesero' | 'cocina' | 'bar' | 'caj
 
 export type EstadoMesa = 'libre' | 'ocupada' | 'reservada'
 
-export type EstadoComanda = 'pendiente' | 'en_cocina' | 'en_preparacion' | 'listo' | 'problema' | 'pagada'
+export type EstadoComanda = 'pendiente' | 'en_cocina' | 'en_preparacion' | 'listo' | 'problema' | 'pagado'
 
 export type EstadoItem = 'pendiente' | 'en_preparacion' | 'listo' | 'problema'
 
@@ -74,6 +74,7 @@ export interface ItemComanda {
   id: string
   productoId: string
   productoNombre: string
+  categoria?: Producto['categoria'] | string
   cantidad: number
   ingredientesEstandar: string[]
   ingredientesEspeciales: IngredienteEspecialItem[]
@@ -108,8 +109,8 @@ export interface Pago {
   comandaId: string
   orden_id?: string
   metodo: MetodoPago
-  total: number
-  monto?: number
+  monto: number
+  total?: number
   propina: number
   descuento: number
   vuelto?: number
@@ -214,6 +215,7 @@ export interface PermisosDescuento {
 
 export interface Configuracion {
   nombreRestaurante: string
+  nombre_negocio?: string
   logoUrl: string
   fuenteTicket: string
   tamañoFuente: number
@@ -221,6 +223,25 @@ export interface Configuracion {
   pieTicket: string
   stockMinimoPorDefecto: number
   modoMantenimiento: boolean
+  tasa_impuesto?: number
+  impuesto_habilitado?: boolean
+  propinas_habilitadas?: boolean
+  propina_default?: number
+  // Impresión configurable de tickets (ver lib/print-ticket.ts)
+  impresora_ancho_mm?: number
+  impresora_fuente?: string
+  impresora_tamano_fuente_pt?: number
+  impresora_margen_mm?: number
+  impresora_encabezado?: string
+  impresora_pie?: string
+  impresora_mostrar_logo?: boolean
+  /**
+   * Si es `true` (default), al enviar a cocina desde el POS se abre
+   * automáticamente la vista de impresión con la copia física para cocina
+   * y/o bar (KDS doble). Si la impresora no está disponible, esto puede
+   * deshabilitarse desde Configuración → Impresión.
+   */
+  impresora_copias_auto?: boolean
 }
 
 export interface Notificacion {
@@ -280,6 +301,7 @@ export type AppAction =
   | { type: 'SET_ONLINE'; payload: boolean }
   | { type: 'SET_SINCRONIZANDO'; payload: boolean }
   | { type: 'LOAD_STATE'; payload: Partial<AppState> }
+  | { type: 'RESET_SESSION_DATA' }
   | { type: 'ADD_NOTIFICACION'; payload: Notificacion }
   | { type: 'MARCAR_NOTIFICACION_VISTA'; payload: string }
   | { type: 'LIMPIAR_NOTIFICACIONES'; payload?: void }

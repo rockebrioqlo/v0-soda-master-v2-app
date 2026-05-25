@@ -40,10 +40,10 @@ import { hash } from 'bcryptjs'
 export function UsuariosPage() {
   const {
     state,
-    dispatch,
     crearUsuarioApi,
     actualizarUsuarioApi,
     eliminarUsuarioApi,
+    guardarPermisosDescuento,
   } = useApp()
   const { usuarios, permisosDescuento } = state
 
@@ -157,10 +157,18 @@ export function UsuariosPage() {
     }
   }
 
-  const handleSavePermisos = () => {
-    dispatch({ type: 'SET_PERMISOS_DESCUENTO', payload: permisosEdit })
-    showToast('Permisos actualizados', 'success')
-    setShowPermisosDialog(false)
+  const handleSavePermisos = async () => {
+    const permisos = Object.entries(permisosEdit).map(([rol, permiso]) => ({
+      rol,
+      puede_aplicar: permiso.puede,
+      limite_maximo: permiso.limiteMax,
+      requiere_motivo: permiso.requiereMotivo,
+    }))
+    const ok = await guardarPermisosDescuento(permisos)
+    if (ok) {
+      showToast('Permisos actualizados', 'success')
+      setShowPermisosDialog(false)
+    }
   }
 
   const getRolBadgeColor = (rol: Rol) => {

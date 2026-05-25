@@ -67,7 +67,6 @@ function mapPago(row: any): Pago {
     orden_id: row.orden_id ?? row.ordenId,
     metodo: row.metodo,
     monto,
-    total: monto,
     propina,
     vuelto: row.vuelto !== undefined && row.vuelto !== null ? Number(row.vuelto) : undefined,
     referencia: row.referencia ?? undefined,
@@ -463,11 +462,46 @@ export const db = {
   // Órdenes
   async crearOrden(orden: Omit<Orden, 'id' | 'created_at' | 'updated_at' | 'numero_orden'>) {
     const sql = getSql()
+    const enviado = Boolean((orden as any).enviado_a_cocina)
     const result = await sql`
-      INSERT INTO soda_master.ordenes (mesa_id, usuario_id, estado, subtotal, impuesto, total, notas, enviado_a_cocina)
-      VALUES (${orden.mesa_id}, ${orden.usuario_id}, ${orden.estado}, ${orden.subtotal}, ${orden.impuesto}, ${orden.total}, ${orden.notas}, false)
+      WITH lock_mesa AS (
+        SELECT pg_advisory_xact_lock(hashtext(${orden.mesa_id}::text)::bigint)
+      ),
+      orden_activa AS (
+        SELECT o.id
+        FROM lock_mesa, soda_master.ordenes o
+        WHERE o.mesa_id = ${orden.mesa_id}
+          AND o.estado NOT IN ('pagado', 'cancelado')
+        LIMIT 1
+      )
+      INSERT INTO soda_master.ordenes (
+        mesa_id,
+        usuario_id,
+        estado,
+        subtotal,
+        impuesto,
+        total,
+        notas,
+        enviado_a_cocina,
+        hora_envio
+      )
+      SELECT
+        ${orden.mesa_id},
+        ${orden.usuario_id},
+        ${orden.estado},
+        ${orden.subtotal},
+        ${orden.impuesto},
+        ${orden.total},
+        ${orden.notas},
+        ${enviado},
+        ${enviado ? new Date().toISOString() : null}
+      FROM lock_mesa
+      WHERE NOT EXISTS (SELECT 1 FROM orden_activa)
       RETURNING *
     `
+    if (!result[0]) {
+      throw new Error('Ya existe una comanda activa para esta mesa')
+    }
     return result[0] as Orden
   },
 
@@ -497,6 +531,7 @@ export const db = {
                    'id', i.id,
                    'producto_id', i.producto_id,
                    'producto_nombre', p.nombre,
+                   'categoria', c.nombre,
                    'cantidad', i.cantidad,
                    'precio_unitario', i.precio_unitario,
                    'modificadores', i.modificadores,
@@ -509,6 +544,7 @@ export const db = {
       FROM soda_master.ordenes o
       LEFT JOIN soda_master.items_orden i ON o.id = i.orden_id
       LEFT JOIN soda_master.productos p ON i.producto_id = p.id
+      LEFT JOIN soda_master.categorias c ON p.categoria_id = c.id
       WHERE o.estado NOT IN ('pagado', 'cancelado')
       GROUP BY o.id
       ORDER BY o.created_at ASC
@@ -525,7 +561,7 @@ export const db = {
     if (fechaIso && opts.orden === 'asc') {
       return await sql`
         SELECT * FROM soda_master.ordenes
-        WHERE created_at::date = ${fechaIso}::date
+        WHERE (created_at AT TIME ZONE 'America/Santiago')::date = ${fechaIso}::date
         ORDER BY created_at ASC
         LIMIT ${limite}
       ` as unknown as Orden[]
@@ -533,7 +569,7 @@ export const db = {
     if (fechaIso) {
       return await sql`
         SELECT * FROM soda_master.ordenes
-        WHERE created_at::date = ${fechaIso}::date
+        WHERE (created_at AT TIME ZONE 'America/Santiago')::date = ${fechaIso}::date
         ORDER BY created_at DESC
         LIMIT ${limite}
       ` as unknown as Orden[]
@@ -597,9 +633,26 @@ export const db = {
   // Items de orden
   async crearItemOrden(item: Omit<ItemOrden, 'id' | 'created_at'>) {
     const sql = getSql()
+    const cantidad = Number(item.cantidad)
+    if (!Number.isFinite(cantidad) || cantidad <= 0) {
+      throw new Error('Cantidad inválida')
+    }
+
+    const stockRows = await sql`
+      UPDATE soda_master.inventario
+      SET stock_actual = stock_actual - ${cantidad},
+          updated_at = CURRENT_TIMESTAMP
+      WHERE producto_id = ${item.producto_id}
+        AND stock_actual >= ${cantidad}
+      RETURNING stock_actual
+    `
+    if (stockRows.length === 0) {
+      throw new Error('Stock insuficiente para enviar el producto')
+    }
+
     const result = await sql`
       INSERT INTO soda_master.items_orden (orden_id, producto_id, cantidad, precio_unitario, modificadores, notas_especiales, estado_item)
-      VALUES (${item.orden_id}, ${item.producto_id}, ${item.cantidad}, ${item.precio_unitario}, ${JSON.stringify(item.modificadores)}, ${item.notas_especiales}, 'pendiente')
+      VALUES (${item.orden_id}, ${item.producto_id}, ${cantidad}, ${item.precio_unitario}, ${JSON.stringify(item.modificadores)}, ${item.notas_especiales}, 'pendiente')
       RETURNING *
     `
     return result[0] as ItemOrden
@@ -645,6 +698,10 @@ export const db = {
     const propina = Number(pago.propina ?? 0)
     const descuento = Number(pago.descuento ?? 0)
     const divididoEn = Number(pago.dividido_en ?? pago.divididoEn ?? 1) || 1
+    if (!Number.isFinite(monto) || monto <= 0) throw new Error('monto debe ser mayor que 0')
+    if (!Number.isFinite(propina) || propina < 0) throw new Error('propina inválida')
+    if (!Number.isFinite(descuento) || descuento < 0) throw new Error('descuento inválido')
+    if (!Number.isFinite(divididoEn) || divididoEn < 1) throw new Error('dividido_en inválido')
     const vueltoVal = pago.vuelto !== undefined && pago.vuelto !== null ? Number(pago.vuelto) : null
     const referencia = pago.referencia ?? null
     const aprobado = pago.aprobado !== undefined ? !!pago.aprobado : true
@@ -662,13 +719,13 @@ export const db = {
     if (filtro?.fecha === 'hoy') {
       rows = await sql`
         SELECT * FROM soda_master.pagos
-        WHERE created_at::date = CURRENT_DATE
+        WHERE (created_at AT TIME ZONE 'America/Santiago')::date = (now() AT TIME ZONE 'America/Santiago')::date
         ORDER BY created_at DESC
       `
     } else if (filtro?.fecha) {
       rows = await sql`
         SELECT * FROM soda_master.pagos
-        WHERE created_at::date = ${filtro.fecha}::date
+        WHERE (created_at AT TIME ZONE 'America/Santiago')::date = ${filtro.fecha}::date
         ORDER BY created_at DESC
       `
     } else {
@@ -688,11 +745,19 @@ export const db = {
     return result as Inventario[]
   },
 
-  async actualizarInventario(productoId: string, cantidad: number) {
+  async actualizarInventario(
+    productoId: string,
+    updates: number | { stock_actual?: number; stock_minimo?: number; unidad_medida?: string | null }
+  ) {
     const sql = getSql()
+    const patch = typeof updates === 'number' ? { stock_actual: updates } : updates
+    const unidad = typeof patch.unidad_medida === 'string' ? patch.unidad_medida.trim() : null
     const result = await sql`
       UPDATE soda_master.inventario 
-      SET stock_actual = ${cantidad}, updated_at = CURRENT_TIMESTAMP
+      SET stock_actual = COALESCE(${patch.stock_actual ?? null}, stock_actual),
+          stock_minimo = COALESCE(${patch.stock_minimo ?? null}, stock_minimo),
+          unidad_medida = COALESCE(${unidad}, unidad_medida),
+          updated_at = CURRENT_TIMESTAMP
       WHERE producto_id = ${productoId}
       RETURNING *
     `
@@ -743,15 +808,30 @@ export const db = {
   }) {
     const sql = getSql()
     const rows = await sql`
-      INSERT INTO soda_master.descuentos (orden_id, tipo, valor, aplicado_por, autorizado_por, motivo)
-      VALUES (
+      WITH lock_orden AS (
+        SELECT pg_advisory_xact_lock(hashtext(${input.orden_id}::text)::bigint)
+      ),
+      borrar_anterior AS (
+        DELETE FROM soda_master.descuentos d
+        USING lock_orden
+        WHERE d.orden_id = ${input.orden_id}
+      )
+      INSERT INTO soda_master.descuentos (
+        orden_id,
+        tipo,
+        valor,
+        aplicado_por,
+        autorizado_por,
+        motivo
+      )
+      SELECT
         ${input.orden_id},
         ${input.tipo},
         ${input.valor},
         ${input.aplicado_por},
         ${input.autorizado_por || null},
         ${input.motivo}
-      )
+      FROM lock_orden
       RETURNING *
     `
     return rows[0]
@@ -782,8 +862,8 @@ export const db = {
       LEFT JOIN soda_master.usuarios ub ON ub.id = d.autorizado_por
       LEFT JOIN soda_master.ordenes o ON o.id = d.orden_id
       LEFT JOIN soda_master.mesas ms ON ms.id = o.mesa_id
-      WHERE (${desde}::date IS NULL OR d.created_at::date >= ${desde}::date)
-        AND (${hasta}::date IS NULL OR d.created_at::date <= ${hasta}::date)
+      WHERE (${desde}::date IS NULL OR (d.created_at AT TIME ZONE 'America/Santiago')::date >= ${desde}::date)
+        AND (${hasta}::date IS NULL OR (d.created_at AT TIME ZONE 'America/Santiago')::date <= ${hasta}::date)
         AND (${ordenId}::uuid IS NULL OR d.orden_id = ${ordenId}::uuid)
       ORDER BY d.created_at DESC
     `
@@ -836,8 +916,8 @@ export const db = {
       LEFT JOIN soda_master.usuarios ur ON ur.id = m.registrado_por
       LEFT JOIN soda_master.usuarios ures ON ures.id = m.responsable_id
       WHERE (${tipo}::text IS NULL OR m.tipo = ${tipo})
-        AND (${desde}::date IS NULL OR m.created_at::date >= ${desde}::date)
-        AND (${hasta}::date IS NULL OR m.created_at::date <= ${hasta}::date)
+        AND (${desde}::date IS NULL OR (m.created_at AT TIME ZONE 'America/Santiago')::date >= ${desde}::date)
+        AND (${hasta}::date IS NULL OR (m.created_at AT TIME ZONE 'America/Santiago')::date <= ${hasta}::date)
         AND (${responsableId}::uuid IS NULL OR m.responsable_id = ${responsableId}::uuid)
       ORDER BY m.created_at DESC
     `
@@ -871,6 +951,46 @@ export const db = {
     } | null
   }) {
     const sql = getSql()
+    if (input.tipo !== 'comanda_no_pagada' && !input.producto_id) {
+      throw new Error('Producto requerido para registrar merma')
+    }
+
+    if (input.producto_id && input.tipo !== 'comanda_no_pagada') {
+      const mermaRows = await sql`
+        WITH stock_actualizado AS (
+          UPDATE soda_master.inventario
+          SET stock_actual = stock_actual - ${input.cantidad},
+              updated_at = CURRENT_TIMESTAMP
+          WHERE producto_id = ${input.producto_id}
+            AND stock_actual >= ${input.cantidad}
+          RETURNING producto_id
+        )
+        INSERT INTO soda_master.mermas (tipo, producto_id, cantidad, descripcion, registrado_por)
+        SELECT
+          ${input.tipo},
+          ${input.producto_id},
+          ${input.cantidad},
+          ${input.descripcion || null},
+          ${input.registrado_por}
+        FROM stock_actualizado
+        RETURNING *
+      `
+      if (!mermaRows[0]) {
+        const stockRows = await sql`
+          SELECT stock_actual
+          FROM soda_master.inventario
+          WHERE producto_id = ${input.producto_id}
+          LIMIT 1
+        `
+        const stockActual = stockRows[0]?.stock_actual
+        if (stockActual === undefined) {
+          throw new Error('Producto sin registro de inventario')
+        }
+        throw new Error(`Stock insuficiente para registrar merma. Stock actual: ${Number(stockActual)}`)
+      }
+      return mermaRows[0] as any
+    }
+
     const mermaRows = await sql`
       INSERT INTO soda_master.mermas (tipo, producto_id, cantidad, descripcion, registrado_por)
       VALUES (
@@ -883,15 +1003,6 @@ export const db = {
       RETURNING *
     `
     const merma = mermaRows[0] as any
-
-    if (input.producto_id && input.tipo !== 'comanda_no_pagada') {
-      await sql`
-        UPDATE soda_master.inventario
-        SET stock_actual = GREATEST(stock_actual - ${input.cantidad}, 0),
-            updated_at = CURRENT_TIMESTAMP
-        WHERE producto_id = ${input.producto_id}
-      `
-    }
 
     if (input.tipo === 'comanda_no_pagada' && input.comanda_no_pagada) {
       const { orden_id, motivo, autorizado_por } = input.comanda_no_pagada
@@ -929,7 +1040,7 @@ export const db = {
         COUNT(*)::int AS total_registros
       FROM soda_master.mermas m
       LEFT JOIN soda_master.productos p ON p.id = m.producto_id
-      WHERE m.created_at::date BETWEEN ${desde}::date AND ${hasta}::date
+      WHERE (m.created_at AT TIME ZONE 'America/Santiago')::date BETWEEN ${desde}::date AND ${hasta}::date
     ` as any[]
 
     const porTipo = await sql`
@@ -941,7 +1052,7 @@ export const db = {
         COALESCE(SUM(m.cantidad * COALESCE(p.precio, 0)), 0)::numeric AS perdida_estimada
       FROM soda_master.mermas m
       LEFT JOIN soda_master.productos p ON p.id = m.producto_id
-      WHERE m.created_at::date BETWEEN ${desde}::date AND ${hasta}::date
+      WHERE (m.created_at AT TIME ZONE 'America/Santiago')::date BETWEEN ${desde}::date AND ${hasta}::date
       GROUP BY m.tipo
       ORDER BY perdida_estimada DESC
     `
@@ -954,7 +1065,7 @@ export const db = {
         COALESCE(SUM(m.cantidad * COALESCE(p.precio, 0)), 0)::numeric AS perdida_estimada
       FROM soda_master.mermas m
       LEFT JOIN soda_master.productos p ON p.id = m.producto_id
-      WHERE m.created_at::date BETWEEN ${desde}::date AND ${hasta}::date
+      WHERE (m.created_at AT TIME ZONE 'America/Santiago')::date BETWEEN ${desde}::date AND ${hasta}::date
         AND m.producto_id IS NOT NULL
       GROUP BY m.producto_id, p.nombre
       ORDER BY perdida_estimada DESC
@@ -975,7 +1086,7 @@ export const db = {
       LEFT JOIN soda_master.ordenes o ON o.id = cnp.orden_id
       LEFT JOIN soda_master.mesas ms ON ms.id = o.mesa_id
       LEFT JOIN soda_master.usuarios u ON u.id = m.registrado_por
-      WHERE cnp.created_at::date BETWEEN ${desde}::date AND ${hasta}::date
+      WHERE (cnp.created_at AT TIME ZONE 'America/Santiago')::date BETWEEN ${desde}::date AND ${hasta}::date
       ORDER BY cnp.created_at DESC
     `
 
@@ -1018,7 +1129,7 @@ export const db = {
         COALESCE(SUM(monto), 0)::numeric AS total,
         COUNT(*)::int AS ordenes
       FROM soda_master.pagos
-      WHERE created_at::date BETWEEN ${desde}::date AND ${hasta}::date
+      WHERE (created_at AT TIME ZONE 'America/Santiago')::date BETWEEN ${desde}::date AND ${hasta}::date
     `
     const total = Number((rows[0] as any).total) || 0
     const ordenes = Number((rows[0] as any).ordenes) || 0
@@ -1042,7 +1153,7 @@ export const db = {
       JOIN soda_master.ordenes o ON o.id = i.orden_id
       JOIN soda_master.productos p ON p.id = i.producto_id
       LEFT JOIN soda_master.categorias c ON c.id = p.categoria_id
-      WHERE o.created_at::date BETWEEN ${desde}::date AND ${hasta}::date
+      WHERE (o.created_at AT TIME ZONE 'America/Santiago')::date BETWEEN ${desde}::date AND ${hasta}::date
         AND o.estado = 'pagado'
       GROUP BY i.producto_id, p.nombre, c.nombre
       ORDER BY cantidad_vendida DESC, total_generado DESC
@@ -1068,7 +1179,7 @@ export const db = {
       JOIN soda_master.ordenes o ON o.id = i.orden_id
       JOIN soda_master.productos p ON p.id = i.producto_id
       LEFT JOIN soda_master.categorias c ON c.id = p.categoria_id
-      WHERE o.created_at::date BETWEEN ${desde}::date AND ${hasta}::date
+      WHERE (o.created_at AT TIME ZONE 'America/Santiago')::date BETWEEN ${desde}::date AND ${hasta}::date
         AND o.estado = 'pagado'
       GROUP BY c.nombre
       ORDER BY total DESC
@@ -1088,7 +1199,7 @@ export const db = {
         COUNT(*)::int AS cantidad_transacciones,
         COALESCE(SUM(monto), 0)::numeric AS total
       FROM soda_master.pagos
-      WHERE created_at::date BETWEEN ${desde}::date AND ${hasta}::date
+      WHERE (created_at AT TIME ZONE 'America/Santiago')::date BETWEEN ${desde}::date AND ${hasta}::date
       GROUP BY metodo
       ORDER BY total DESC
     `
@@ -1103,7 +1214,7 @@ export const db = {
     const sql = getSql()
     const rows = await sql`
       WITH dias AS (
-        SELECT (CURRENT_DATE - i)::date AS fecha
+        SELECT ((now() AT TIME ZONE 'America/Santiago')::date - i)::date AS fecha
         FROM generate_series(6, 0, -1) AS i
       )
       SELECT
@@ -1111,7 +1222,7 @@ export const db = {
         COALESCE(SUM(p.monto), 0)::numeric AS total,
         COUNT(p.id)::int AS ordenes
       FROM dias d
-      LEFT JOIN soda_master.pagos p ON p.created_at::date = d.fecha
+      LEFT JOIN soda_master.pagos p ON (p.created_at AT TIME ZONE 'America/Santiago')::date = d.fecha
       GROUP BY d.fecha
       ORDER BY d.fecha ASC
     `
@@ -1155,6 +1266,130 @@ export const db = {
     }
     return out
   },
+
+  // ── Notificaciones cross-device ────────────────────────────────────────────
+  // Persistidas en BD para que cuando cocina marca "problema" el mesero (que
+  // está en otro dispositivo) la reciba vía polling. Polling y no WebSocket
+  // porque la app corre en Vercel serverless.
+
+  async crearNotificacion(payload: {
+    tipo: 'problema' | 'listo' | 'nueva_orden'
+    orden_id?: string | null
+    mesa_nombre?: string | null
+    mensaje: string
+    destinatario_usuario_id?: string | null
+    destinatario_rol?: string | null
+  }): Promise<any> {
+    await ensureNotificacionesTable()
+    if (!payload.destinatario_usuario_id && !payload.destinatario_rol) {
+      throw new Error('Se requiere destinatario_usuario_id o destinatario_rol')
+    }
+    const sql = getSql()
+    const rows = await sql`
+      INSERT INTO soda_master.notificaciones
+        (tipo, orden_id, mesa_nombre, mensaje, destinatario_usuario_id, destinatario_rol)
+      VALUES (
+        ${payload.tipo},
+        ${payload.orden_id || null},
+        ${payload.mesa_nombre || null},
+        ${payload.mensaje},
+        ${payload.destinatario_usuario_id || null},
+        ${payload.destinatario_rol || null}
+      )
+      RETURNING id, tipo, orden_id, mesa_nombre, mensaje, destinatario_usuario_id,
+                destinatario_rol, vista,
+                EXTRACT(EPOCH FROM creado_at) * 1000 AS creado_ts
+    `
+    return rows[0]
+  },
+
+  /**
+   * Devuelve las notificaciones (por defecto sólo `vista=false`) para un
+   * usuario y/o rol. Se ordena por las más recientes primero y se limita
+   * para que el polling no devuelva respuestas pesadas.
+   */
+  async listarNotificacionesPara(filter: {
+    usuario_id?: string | null
+    rol?: string | null
+    solo_pendientes?: boolean
+    limite?: number
+  }): Promise<any[]> {
+    await ensureNotificacionesTable()
+    const sql = getSql()
+    const usuarioId = filter.usuario_id || null
+    const rol = filter.rol || null
+    const soloPendientes = filter.solo_pendientes !== false
+    const limite = Math.min(Math.max(Number(filter.limite) || 100, 1), 500)
+
+    const rows = await sql`
+      SELECT
+        id,
+        tipo,
+        orden_id,
+        mesa_nombre,
+        mensaje,
+        destinatario_usuario_id,
+        destinatario_rol,
+        vista,
+        EXTRACT(EPOCH FROM creado_at) * 1000 AS creado_ts
+      FROM soda_master.notificaciones
+      WHERE
+        (
+          (${usuarioId}::uuid IS NOT NULL AND destinatario_usuario_id = ${usuarioId}::uuid)
+          OR (${rol}::text IS NOT NULL AND destinatario_rol = ${rol}::text)
+        )
+        AND (${soloPendientes}::boolean = FALSE OR vista = FALSE)
+      ORDER BY creado_at DESC
+      LIMIT ${limite}
+    `
+    return rows as any[]
+  },
+
+  async marcarNotificacionVista(id: string): Promise<boolean> {
+    await ensureNotificacionesTable()
+    const sql = getSql()
+    const rows = await sql`
+      UPDATE soda_master.notificaciones
+      SET vista = TRUE, vista_at = now()
+      WHERE id = ${id}::uuid AND vista = FALSE
+      RETURNING id
+    `
+    return (rows as any[]).length > 0
+  },
+}
+
+// ── Bootstrap idempotente para la tabla de notificaciones ────────────────────
+// Se ejecuta una vez por instancia serverless, evita migraciones manuales.
+let _notificacionesTableReady = false
+async function ensureNotificacionesTable(): Promise<void> {
+  if (_notificacionesTableReady) return
+  const sql = getSql()
+  await sql`
+    CREATE TABLE IF NOT EXISTS soda_master.notificaciones (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      tipo TEXT NOT NULL CHECK (tipo IN ('problema','listo','nueva_orden')),
+      orden_id UUID,
+      mesa_nombre TEXT,
+      mensaje TEXT NOT NULL,
+      destinatario_usuario_id UUID,
+      destinatario_rol TEXT,
+      vista BOOLEAN NOT NULL DEFAULT FALSE,
+      creado_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      vista_at TIMESTAMPTZ,
+      CHECK (destinatario_usuario_id IS NOT NULL OR destinatario_rol IS NOT NULL)
+    )
+  `
+  await sql`
+    CREATE INDEX IF NOT EXISTS notificaciones_destinatario_usuario_idx
+      ON soda_master.notificaciones (destinatario_usuario_id, vista, creado_at DESC)
+      WHERE destinatario_usuario_id IS NOT NULL
+  `
+  await sql`
+    CREATE INDEX IF NOT EXISTS notificaciones_destinatario_rol_idx
+      ON soda_master.notificaciones (destinatario_rol, vista, creado_at DESC)
+      WHERE destinatario_rol IS NOT NULL
+  `
+  _notificacionesTableReady = true
 }
 
 function parseConfigValor(valor: string | null, tipo: string | null) {

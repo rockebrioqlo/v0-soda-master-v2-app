@@ -47,7 +47,7 @@ export function MesasPage() {
     return comandas.find(
       c =>
         c.mesaId === mesaId &&
-        !['pagada', 'pagado', 'cancelado'].includes(c.estado) &&
+        !['pagado', 'cancelado'].includes(c.estado) &&
         c.items.length > 0
     )
   }

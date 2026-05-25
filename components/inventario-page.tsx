@@ -131,6 +131,11 @@ export function InventarioPage() {
       showToast('Costo adicional debe ser un número mayor o igual a 0', 'error')
       return
     }
+    const unidadMedida = formData.unidad_medida.trim()
+    if (!unidadMedida) {
+      showToast('Unidad de medida requerida', 'error')
+      return
+    }
     setSaving(true)
     try {
       const [inventarioRes, productoRes] = await Promise.all([
@@ -141,6 +146,7 @@ export function InventarioPage() {
             producto_id:  editing.producto_id,
             stock_actual,
             stock_minimo,
+            unidad_medida: unidadMedida,
           }),
         }),
         fetch(`/api/productos/${editing.producto_id}`, {

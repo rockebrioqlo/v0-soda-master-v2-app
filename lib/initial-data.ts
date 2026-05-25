@@ -26,6 +26,14 @@ export const initialConfiguracion: Configuracion = {
   pieTicket: 'Vuelva pronto - Soda Master V2',
   stockMinimoPorDefecto: 10,
   modoMantenimiento: false,
+  impresora_ancho_mm: 80,
+  impresora_fuente: 'monospace',
+  impresora_tamano_fuente_pt: 11,
+  impresora_margen_mm: 4,
+  impresora_encabezado: '¡Gracias por su visita!',
+  impresora_pie: 'Vuelva pronto - Soda Master',
+  impresora_mostrar_logo: true,
+  impresora_copias_auto: true,
 }
 
 // ── Opciones para el dialog de personalización de burgers ────────────────────

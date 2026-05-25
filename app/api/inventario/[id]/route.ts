@@ -6,8 +6,16 @@ export async function PATCH(
 ) {
   try {
     const { id } = await params
-    const { cantidad } = await request.json()
-    const inventario = await db.actualizarInventario(id, cantidad)
+    const { cantidad, stock_actual, stock_minimo, unidad_medida } = await request.json()
+    const unidad = typeof unidad_medida === 'string' ? unidad_medida.trim() : undefined
+    if (unidad_medida !== undefined && !unidad) {
+      return Response.json({ error: 'unidad_medida requerida' }, { status: 400 })
+    }
+    const inventario = await db.actualizarInventario(id, {
+      stock_actual: stock_actual ?? cantidad,
+      stock_minimo,
+      unidad_medida: unidad,
+    })
     return Response.json(inventario)
   } catch (error) {
     console.error('Update inventario error:', error)

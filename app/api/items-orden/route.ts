@@ -24,7 +24,9 @@ export async function POST(request: Request) {
     return Response.json(newItem)
   } catch (error) {
     console.error('Create item error:', error)
-    return Response.json({ error: 'Error en servidor' }, { status: 500 })
+    const message = error instanceof Error ? error.message : 'Error en servidor'
+    const status = message.includes('Stock insuficiente') || message.includes('Cantidad inválida') ? 400 : 500
+    return Response.json({ error: message }, { status })
   }
 }
 

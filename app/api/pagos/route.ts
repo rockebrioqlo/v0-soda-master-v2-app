@@ -18,6 +18,22 @@ export async function POST(request: Request) {
     if (!pago?.orden_id && !pago?.comandaId && !pago?.ordenId) {
       return Response.json({ error: 'orden_id requerido' }, { status: 400 })
     }
+    const monto = Number(pago.monto ?? pago.total)
+    const propina = Number(pago.propina ?? 0)
+    const descuento = Number(pago.descuento ?? 0)
+    const divididoEn = Number(pago.dividido_en ?? pago.divididoEn ?? 1)
+    if (!Number.isFinite(monto) || monto <= 0) {
+      return Response.json({ error: 'monto debe ser mayor que 0' }, { status: 400 })
+    }
+    if (!Number.isFinite(propina) || propina < 0) {
+      return Response.json({ error: 'propina inválida' }, { status: 400 })
+    }
+    if (!Number.isFinite(descuento) || descuento < 0) {
+      return Response.json({ error: 'descuento inválido' }, { status: 400 })
+    }
+    if (!Number.isFinite(divididoEn) || divididoEn < 1) {
+      return Response.json({ error: 'dividido_en inválido' }, { status: 400 })
+    }
     const newPago = await db.crearPago(pago)
     return Response.json(newPago, { status: 201 })
   } catch (error) {

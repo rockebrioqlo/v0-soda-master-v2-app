@@ -45,6 +45,9 @@ export async function POST(request: Request) {
     return Response.json(newOrden)
   } catch (error) {
     console.error('Create orden error:', error)
+    if (error instanceof Error && error.message.includes('comanda activa')) {
+      return Response.json({ error: error.message }, { status: 409 })
+    }
     return Response.json({ error: 'Error en servidor' }, { status: 500 })
   }
 }

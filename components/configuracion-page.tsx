@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { useApp } from "@/lib/app-context"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -37,6 +37,16 @@ import {
 } from "lucide-react"
 import { Mesa } from "@/lib/types"
 import { showToast } from "@/components/toast"
+import { PrintPreviewDialog } from "@/components/print-preview-dialog"
+import {
+  DEFAULT_PRINT_CONFIG,
+  FUENTES_DISPONIBLES,
+  PRESET_ANCHOS_MM,
+  buildTicketHtml,
+  normalizePrintConfig,
+  type TicketData,
+  type TicketPrintConfig,
+} from "@/lib/print-ticket"
 
 export function ConfiguracionPage() {
   const {
@@ -60,6 +70,15 @@ export function ConfiguracionPage() {
   const [defaultTip, setDefaultTip] = useState("10")
   const [printerEnabled, setPrinterEnabled] = useState(false)
   const [printerIP, setPrinterIP] = useState("")
+  const [printAnchoMm, setPrintAnchoMm] = useState(String(DEFAULT_PRINT_CONFIG.ancho_mm))
+  const [printFuente, setPrintFuente] = useState(DEFAULT_PRINT_CONFIG.fuente)
+  const [printTamanoPt, setPrintTamanoPt] = useState(String(DEFAULT_PRINT_CONFIG.tamano_fuente_pt))
+  const [printMargenMm, setPrintMargenMm] = useState(String(DEFAULT_PRINT_CONFIG.margen_mm))
+  const [printEncabezado, setPrintEncabezado] = useState(DEFAULT_PRINT_CONFIG.encabezado)
+  const [printPie, setPrintPie] = useState(DEFAULT_PRINT_CONFIG.pie)
+  const [printMostrarLogo, setPrintMostrarLogo] = useState(DEFAULT_PRINT_CONFIG.mostrar_logo)
+  const [printCopiasAuto, setPrintCopiasAuto] = useState(true)
+  const [showPrintTestDialog, setShowPrintTestDialog] = useState(false)
   const [notificationsEnabled, setNotificationsEnabled] = useState(true)
   const [soundEnabled, setSoundEnabled] = useState(true)
   const [kdsAutoComplete, setKdsAutoComplete] = useState(false)
@@ -120,6 +139,15 @@ export function ConfiguracionPage() {
       if (config.propina_default !== undefined) setDefaultTip(String(config.propina_default))
       if (config.impresora_habilitada !== undefined) setPrinterEnabled(!!config.impresora_habilitada)
       if (config.impresora_ip !== undefined) setPrinterIP(String(config.impresora_ip))
+      if (config.impresora_ancho_mm !== undefined) setPrintAnchoMm(String(config.impresora_ancho_mm))
+      if (config.impresora_fuente !== undefined) setPrintFuente(String(config.impresora_fuente))
+      if (config.impresora_tamano_fuente_pt !== undefined)
+        setPrintTamanoPt(String(config.impresora_tamano_fuente_pt))
+      if (config.impresora_margen_mm !== undefined) setPrintMargenMm(String(config.impresora_margen_mm))
+      if (config.impresora_encabezado !== undefined) setPrintEncabezado(String(config.impresora_encabezado))
+      if (config.impresora_pie !== undefined) setPrintPie(String(config.impresora_pie))
+      if (config.impresora_mostrar_logo !== undefined) setPrintMostrarLogo(!!config.impresora_mostrar_logo)
+      if (config.impresora_copias_auto !== undefined) setPrintCopiasAuto(!!config.impresora_copias_auto)
       if (config.notificaciones_habilitadas !== undefined)
         setNotificationsEnabled(!!config.notificaciones_habilitadas)
       if (config.sonido_habilitado !== undefined) setSoundEnabled(!!config.sonido_habilitado)
@@ -150,6 +178,14 @@ export function ConfiguracionPage() {
       propina_default: Number(defaultTip) || 0,
       impresora_habilitada: printerEnabled,
       impresora_ip: printerIP,
+      impresora_ancho_mm: Number(printAnchoMm) || DEFAULT_PRINT_CONFIG.ancho_mm,
+      impresora_fuente: printFuente,
+      impresora_tamano_fuente_pt: Number(printTamanoPt) || DEFAULT_PRINT_CONFIG.tamano_fuente_pt,
+      impresora_margen_mm: Number(printMargenMm) || DEFAULT_PRINT_CONFIG.margen_mm,
+      impresora_encabezado: printEncabezado,
+      impresora_pie: printPie,
+      impresora_mostrar_logo: printMostrarLogo,
+      impresora_copias_auto: printCopiasAuto,
       notificaciones_habilitadas: notificationsEnabled,
       sonido_habilitado: soundEnabled,
       kds_auto_completar: kdsAutoComplete,
@@ -457,45 +493,30 @@ export function ConfiguracionPage() {
         </TabsContent>
 
         <TabsContent value="impresion">
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <Printer className="h-5 w-5" />
-                Configuracion de Impresion
-              </CardTitle>
-              <CardDescription>
-                Configura las impresoras para tickets y comandas
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="flex items-center justify-between rounded-lg border p-4">
-                <div className="space-y-0.5">
-                  <Label>Impresora de Tickets</Label>
-                  <p className="text-sm text-muted-foreground">
-                    Habilitar impresion automatica de tickets
-                  </p>
-                </div>
-                <Switch checked={printerEnabled} onCheckedChange={setPrinterEnabled} />
-              </div>
-              {printerEnabled && (
-                <div className="space-y-2">
-                  <Label htmlFor="printerIP">Direccion IP de la Impresora</Label>
-                  <Input
-                    id="printerIP"
-                    placeholder="192.168.1.100"
-                    value={printerIP}
-                    onChange={(e) => setPrinterIP(e.target.value)}
-                  />
-                </div>
-              )}
-              <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 dark:border-amber-900 dark:bg-amber-950">
-                <p className="text-sm text-amber-800 dark:text-amber-200">
-                  La impresion de tickets requiere una impresora termica compatible con ESC/POS
-                  conectada a la red local.
-                </p>
-              </div>
-            </CardContent>
-          </Card>
+          <PrintTab
+            businessName={businessName}
+            printerEnabled={printerEnabled}
+            setPrinterEnabled={setPrinterEnabled}
+            printerIP={printerIP}
+            setPrinterIP={setPrinterIP}
+            anchoMm={printAnchoMm}
+            setAnchoMm={setPrintAnchoMm}
+            fuente={printFuente}
+            setFuente={setPrintFuente}
+            tamanoPt={printTamanoPt}
+            setTamanoPt={setPrintTamanoPt}
+            margenMm={printMargenMm}
+            setMargenMm={setPrintMargenMm}
+            encabezado={printEncabezado}
+            setEncabezado={setPrintEncabezado}
+            pie={printPie}
+            setPie={setPrintPie}
+            mostrarLogo={printMostrarLogo}
+            setMostrarLogo={setPrintMostrarLogo}
+            copiasAuto={printCopiasAuto}
+            setCopiasAuto={setPrintCopiasAuto}
+            onTestPrint={() => setShowPrintTestDialog(true)}
+          />
         </TabsContent>
 
         <TabsContent value="pagos">
@@ -704,6 +725,344 @@ export function ConfiguracionPage() {
           </TabsContent>
         )}
       </Tabs>
+
+      <PrintPreviewDialog
+        open={showPrintTestDialog}
+        onOpenChange={setShowPrintTestDialog}
+        data={buildSampleTicket(businessName)}
+        config={{
+          ancho_mm: Number(printAnchoMm) || DEFAULT_PRINT_CONFIG.ancho_mm,
+          fuente: printFuente,
+          tamano_fuente_pt: Number(printTamanoPt) || DEFAULT_PRINT_CONFIG.tamano_fuente_pt,
+          margen_mm: Number(printMargenMm) || DEFAULT_PRINT_CONFIG.margen_mm,
+          encabezado: printEncabezado,
+          pie: printPie,
+          mostrar_logo: printMostrarLogo,
+        }}
+      />
     </div>
+  )
+}
+
+// ─────────────────────────────────────────────────────────
+// Ticket de ejemplo para preview / impresión de prueba
+// ─────────────────────────────────────────────────────────
+function buildSampleTicket(businessName: string): TicketData {
+  return {
+    tipo: 'boleta',
+    nombre_negocio: businessName || 'Soda Master',
+    mesa: 'Mesa 5',
+    atendido_por: 'María',
+    fecha: Date.now(),
+    metodo_pago: 'efectivo',
+    items: [
+      { cantidad: 2, nombre: 'Burger Clásica', precio_unitario: 5500 },
+      { cantidad: 1, nombre: 'Papas Fritas', variante: 'grande', precio_unitario: 3200 },
+      { cantidad: 2, nombre: 'Cerveza Rubia', precio_unitario: 3000 },
+    ],
+    totales: {
+      subtotal: 20200,
+      descuento: 1000,
+      descuento_label: 'Descuento (5%)',
+      impuesto: 1900,
+      impuesto_label: 'Impuesto (10%)',
+      propina: 2020,
+      total: 23120,
+      pagado: 25000,
+      vuelto: 1880,
+    },
+  }
+}
+
+// ─────────────────────────────────────────────────────────
+// PrintTab: tab de Impresión con personalización + preview
+// ─────────────────────────────────────────────────────────
+interface PrintTabProps {
+  businessName: string
+  printerEnabled: boolean
+  setPrinterEnabled: (v: boolean) => void
+  printerIP: string
+  setPrinterIP: (v: string) => void
+  anchoMm: string
+  setAnchoMm: (v: string) => void
+  fuente: string
+  setFuente: (v: string) => void
+  tamanoPt: string
+  setTamanoPt: (v: string) => void
+  margenMm: string
+  setMargenMm: (v: string) => void
+  encabezado: string
+  setEncabezado: (v: string) => void
+  pie: string
+  setPie: (v: string) => void
+  mostrarLogo: boolean
+  setMostrarLogo: (v: boolean) => void
+  copiasAuto: boolean
+  setCopiasAuto: (v: boolean) => void
+  onTestPrint: () => void
+}
+
+function PrintTab(props: PrintTabProps) {
+  const {
+    businessName,
+    printerEnabled,
+    setPrinterEnabled,
+    printerIP,
+    setPrinterIP,
+    anchoMm,
+    setAnchoMm,
+    fuente,
+    setFuente,
+    tamanoPt,
+    setTamanoPt,
+    margenMm,
+    setMargenMm,
+    encabezado,
+    setEncabezado,
+    pie,
+    setPie,
+    mostrarLogo,
+    setMostrarLogo,
+    copiasAuto,
+    setCopiasAuto,
+    onTestPrint,
+  } = props
+
+  const previewConfig = useMemo<TicketPrintConfig>(
+    () =>
+      normalizePrintConfig({
+        ancho_mm: Number(anchoMm) || DEFAULT_PRINT_CONFIG.ancho_mm,
+        fuente,
+        tamano_fuente_pt: Number(tamanoPt) || DEFAULT_PRINT_CONFIG.tamano_fuente_pt,
+        margen_mm: Number(margenMm) || DEFAULT_PRINT_CONFIG.margen_mm,
+        encabezado,
+        pie,
+        mostrar_logo: mostrarLogo,
+      }),
+    [anchoMm, fuente, tamanoPt, margenMm, encabezado, pie, mostrarLogo],
+  )
+
+  const previewHtml = useMemo(
+    () => buildTicketHtml(buildSampleTicket(businessName), previewConfig),
+    [businessName, previewConfig],
+  )
+
+  const previewWidthPx = Math.round(previewConfig.ancho_mm * 3.78)
+
+  const matchPreset = PRESET_ANCHOS_MM.find((p) => p.value === Number(anchoMm))
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <Printer className="h-5 w-5" />
+          Configuración de Impresión
+        </CardTitle>
+        <CardDescription>
+          Personaliza tamaño del papel, fuente, márgenes y textos del ticket. Funciona con cualquier
+          impresora del sistema (térmica 58/72/80 mm, A4 o PDF) gracias al diálogo de impresión del navegador.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-6">
+        <div className="grid gap-6 md:grid-cols-2">
+          {/* Columna izquierda: controles */}
+          <div className="space-y-4">
+            <div className="flex items-center justify-between rounded-lg border p-4">
+              <div className="space-y-0.5">
+                <Label>Impresora de Tickets</Label>
+                <p className="text-sm text-muted-foreground">
+                  Mostrar el botón "Imprimir" en POS y Pagos
+                </p>
+              </div>
+              <Switch checked={printerEnabled} onCheckedChange={setPrinterEnabled} />
+            </div>
+
+            {printerEnabled && (
+              <div className="space-y-2">
+                <Label htmlFor="printerIP">IP de la impresora (opcional, para impresoras de red)</Label>
+                <Input
+                  id="printerIP"
+                  placeholder="192.168.1.100"
+                  value={printerIP}
+                  onChange={(e) => setPrinterIP(e.target.value)}
+                />
+                <p className="text-xs text-muted-foreground">
+                  Solo informativo. El ticket se imprime con el diálogo de impresión del navegador.
+                </p>
+              </div>
+            )}
+
+            <div className="space-y-2">
+              <Label htmlFor="printAncho">Ancho del papel</Label>
+              <div className="flex gap-2">
+                <Select
+                  value={matchPreset ? String(matchPreset.value) : 'custom'}
+                  onValueChange={(v) => {
+                    if (v !== 'custom') setAnchoMm(v)
+                  }}
+                >
+                  <SelectTrigger className="w-full sm:w-72">
+                    <SelectValue placeholder="Selecciona un ancho" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {PRESET_ANCHOS_MM.map((p) => (
+                      <SelectItem key={p.value} value={String(p.value)}>
+                        {p.label}
+                      </SelectItem>
+                    ))}
+                    <SelectItem value="custom">Personalizado</SelectItem>
+                  </SelectContent>
+                </Select>
+                <div className="flex items-center gap-2">
+                  <Input
+                    id="printAncho"
+                    type="number"
+                    min={40}
+                    max={297}
+                    value={anchoMm}
+                    onChange={(e) => setAnchoMm(e.target.value)}
+                    className="w-24"
+                  />
+                  <span className="text-sm text-muted-foreground">mm</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-2">
+                <Label htmlFor="printTamano">Tamaño de fuente</Label>
+                <div className="flex items-center gap-2">
+                  <Input
+                    id="printTamano"
+                    type="number"
+                    min={6}
+                    max={24}
+                    value={tamanoPt}
+                    onChange={(e) => setTamanoPt(e.target.value)}
+                  />
+                  <span className="text-sm text-muted-foreground">pt</span>
+                </div>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="printMargen">Margen interno</Label>
+                <div className="flex items-center gap-2">
+                  <Input
+                    id="printMargen"
+                    type="number"
+                    min={0}
+                    max={30}
+                    value={margenMm}
+                    onChange={(e) => setMargenMm(e.target.value)}
+                  />
+                  <span className="text-sm text-muted-foreground">mm</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="printFuente">Familia tipográfica</Label>
+              <Select value={fuente} onValueChange={setFuente}>
+                <SelectTrigger id="printFuente">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {FUENTES_DISPONIBLES.map((f) => (
+                    <SelectItem key={f.value} value={f.value}>
+                      {f.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="printEncabezado">Texto de encabezado</Label>
+              <Input
+                id="printEncabezado"
+                value={encabezado}
+                onChange={(e) => setEncabezado(e.target.value)}
+                placeholder="¡Gracias por su visita!"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="printPie">Texto de pie de ticket</Label>
+              <Input
+                id="printPie"
+                value={pie}
+                onChange={(e) => setPie(e.target.value)}
+                placeholder="Vuelva pronto"
+              />
+            </div>
+
+            <div className="flex items-center justify-between rounded-lg border p-4">
+              <div className="space-y-0.5">
+                <Label>Mostrar nombre del negocio destacado</Label>
+                <p className="text-sm text-muted-foreground">
+                  Imprime el nombre del negocio en tamaño mayor al inicio
+                </p>
+              </div>
+              <Switch checked={mostrarLogo} onCheckedChange={setMostrarLogo} />
+            </div>
+
+            <div className="flex items-center justify-between rounded-lg border p-4">
+              <div className="space-y-0.5">
+                <Label>Preguntar por copias para cocina y bar (KDS doble)</Label>
+                <p className="text-sm text-muted-foreground">
+                  Al enviar la comanda desde el POS se muestra un diálogo con checkboxes
+                  para elegir si imprimir el ticket de cocina y/o bar según corresponda.
+                  La selección se recuerda por dispositivo. Desactívalo si nunca imprimes
+                  copias físicas.
+                </p>
+              </div>
+              <Switch checked={copiasAuto} onCheckedChange={setCopiasAuto} />
+            </div>
+
+            <Button variant="outline" onClick={onTestPrint} className="w-full">
+              <Printer className="mr-2 h-4 w-4" /> Probar impresión con ticket de ejemplo
+            </Button>
+          </div>
+
+          {/* Columna derecha: preview en vivo */}
+          <div className="space-y-2">
+            <Label>Vista previa en vivo</Label>
+            <p className="text-xs text-muted-foreground">
+              Se actualiza mientras editas. Lo que ves es lo que se imprime.
+            </p>
+            <div className="flex max-h-[520px] justify-center overflow-auto rounded-lg border bg-zinc-200 p-4 dark:bg-zinc-900">
+              <div
+                className="bg-white shadow"
+                style={{ width: `${previewWidthPx}px`, minWidth: `${previewWidthPx}px` }}
+              >
+                <iframe
+                  title="Vista previa configuración impresión"
+                  srcDoc={previewHtml}
+                  sandbox="allow-same-origin"
+                  style={{
+                    width: `${previewWidthPx}px`,
+                    minHeight: '300px',
+                    border: 'none',
+                    display: 'block',
+                    background: 'white',
+                  }}
+                  onLoad={(e) => {
+                    const target = e.currentTarget
+                    try {
+                      const doc = target.contentDocument
+                      if (doc) {
+                        const height = doc.documentElement.scrollHeight
+                        target.style.height = `${Math.max(height, 300)}px`
+                      }
+                    } catch {
+                      /* same-origin */
+                    }
+                  }}
+                />
+              </div>
+            </div>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
   )
 }

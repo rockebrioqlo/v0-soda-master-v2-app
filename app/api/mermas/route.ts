@@ -91,6 +91,16 @@ export async function POST(request: Request) {
     return Response.json(merma, { status: 201 })
   } catch (error) {
     console.error('Create merma error:', error)
+    if (
+      error instanceof Error &&
+      (
+        error.message.includes('Stock insuficiente') ||
+        error.message.includes('Producto requerido') ||
+        error.message.includes('Producto sin registro')
+      )
+    ) {
+      return Response.json({ error: error.message }, { status: 400 })
+    }
     return Response.json({ error: 'Error en servidor' }, { status: 500 })
   }
 }

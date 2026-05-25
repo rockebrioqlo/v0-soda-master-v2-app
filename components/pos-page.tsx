@@ -25,10 +25,19 @@ import {
 } from '@/components/ui/select'
 import { cn } from '@/lib/utils'
 import { formatCurrency, generateId, getEstadoComandaColor, getEstadoComandaLabel } from '@/lib/helpers'
-import { Plus, Minus, Trash2, Send, Printer, Percent, ChefHat, Wine, Star, ArrowLeft, Beer, GlassWater, ShoppingCart, X } from 'lucide-react'
+import { Plus, Minus, Trash2, Send, Printer, Percent, ChefHat, Wine, Star, ArrowLeft, Beer, GlassWater, ShoppingCart, X, Receipt } from 'lucide-react'
+import { Switch } from '@/components/ui/switch'
+import { Label } from '@/components/ui/label'
 import { showToast } from '@/components/toast'
 import { Comanda, ItemComanda, Producto, TipoDescuento } from '@/lib/types'
 import { ingredientesEstandar, quesosDisponibles, salsasDisponibles } from '@/lib/initial-data'
+import { PrintPreviewDialog } from '@/components/print-preview-dialog'
+import {
+  comandaToTicketItems,
+  readPrintConfigFromState,
+  splitComandaParaEstaciones,
+  type TicketData,
+} from '@/lib/print-ticket'
 
 // ─────────────────────────────────────────────────────────
 // Constants
@@ -46,10 +55,15 @@ export function POSPage() {
     navigateTo,
     updateMesa,
     crearOrden,
+    updateOrden,
     crearItemOrden,
     crearDescuentoApi,
   } = useApp()
-  const { mesas, productos, comandas, usuarioActual, permisosDescuento } = state
+  const { mesas, productos, comandas, usuarioActual, permisosDescuento, configuracion } = state
+  const impuestoHabilitado = configuracion.impuesto_habilitado === true
+  const tasaImpuesto = Number(configuracion.tasa_impuesto) || 0
+  const propinasHabilitadas = configuracion.propinas_habilitadas !== false
+  const propinaDefault = propinasHabilitadas ? Number(configuracion.propina_default) || 0 : 0
 
   const [selectedMesaId, setSelectedMesaId] = useState<string | null>(posNavigation.mesaId)
   const [currentComanda, setCurrentComanda] = useState<Comanda | null>(null)
@@ -97,7 +111,7 @@ export function POSPage() {
     if (posNavigation.mesaId) {
       setSelectedMesaId(posNavigation.mesaId)
       const existingComanda = comandas.find(
-        c => c.mesaId === posNavigation.mesaId && c.estado !== 'pagada'
+        c => c.mesaId === posNavigation.mesaId && c.estado !== 'pagado'
       )
       if (existingComanda) {
         setCurrentComanda(existingComanda)
@@ -115,7 +129,7 @@ export function POSPage() {
             items: [],
             descuento: 0,
             tipoDescuento: null,
-            propina: 0,
+            propina: propinaDefault,
             tipoPropina: 'porcentaje',
           }
           dispatch({ type: 'ADD_COMANDA', payload: newComanda })
@@ -153,7 +167,7 @@ export function POSPage() {
   // ─── Mesa selection ───────────────────────────────────
   const handleSelectMesa = (mesaId: string) => {
     setSelectedMesaId(mesaId)
-    const existingComanda = comandas.find(c => c.mesaId === mesaId && c.estado !== 'pagada')
+    const existingComanda = comandas.find(c => c.mesaId === mesaId && c.estado !== 'pagado')
     if (existingComanda) {
       setCurrentComanda(existingComanda)
     } else {
@@ -170,7 +184,7 @@ export function POSPage() {
           items: [],
           descuento: 0,
           tipoDescuento: null,
-          propina: 0,
+          propina: propinaDefault,
           tipoPropina: 'porcentaje',
         }
         dispatch({ type: 'ADD_COMANDA', payload: newComanda })
@@ -183,6 +197,10 @@ export function POSPage() {
 
   // ─── Burger dialog ────────────────────────────────────
   const handleSelectBurger = (burger: Producto) => {
+    if ((burger.stock ?? 0) <= 0) {
+      showToast(`${burger.nombre} está agotado`, 'error')
+      return
+    }
     setSelectedBurger(burger)
     setBurgerQuesos([])
     setBurgerIngredientes([])
@@ -244,6 +262,7 @@ export function POSPage() {
       id: generateId(),
       productoId: selectedBurger.id,
       productoNombre: selectedBurger.nombre,
+      categoria: selectedBurger.categoria,
       cantidad: 1,
       ingredientesEstandar: allIngredientes,
       ingredientesEspeciales: especiales,
@@ -263,6 +282,10 @@ export function POSPage() {
 
   // ─── Generic item dialog ──────────────────────────────
   const handleSelectItem = (item: Producto) => {
+    if ((item.stock ?? 0) <= 0) {
+      showToast(`${item.nombre} está agotado`, 'error')
+      return
+    }
     if (item.categoria === 'burgers') {
       handleSelectBurger(item)
       return
@@ -278,6 +301,10 @@ export function POSPage() {
 
   const handleConfirmItem = () => {
     if (!selectedItem || !currentComanda) return
+    if (itemCantidad > (selectedItem.stock ?? 0)) {
+      showToast(`Stock disponible: ${selectedItem.stock}`, 'error')
+      return
+    }
 
     const variante = selectedItem.variantes?.find(v => v.nombre === itemVariante)
     const precioBase = variante?.precio || selectedItem.precio
@@ -288,6 +315,7 @@ export function POSPage() {
       id: generateId(),
       productoId: selectedItem.id,
       productoNombre: selectedItem.nombre,
+      categoria: selectedItem.categoria,
       cantidad: itemCantidad,
       ingredientesEstandar: [],
       ingredientesEspeciales: especiales,
@@ -344,10 +372,15 @@ export function POSPage() {
         return 0
     }
   })()
+  const baseImponible = Math.max(subtotal - descuentoMonto, 0)
+  const impuestoMonto = impuestoHabilitado ? baseImponible * (tasaImpuesto / 100) : 0
   const propinaMonto = currentComanda?.tipoPropina === 'porcentaje'
-    ? subtotal * (currentComanda.propina / 100)
+    ? baseImponible * (currentComanda.propina / 100)
     : (currentComanda?.propina || 0)
-  const total = subtotal - descuentoMonto + propinaMonto
+  const total = baseImponible + impuestoMonto + propinaMonto
+
+  const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+  const isPersistedId = (id: string) => UUID_RE.test(id)
 
   // ─── Send to kitchen ──────────────────────────────────
   const handleEnviarCocina = async () => {
@@ -362,30 +395,54 @@ export function POSPage() {
         usuario_id: usuarioActual?.id,
         estado: 'en_cocina',
         subtotal,
-        impuesto: 0,
+        impuesto: impuestoMonto,
         total,
         notas: '',
         enviado_a_cocina: true,
       }
 
-      const nuevaOrden = await crearOrden(ordenData)
+      const esOrdenPersistida = isPersistedId(currentComanda.id)
+      const nuevaOrden = esOrdenPersistida ? null : await crearOrden(ordenData)
+      const ordenId = esOrdenPersistida ? currentComanda.id : nuevaOrden?.id
 
-      if (nuevaOrden) {
-        for (const item of currentComanda.items) {
+      if (ordenId) {
+        const itemsPendientesDeEnviar = esOrdenPersistida
+          ? currentComanda.items.filter((item) => !isPersistedId(item.id))
+          : currentComanda.items
+        const idsPersistidosPorLocal = new Map<string, string>()
+
+        for (const item of itemsPendientesDeEnviar) {
           const metadata = {
             salsa: item.salsaSeleccionada || '',
             notas: item.notas || '',
             notaEspecial: item.notaEspecial || '',
             ingredientesEspeciales: item.ingredientesEspeciales || [],
           }
-          await crearItemOrden({
-            orden_id: nuevaOrden.id,
+          const itemCreado = await crearItemOrden({
+            orden_id: ordenId,
             producto_id: item.productoId,
             cantidad: item.cantidad,
             precio_unitario: item.precio,
             modificadores: item.ingredientesEstandar || [],
             notas_especiales: JSON.stringify(metadata),
             estado_item: 'pendiente',
+          })
+          if (itemCreado?.id) {
+            idsPersistidosPorLocal.set(item.id, itemCreado.id)
+          } else {
+            throw new Error(`No se pudo enviar ${item.productoNombre}`)
+          }
+        }
+
+        // If this is an existing comanda, adding more products must reopen it
+        // for Cocina/Bar and refresh totals instead of creating a duplicate order.
+        if (esOrdenPersistida) {
+          await updateOrden(ordenId, {
+            estado: 'en_cocina',
+            subtotal,
+            impuesto: impuestoMonto,
+            total,
+            enviado_a_cocina: true,
           })
         }
 
@@ -396,10 +453,56 @@ export function POSPage() {
           dispatch({ type: 'UPDATE_MESA', payload: { ...mesa, estado: 'ocupada' } })
         }
 
-        const updatedComanda: Comanda = { ...currentComanda, id: nuevaOrden.id, estado: 'en_cocina' }
-        dispatch({ type: 'UPDATE_COMANDA', payload: updatedComanda })
+        const updatedComanda: Comanda = {
+          ...currentComanda,
+          id: ordenId,
+          estado: 'en_cocina',
+          items: currentComanda.items.map((item) => ({
+            ...item,
+            id: idsPersistidosPorLocal.get(item.id) || item.id,
+            estado: isPersistedId(item.id) ? item.estado : 'pendiente',
+          })),
+        }
+
+        if (esOrdenPersistida) {
+          dispatch({ type: 'UPDATE_COMANDA', payload: updatedComanda })
+        } else {
+          // Replace the temporary local comanda id with Neon UUID.
+          dispatch({ type: 'DELETE_COMANDA', payload: currentComanda.id })
+          dispatch({ type: 'ADD_COMANDA', payload: updatedComanda })
+        }
         setCurrentComanda(updatedComanda)
-        showToast('Comanda enviada a cocina/bar', 'success')
+        showToast(
+          itemsPendientesDeEnviar.length > 0
+            ? 'Comanda enviada/actualizada en cocina/bar'
+            : 'Comanda ya estaba enviada',
+          'success'
+        )
+
+        // KDS doble: preguntar al operador si desea imprimir copia física
+        // para cocina y/o bar (la selección queda guardada en localStorage
+        // para la próxima comanda). El operador siempre puede saltarse la
+        // impresión. Se omite el prompt si el master switch en Configuración
+        // está apagado o si no hay ítems nuevos que imprimir.
+        if (copiasPromptHabilitado && itemsPendientesDeEnviar.length > 0) {
+          const snapshot: Comanda = {
+            ...updatedComanda,
+            items: itemsPendientesDeEnviar,
+          }
+          const { cocina, bar } = splitComandaParaEstaciones(snapshot, productos, {
+            nombreNegocio,
+            soloPendientes: false,
+          })
+          if (cocina || bar) {
+            setKitchenIntentCocina(cocina)
+            setKitchenIntentBar(bar)
+            const prefCocina = leerPreferenciaImpresion(LS_COCINA_KEY)
+            const prefBar = leerPreferenciaImpresion(LS_BAR_KEY)
+            setIntentImprimirCocina(!!cocina && prefCocina)
+            setIntentImprimirBar(!!bar && prefBar)
+            setShowKitchenIntentDialog(true)
+          }
+        }
       }
     } catch (error) {
       console.error('[v0] Error sending to kitchen:', error)
@@ -516,7 +619,146 @@ export function POSPage() {
     }
   }
 
-  const handlePrintTicket = () => { showToast('Imprimiendo comanda...', 'info'); window.print() }
+  const [showPrintDialog, setShowPrintDialog] = useState(false)
+  const [showPrecuentaDialog, setShowPrecuentaDialog] = useState(false)
+  const [showPrecuentaPrintDialog, setShowPrecuentaPrintDialog] = useState(false)
+  const [precuentaIncluirPropina, setPrecuentaIncluirPropina] = useState(true)
+  const [showKitchenPrintDialog, setShowKitchenPrintDialog] = useState(false)
+  const [kitchenPrintTickets, setKitchenPrintTickets] = useState<TicketData[]>([])
+  // KDS doble: diálogo de confirmación con checkboxes (cocina/bar) antes de
+  // disparar la impresión. La selección se persiste por dispositivo en
+  // localStorage, así que la próxima comanda viene con la misma preselección
+  // pero el operador siempre puede ajustarla o saltarse la impresión.
+  const [showKitchenIntentDialog, setShowKitchenIntentDialog] = useState(false)
+  const [kitchenIntentCocina, setKitchenIntentCocina] = useState<TicketData | null>(null)
+  const [kitchenIntentBar, setKitchenIntentBar] = useState<TicketData | null>(null)
+  const [intentImprimirCocina, setIntentImprimirCocina] = useState(false)
+  const [intentImprimirBar, setIntentImprimirBar] = useState(false)
+  const printConfig = readPrintConfigFromState(configuracion)
+  const copiasPromptHabilitado = configuracion.impresora_copias_auto !== false
+
+  const LS_COCINA_KEY = 'sodamaster.kds.print_cocina'
+  const LS_BAR_KEY = 'sodamaster.kds.print_bar'
+
+  const leerPreferenciaImpresion = (key: string) => {
+    if (typeof window === 'undefined') return false
+    try {
+      return window.localStorage.getItem(key) === '1'
+    } catch {
+      return false
+    }
+  }
+
+  const guardarPreferenciaImpresion = (key: string, value: boolean) => {
+    if (typeof window === 'undefined') return
+    try {
+      window.localStorage.setItem(key, value ? '1' : '0')
+    } catch {
+      /* ignorar quotaExceeded / private mode */
+    }
+  }
+
+  const descuentoLabel = currentComanda
+    ? currentComanda.tipoDescuento === 'porcentaje'
+      ? `Descuento (${currentComanda.descuento}%)`
+      : currentComanda.tipoDescuento === 'cortesia_total'
+        ? 'Cortesía total'
+        : currentComanda.tipoDescuento === 'cortesia_parcial'
+          ? 'Cortesía parcial'
+          : 'Descuento'
+    : 'Descuento'
+
+  const nombreNegocio =
+    configuracion.nombre_negocio || configuracion.nombreRestaurante || 'Soda Master'
+
+  const ticketDataActual = useMemo<TicketData | null>(() => {
+    if (!currentComanda) return null
+    return {
+      tipo: 'comanda',
+      nombre_negocio: nombreNegocio,
+      mesa: currentComanda.mesaNombre,
+      atendido_por: currentComanda.usuarioNombre,
+      fecha: currentComanda.creadoAt,
+      items: comandaToTicketItems(currentComanda),
+      totales: {
+        subtotal,
+        descuento: descuentoMonto,
+        descuento_label: descuentoLabel,
+        impuesto: impuestoMonto,
+        impuesto_label: impuestoHabilitado ? `Impuesto (${tasaImpuesto}%)` : null,
+        propina: propinaMonto,
+        total,
+      },
+    }
+  }, [currentComanda, nombreNegocio, subtotal, descuentoMonto, descuentoLabel, impuestoMonto, propinaMonto, total, impuestoHabilitado, tasaImpuesto])
+
+  // ─── Precuenta ─────────────────────────────────────────
+  const precuentaPropina = precuentaIncluirPropina ? propinaMonto : 0
+  const precuentaTotal = baseImponible + impuestoMonto + precuentaPropina
+
+  const ticketDataPrecuenta = useMemo<TicketData | null>(() => {
+    if (!currentComanda) return null
+    return {
+      tipo: 'precuenta',
+      nombre_negocio: nombreNegocio,
+      mesa: currentComanda.mesaNombre,
+      atendido_por: currentComanda.usuarioNombre,
+      fecha: Date.now(),
+      mostrar_estado_items: true,
+      items: comandaToTicketItems(currentComanda),
+      totales: {
+        subtotal,
+        descuento: descuentoMonto,
+        descuento_label: descuentoLabel,
+        impuesto: impuestoMonto,
+        impuesto_label: impuestoHabilitado ? `Impuesto (${tasaImpuesto}%)` : null,
+        propina: precuentaIncluirPropina ? propinaMonto : null,
+        total: precuentaTotal,
+      },
+    }
+  }, [currentComanda, nombreNegocio, subtotal, descuentoMonto, descuentoLabel, impuestoMonto, propinaMonto, precuentaIncluirPropina, precuentaTotal, impuestoHabilitado, tasaImpuesto])
+
+  const itemsEnPreparacion = currentComanda
+    ? currentComanda.items.filter((it) => it.estado && it.estado !== 'listo').length
+    : 0
+
+  const handlePrintTicket = () => {
+    if (!currentComanda || currentComanda.items.length === 0) return
+    setShowPrintDialog(true)
+  }
+  const handleOpenPrecuenta = () => {
+    if (!currentComanda || currentComanda.items.length === 0) return
+    setPrecuentaIncluirPropina(propinasHabilitadas && propinaMonto > 0)
+    setShowPrecuentaDialog(true)
+  }
+  const handleEmitirPrecuenta = () => {
+    setShowPrecuentaDialog(false)
+    setShowPrecuentaPrintDialog(true)
+  }
+
+  const handleConfirmKitchenPrint = () => {
+    guardarPreferenciaImpresion(LS_COCINA_KEY, intentImprimirCocina)
+    guardarPreferenciaImpresion(LS_BAR_KEY, intentImprimirBar)
+    const seleccionados: TicketData[] = []
+    if (intentImprimirCocina && kitchenIntentCocina) seleccionados.push(kitchenIntentCocina)
+    if (intentImprimirBar && kitchenIntentBar) seleccionados.push(kitchenIntentBar)
+    setShowKitchenIntentDialog(false)
+    if (seleccionados.length === 0) {
+      setKitchenIntentCocina(null)
+      setKitchenIntentBar(null)
+      return
+    }
+    setKitchenPrintTickets(seleccionados)
+    setShowKitchenPrintDialog(true)
+  }
+
+  const handleSkipKitchenPrint = () => {
+    guardarPreferenciaImpresion(LS_COCINA_KEY, intentImprimirCocina)
+    guardarPreferenciaImpresion(LS_BAR_KEY, intentImprimirBar)
+    setShowKitchenIntentDialog(false)
+    setKitchenIntentCocina(null)
+    setKitchenIntentBar(null)
+  }
   const handleGoToPago = () => { if (!currentComanda) return; navigateTo('pagos') }
   const handleChangeMesa = () => { setSelectedMesaId(null); setCurrentComanda(null); clearPOSNavigation() }
 
@@ -733,6 +975,11 @@ export function POSPage() {
                   <span>-{formatCurrency(descuentoMonto)}</span>
                 </div>
               )}
+              {impuestoMonto > 0 && (
+                <div className="flex justify-between text-muted-foreground">
+                  <span>Impuesto ({tasaImpuesto}%)</span><span>+{formatCurrency(impuestoMonto)}</span>
+                </div>
+              )}
               {(currentComanda?.propina ?? 0) > 0 && (
                 <div className="flex justify-between text-muted-foreground">
                   <span>Propina</span><span>+{formatCurrency(propinaMonto)}</span>
@@ -754,6 +1001,16 @@ export function POSPage() {
                 onClick={handlePrintTicket}
                 disabled={!currentComanda || currentComanda.items.length === 0}>
                 <Printer className="mr-2 h-4 w-4" /> Imprimir
+              </Button>
+            </div>
+            <div className="mt-2">
+              <Button
+                variant="outline"
+                className="w-full border-border"
+                onClick={handleOpenPrecuenta}
+                disabled={!currentComanda || currentComanda.items.length === 0}
+              >
+                <Receipt className="mr-2 h-4 w-4" /> Precuenta para cliente
               </Button>
             </div>
             <div className="mt-2 grid grid-cols-2 gap-2">
@@ -935,6 +1192,12 @@ export function POSPage() {
                     <span>-{formatCurrency(descuentoMonto)}</span>
                   </div>
                 )}
+                {impuestoMonto > 0 && (
+                  <div className="flex justify-between text-muted-foreground">
+                    <span>Impuesto ({tasaImpuesto}%)</span>
+                    <span>+{formatCurrency(impuestoMonto)}</span>
+                  </div>
+                )}
                 {(currentComanda?.propina ?? 0) > 0 && (
                   <div className="flex justify-between text-muted-foreground">
                     <span>Propina</span>
@@ -964,6 +1227,16 @@ export function POSPage() {
                   disabled={!currentComanda || currentComanda.items.length === 0}
                 >
                   <Printer className="mr-2 h-4 w-4" /> Imprimir
+                </Button>
+              </div>
+              <div className="mt-2">
+                <Button
+                  variant="outline"
+                  className="min-h-[48px] w-full border-border"
+                  onClick={handleOpenPrecuenta}
+                  disabled={!currentComanda || currentComanda.items.length === 0}
+                >
+                  <Receipt className="mr-2 h-4 w-4" /> Precuenta para cliente
                 </Button>
               </div>
               <div className="mt-2 grid grid-cols-2 gap-2">
@@ -1351,6 +1624,203 @@ export function POSPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <PrintPreviewDialog
+        open={showPrintDialog}
+        onOpenChange={setShowPrintDialog}
+        data={ticketDataActual}
+        config={printConfig}
+      />
+
+      <Dialog open={showPrecuentaDialog} onOpenChange={setShowPrecuentaDialog}>
+        <DialogContent aria-describedby={undefined} className="border-border bg-card sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-foreground">
+              <Receipt className="h-5 w-5" /> Precuenta para el cliente
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <p className="text-sm text-muted-foreground">
+              Se imprimirá un documento informativo con todo lo consumido en {currentComanda?.mesaNombre || 'la mesa'}.
+              {itemsEnPreparacion > 0 && (
+                <> Se indicarán los {itemsEnPreparacion} {itemsEnPreparacion === 1 ? 'ítem' : 'ítems'} que aún están en preparación.</>
+              )}
+            </p>
+
+            <div className={cn(
+              'flex items-center justify-between rounded-lg border border-border p-3',
+              !propinasHabilitadas && 'opacity-50',
+            )}>
+              <div className="space-y-0.5">
+                <Label className="text-sm font-medium">Incluir propina</Label>
+                <p className="text-xs text-muted-foreground">
+                  {propinasHabilitadas
+                    ? `Propina sugerida: ${formatCurrency(propinaMonto)}`
+                    : 'Las propinas están deshabilitadas en Configuración'}
+                </p>
+              </div>
+              <Switch
+                checked={precuentaIncluirPropina && propinasHabilitadas}
+                onCheckedChange={(v) => setPrecuentaIncluirPropina(!!v)}
+                disabled={!propinasHabilitadas}
+              />
+            </div>
+
+            <div className="space-y-1.5 rounded-lg bg-muted/50 p-3 text-sm">
+              <div className="flex justify-between text-muted-foreground">
+                <span>Subtotal</span><span>{formatCurrency(subtotal)}</span>
+              </div>
+              {descuentoMonto > 0 && (
+                <div className="flex justify-between text-green-500">
+                  <span>{descuentoLabel}</span>
+                  <span>-{formatCurrency(descuentoMonto)}</span>
+                </div>
+              )}
+              {impuestoMonto > 0 && (
+                <div className="flex justify-between text-muted-foreground">
+                  <span>Impuesto ({tasaImpuesto}%)</span><span>+{formatCurrency(impuestoMonto)}</span>
+                </div>
+              )}
+              {precuentaIncluirPropina && propinaMonto > 0 && (
+                <div className="flex justify-between text-muted-foreground">
+                  <span>Propina</span><span>+{formatCurrency(propinaMonto)}</span>
+                </div>
+              )}
+              <div className="flex justify-between border-t border-border pt-2 text-base font-bold text-foreground">
+                <span>Total a mostrar</span><span>{formatCurrency(precuentaTotal)}</span>
+              </div>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowPrecuentaDialog(false)}>
+              Cancelar
+            </Button>
+            <Button
+              onClick={handleEmitirPrecuenta}
+              className="bg-amber-500 text-zinc-900 hover:bg-amber-400"
+            >
+              <Printer className="mr-2 h-4 w-4" /> Emitir precuenta
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <PrintPreviewDialog
+        open={showPrecuentaPrintDialog}
+        onOpenChange={setShowPrecuentaPrintDialog}
+        data={ticketDataPrecuenta}
+        config={printConfig}
+      />
+
+      <Dialog
+        open={showKitchenIntentDialog}
+        onOpenChange={(v) => {
+          if (!v) handleSkipKitchenPrint()
+          else setShowKitchenIntentDialog(v)
+        }}
+      >
+        <DialogContent aria-describedby={undefined} className="border-border bg-card sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-foreground">
+              <Printer className="h-5 w-5" /> ¿Imprimir tickets físicos?
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <p className="text-sm text-muted-foreground">
+              Marca las copias que necesitas. Tu preferencia se guarda para la próxima comanda.
+            </p>
+            <div className="space-y-2">
+              <label
+                className={cn(
+                  'flex items-center gap-3 rounded-lg border border-border p-3 transition-colors',
+                  kitchenIntentCocina ? 'cursor-pointer hover:bg-muted/50' : 'opacity-50',
+                )}
+              >
+                <Checkbox
+                  checked={intentImprimirCocina}
+                  onCheckedChange={(v) => setIntentImprimirCocina(!!v)}
+                  disabled={!kitchenIntentCocina}
+                />
+                <div className="flex flex-1 items-center gap-2">
+                  <ChefHat className="h-4 w-4 text-amber-500" />
+                  <div>
+                    <div className="text-sm font-medium">Cocina</div>
+                    <div className="text-xs text-muted-foreground">
+                      {kitchenIntentCocina
+                        ? `${kitchenIntentCocina.items.length} ${
+                            kitchenIntentCocina.items.length === 1 ? 'ítem' : 'ítems'
+                          } para esta estación`
+                        : 'Sin ítems para cocina en este envío'}
+                    </div>
+                  </div>
+                </div>
+              </label>
+              <label
+                className={cn(
+                  'flex items-center gap-3 rounded-lg border border-border p-3 transition-colors',
+                  kitchenIntentBar ? 'cursor-pointer hover:bg-muted/50' : 'opacity-50',
+                )}
+              >
+                <Checkbox
+                  checked={intentImprimirBar}
+                  onCheckedChange={(v) => setIntentImprimirBar(!!v)}
+                  disabled={!kitchenIntentBar}
+                />
+                <div className="flex flex-1 items-center gap-2">
+                  <Wine className="h-4 w-4 text-amber-500" />
+                  <div>
+                    <div className="text-sm font-medium">Bar</div>
+                    <div className="text-xs text-muted-foreground">
+                      {kitchenIntentBar
+                        ? `${kitchenIntentBar.items.length} ${
+                            kitchenIntentBar.items.length === 1 ? 'ítem' : 'ítems'
+                          } para esta estación`
+                        : 'Sin ítems para bar en este envío'}
+                    </div>
+                  </div>
+                </div>
+              </label>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Si normalmente no necesitas imprimir, déjalo desmarcado y se recordará. Puedes
+              desactivar este recordatorio en Configuración → Impresión.
+            </p>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={handleSkipKitchenPrint}>
+              No imprimir
+            </Button>
+            <Button
+              onClick={handleConfirmKitchenPrint}
+              disabled={!intentImprimirCocina && !intentImprimirBar}
+              className="bg-amber-500 text-zinc-900 hover:bg-amber-400"
+            >
+              <Printer className="mr-2 h-4 w-4" />
+              Imprimir
+              {(() => {
+                const n = (intentImprimirCocina ? 1 : 0) + (intentImprimirBar ? 1 : 0)
+                return n > 1 ? ` ${n} copias` : ''
+              })()}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <PrintPreviewDialog
+        open={showKitchenPrintDialog}
+        onOpenChange={(v) => {
+          setShowKitchenPrintDialog(v)
+          if (!v) {
+            setKitchenPrintTickets([])
+            setKitchenIntentCocina(null)
+            setKitchenIntentBar(null)
+          }
+        }}
+        tickets={kitchenPrintTickets}
+        config={printConfig}
+        title="Copias para cocina y bar"
+        closeLabel="Cerrar"
+      />
     </>
   )
 }
@@ -1415,11 +1885,20 @@ function ProductSection({
           <Button
             key={item.id}
             variant="outline"
-            className="h-auto min-h-[64px] md:min-h-[72px] flex-col items-start justify-start border-border p-3 text-left hover:border-amber-500 hover:bg-amber-500/10"
+            disabled={(item.stock ?? 0) <= 0}
+            className={cn(
+              'h-auto min-h-[64px] md:min-h-[72px] flex-col items-start justify-start border-border p-3 text-left hover:border-amber-500 hover:bg-amber-500/10',
+              (item.stock ?? 0) <= 0 && 'opacity-60'
+            )}
             onClick={() => onSelect(item)}
           >
-            <span className="w-full text-sm font-medium leading-tight text-foreground md:text-base">
-              {item.nombre}
+            <span className="flex w-full items-start justify-between gap-2 text-sm font-medium leading-tight text-foreground md:text-base">
+              <span>{item.nombre}</span>
+              {(item.stock ?? 0) <= 0 && (
+                <span className="rounded bg-red-500/20 px-1.5 py-0.5 text-[10px] font-semibold text-red-400">
+                  Agotado
+                </span>
+              )}
             </span>
             <span className="mt-1 text-sm font-semibold text-amber-500">{formatCurrency(item.precio)}</span>
             {item.variantes && item.variantes.length > 0 && (

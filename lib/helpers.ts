@@ -71,8 +71,10 @@ export function getEstadoComandaColor(estado: string): string {
   const colors: Record<string, string> = {
     pendiente: 'bg-gray-500',
     en_cocina: 'bg-orange-500',
-    lista: 'bg-green-500',
-    pagada: 'bg-blue-500'
+    en_preparacion: 'bg-yellow-500',
+    listo: 'bg-green-500',
+    problema: 'bg-red-500',
+    pagado: 'bg-blue-500',
   }
   return colors[estado] || 'bg-gray-500'
 }
@@ -81,8 +83,10 @@ export function getEstadoComandaLabel(estado: string): string {
   const labels: Record<string, string> = {
     pendiente: 'Pendiente',
     en_cocina: 'En Cocina',
-    lista: 'Lista',
-    pagada: 'Pagada'
+    en_preparacion: 'En Preparación',
+    listo: 'Listo',
+    problema: 'Problema',
+    pagado: 'Pagado',
   }
   return labels[estado] || estado
 }

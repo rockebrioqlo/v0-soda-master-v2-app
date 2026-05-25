@@ -7,15 +7,26 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
 import { formatTime, getElapsedTime } from '@/lib/helpers'
-import { Check, ChefHat, Wine, Clock, AlertCircle, Zap, RefreshCw } from 'lucide-react'
+import { Check, ChefHat, Wine, Clock, AlertCircle, Zap, RefreshCw, Printer } from 'lucide-react'
 import { showToast } from '@/components/toast'
 import type { Comanda, ItemComanda } from '@/lib/types'
+import { PrintPreviewDialog } from '@/components/print-preview-dialog'
+import {
+  readPrintConfigFromState,
+  splitComandaParaEstaciones,
+  type TicketData,
+} from '@/lib/print-ticket'
 
 export function KDSPage() {
-  const { state, dispatch, updateOrden, recargarOrdenes } = useApp()
-  const { comandas, usuarioActual, productos } = state
+  const { state, updateOrden, actualizarItemOrden, recargarOrdenes, crearNotificacionApi } = useApp()
+  const { comandas, usuarioActual, productos, configuracion } = state
   const [isLoading, setIsLoading] = useState(false)
   const [, setTick] = useState(0)
+  const [reimprimirTickets, setReimprimirTickets] = useState<TicketData[]>([])
+  const [showReimprimirDialog, setShowReimprimirDialog] = useState(false)
+  const printConfig = readPrintConfigFromState(configuracion)
+  const nombreNegocio =
+    configuracion?.nombre_negocio || configuracion?.nombreRestaurante || 'Soda Master'
 
   // Update elapsed time every second
   useEffect(() => {
@@ -24,6 +35,29 @@ export function KDSPage() {
     }, 1000)
     return () => clearInterval(interval)
   }, [])
+
+  // Serverless-friendly sync: no sockets, just a light refresh while KDS is visible.
+  useEffect(() => {
+    let cancelled = false
+    let running = false
+
+    const refresh = async () => {
+      if (cancelled || running || document.visibilityState !== 'visible') return
+      running = true
+      try {
+        await recargarOrdenes()
+      } finally {
+        running = false
+      }
+    }
+
+    void refresh()
+    const interval = window.setInterval(refresh, 7000)
+    return () => {
+      cancelled = true
+      window.clearInterval(interval)
+    }
+  }, [recargarOrdenes])
 
   // Manual refresh - viable for serverless (no polling)
   const handleRefresh = async () => {
@@ -46,6 +80,7 @@ export function KDSPage() {
   const CATEGORIAS_BAR = ['bebidas', 'cervezas', 'jugos_bebidas', 'tragos']
 
   const isBarItem = (item: ItemComanda) => {
+    if (item.categoria) return CATEGORIAS_BAR.includes(item.categoria)
     const producto = productos.find((p) => p.id === item.productoId)
     return CATEGORIAS_BAR.includes(producto?.categoria || '')
   }
@@ -54,41 +89,88 @@ export function KDSPage() {
 
   const getComandasForSection = (filterFn: (item: ItemComanda) => boolean) =>
     comandasActivas
-      .map((comanda) => ({ ...comanda, items: comanda.items.filter(filterFn) }))
+      .map((comanda) => ({
+        ...comanda,
+        items: comanda.items.filter((item) => filterFn(item) && item.estado !== 'listo'),
+      }))
       .filter((comanda) => comanda.items.length > 0)
 
   const comandasCocina = getComandasForSection(isCocinaItem)
   const comandasBar = getComandasForSection(isBarItem)
 
-  const handleMarkReady = async (comandaId: string, estado: string) => {
+  const handleMarkReady = async (comandaId: string, estado: string, itemIds: string[]) => {
     const comanda = comandas.find((c) => c.id === comandaId)
     if (!comanda) return
 
     if (estado === 'problema') {
+      await Promise.all(itemIds.map((itemId) => actualizarItemOrden(itemId, { estado_item: 'problema' })))
+      await updateOrden(comandaId, { estado: 'problema' })
       showToast(`Comanda ${comanda.mesaNombre} con problema - notificando al mesero`, 'error')
-      dispatch({
-        type: 'ADD_NOTIFICACION',
-        payload: {
-          id: `notif_${Date.now()}`,
+      // Notificación persistente al mesero que tomó la orden. El polling
+      // del lado del mesero (otro dispositivo) la recogerá y mostrará el
+      // toast aunque esté en otra pantalla.
+      if (comanda.usuarioId) {
+        void crearNotificacionApi({
           tipo: 'problema',
-          ordenId: comandaId,
-          mesaNombre: comanda.mesaNombre,
-          mensaje: `Problema en orden de ${comanda.mesaNombre}`,
-          timestamp: Date.now(),
-          vista: false,
-        },
-      })
+          orden_id: comandaId,
+          mesa_nombre: comanda.mesaNombre,
+          mensaje: `Problema en orden de ${comanda.mesaNombre}. Revisar en POS.`,
+          destinatario_usuario_id: comanda.usuarioId,
+        })
+      }
     } else {
-      await updateOrden(comandaId, { estado })
+      await Promise.all(itemIds.map((itemId) => actualizarItemOrden(itemId, { estado_item: estado })))
+      const itemIdsSet = new Set(itemIds)
+      const itemsActualizados = comanda.items.map((item) =>
+        itemIdsSet.has(item.id) ? { ...item, estado: estado as ItemComanda['estado'] } : item
+      )
+      const todosListos = itemsActualizados.length > 0 && itemsActualizados.every((item) => item.estado === 'listo')
+      const estadoOrden = estado === 'listo'
+        ? (todosListos ? 'listo' : 'en_preparacion')
+        : estado
+      await updateOrden(comandaId, { estado: estadoOrden })
+      await recargarOrdenes()
       const label =
         estado === 'en_preparacion' ? 'En preparacion' : 'Lista para entregar'
       showToast(`${comanda.mesaNombre} - ${label}`, 'success')
+
+      // Cuando toda la comanda quedó lista, avisar al mesero para que la
+      // retire. Esto cierra el ciclo cocina↔mesero sin requerir que el
+      // mesero esté mirando el KDS.
+      if (estado === 'listo' && todosListos && comanda.usuarioId) {
+        void crearNotificacionApi({
+          tipo: 'listo',
+          orden_id: comandaId,
+          mesa_nombre: comanda.mesaNombre,
+          mensaje: `Orden de ${comanda.mesaNombre} lista para retirar.`,
+          destinatario_usuario_id: comanda.usuarioId,
+        })
+      }
     }
   }
 
   const isNewComanda = (comanda: Comanda) => Date.now() - comanda.creadoAt < 30000
   const isDelayedComanda = (comanda: Comanda) =>
     Date.now() - comanda.creadoAt > 15 * 60 * 1000
+
+  /**
+   * Reimprime la copia física de la estación indicada para esta comanda.
+   * Útil cuando el ticket original se perdió o el KDS falla.
+   */
+  const handleReimprimir = (comanda: Comanda, estacion: 'cocina' | 'bar') => {
+    const fullComanda = comandas.find((c) => c.id === comanda.id) || comanda
+    const { cocina, bar } = splitComandaParaEstaciones(fullComanda, productos, {
+      nombreNegocio,
+      soloPendientes: false,
+    })
+    const ticket = estacion === 'cocina' ? cocina : bar
+    if (!ticket) {
+      showToast('No hay ítems para esta estación', 'error')
+      return
+    }
+    setReimprimirTickets([{ ...ticket, numero_copia: 'REIMPRESIÓN' }])
+    setShowReimprimirDialog(true)
+  }
 
   const isRolCocina = usuarioActual?.rol === 'cocina'
   const isRolBar = usuarioActual?.rol === 'bar'
@@ -143,8 +225,10 @@ export function KDSPage() {
                   key={comanda.id}
                   comanda={comanda}
                   onMarkReady={handleMarkReady}
+                  onReimprimir={(c) => handleReimprimir(c, isRolBar ? 'bar' : 'cocina')}
                   isNew={isNewComanda(comanda)}
                   isDelayed={isDelayedComanda(comanda)}
+                  isBar={isRolBar}
                 />
               ))
             )}
@@ -171,6 +255,7 @@ export function KDSPage() {
                     key={comanda.id}
                     comanda={comanda}
                     onMarkReady={handleMarkReady}
+                    onReimprimir={(c) => handleReimprimir(c, 'cocina')}
                     isNew={isNewComanda(comanda)}
                     isDelayed={isDelayedComanda(comanda)}
                   />
@@ -197,6 +282,7 @@ export function KDSPage() {
                     key={comanda.id}
                     comanda={comanda}
                     onMarkReady={handleMarkReady}
+                    onReimprimir={(c) => handleReimprimir(c, 'bar')}
                     isNew={isNewComanda(comanda)}
                     isDelayed={isDelayedComanda(comanda)}
                     isBar
@@ -207,6 +293,18 @@ export function KDSPage() {
           </div>
         </div>
       )}
+
+      <PrintPreviewDialog
+        open={showReimprimirDialog}
+        onOpenChange={(v) => {
+          setShowReimprimirDialog(v)
+          if (!v) setReimprimirTickets([])
+        }}
+        tickets={reimprimirTickets}
+        config={printConfig}
+        title="Reimprimir ticket de cocina/bar"
+        closeLabel="Cancelar"
+      />
     </div>
   )
 }
@@ -232,12 +330,14 @@ function EmptyState({ small = false }: { small?: boolean }) {
 function ComandaCard({
   comanda,
   onMarkReady,
+  onReimprimir,
   isNew,
   isDelayed,
   isBar = false,
 }: {
   comanda: Comanda
-  onMarkReady: (id: string, estado: string) => Promise<void>
+  onMarkReady: (id: string, estado: string, itemIds: string[]) => Promise<void>
+  onReimprimir?: (comanda: Comanda) => void
   isNew: boolean
   isDelayed: boolean
   isBar?: boolean
@@ -247,7 +347,7 @@ function ComandaCard({
   const handleStateChange = async (estado: string) => {
     setIsUpdating(true)
     try {
-      await onMarkReady(comanda.id, estado)
+      await onMarkReady(comanda.id, estado, comanda.items.map((item) => item.id))
     } finally {
       setIsUpdating(false)
     }
@@ -274,9 +374,23 @@ function ComandaCard({
               </Badge>
             )}
           </CardTitle>
-          <div className="flex items-center gap-1 text-sm text-muted-foreground">
-            <Clock className="h-4 w-4" />
-            <span>{getElapsedTime(comanda.creadoAt)}</span>
+          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+            {onReimprimir && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-8 gap-1 px-2 text-xs"
+                onClick={() => onReimprimir(comanda)}
+                title={`Reimprimir ticket de ${isBar ? 'bar' : 'cocina'}`}
+              >
+                <Printer className="h-3.5 w-3.5" />
+                <span className="hidden sm:inline">Reimprimir</span>
+              </Button>
+            )}
+            <div className="flex items-center gap-1">
+              <Clock className="h-4 w-4" />
+              <span>{getElapsedTime(comanda.creadoAt)}</span>
+            </div>
           </div>
         </div>
         <p className="text-xs text-muted-foreground">
