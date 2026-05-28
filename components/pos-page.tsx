@@ -25,12 +25,16 @@ import {
 } from '@/components/ui/select'
 import { cn } from '@/lib/utils'
 import { formatCurrency, generateId, getEstadoComandaColor, getEstadoComandaLabel } from '@/lib/helpers'
-import { Plus, Minus, Trash2, Send, Printer, Percent, ChefHat, Wine, Star, ArrowLeft, Beer, GlassWater, ShoppingCart, X, Receipt } from 'lucide-react'
+import { Plus, Minus, Trash2, Send, Printer, Percent, ChefHat, Wine, Star, ArrowLeft, Beer, GlassWater, ShoppingCart, X, Receipt, Check } from 'lucide-react'
 import { Switch } from '@/components/ui/switch'
 import { Label } from '@/components/ui/label'
 import { showToast } from '@/components/toast'
 import { Comanda, ItemComanda, Producto, TipoDescuento } from '@/lib/types'
-import { ingredientesEstandar, quesosDisponibles, salsasDisponibles } from '@/lib/initial-data'
+import {
+  ingredientesEstandar as ingredientesEstandarFallback,
+  quesosDisponibles as quesosFallback,
+  salsasDisponibles as salsasFallback,
+} from '@/lib/initial-data'
 import { PrintPreviewDialog } from '@/components/print-preview-dialog'
 import {
   comandaToTicketItems,
@@ -46,6 +50,36 @@ const MAX_QUESOS = 1
 const MAX_INGREDIENTES = 3
 const MAX_SALSAS = 2
 
+type RecetaOpcionLinea = {
+  ingrediente_id: string
+  ingrediente_nombre: string
+  nombre_display?: string
+  costo_adicional?: number
+}
+
+function opcionLabel(o: RecetaOpcionLinea) {
+  return (o.nombre_display || o.ingrediente_nombre || '').trim()
+}
+
+function splitOpcionalesReceta(opcionales: RecetaOpcionLinea[]) {
+  const quesos = opcionales.filter((o) => opcionLabel(o).toLowerCase().includes('queso'))
+  const salsaKeys = [
+    'mayonesa',
+    'ketchup',
+    'mostaza',
+    'bbq',
+    'salsa picante',
+    'chimichurri',
+    'cheddar',
+  ]
+  const salsas = opcionales.filter((o) => {
+    const n = opcionLabel(o).toLowerCase()
+    return salsaKeys.some((s) => n.includes(s) || n === s)
+  })
+  const ingredientes = opcionales.filter((o) => !quesos.includes(o) && !salsas.includes(o))
+  return { quesos, ingredientes, salsas }
+}
+
 export function POSPage() {
   const {
     state,
@@ -57,7 +91,10 @@ export function POSPage() {
     crearOrden,
     updateOrden,
     crearItemOrden,
+    actualizarItemOrden,
+    recargarOrdenes,
     crearDescuentoApi,
+    getPermisosEspecialesApi,
   } = useApp()
   const { mesas, productos, comandas, usuarioActual, permisosDescuento, configuracion } = state
   const impuestoHabilitado = configuracion.impuesto_habilitado === true
@@ -76,6 +113,13 @@ export function POSPage() {
   const [burgerSalsas, setBurgerSalsas] = useState<string[]>([])
   const [burgerEspeciales, setBurgerEspeciales] = useState<string[]>([])
   const [burgerNotaEspecial, setBurgerNotaEspecial] = useState('')
+  const [burgerRecetaLoading, setBurgerRecetaLoading] = useState(false)
+  const [burgerRecetaExtras, setBurgerRecetaExtras] = useState<RecetaOpcionLinea[]>([])
+  const [burgerRecetaBase, setBurgerRecetaBase] = useState<RecetaOpcionLinea[]>([])
+  const [burgerOpcionesQuesos, setBurgerOpcionesQuesos] = useState<string[]>([])
+  const [burgerOpcionesIngredientes, setBurgerOpcionesIngredientes] = useState<string[]>([])
+  const [burgerOpcionesSalsas, setBurgerOpcionesSalsas] = useState<string[]>([])
+  const [burgerExtrasReceta, setBurgerExtrasReceta] = useState<string[]>([])
 
   const [showItemDialog, setShowItemDialog] = useState(false)
   const [selectedItem, setSelectedItem] = useState<Producto | null>(null)
@@ -84,6 +128,10 @@ export function POSPage() {
   const [itemNotaEspecial, setItemNotaEspecial] = useState('')
   const [itemEspeciales, setItemEspeciales] = useState<string[]>([])
   const [itemCantidad, setItemCantidad] = useState(1)
+
+  // Delivery widget
+  const [showEntregasDialog, setShowEntregasDialog] = useState(false)
+  const [entregandoIds, setEntregandoIds] = useState<Set<string>>(new Set())
 
   // Discount dialog
   const [showComandaDrawer, setShowComandaDrawer] = useState(false)
@@ -97,6 +145,50 @@ export function POSPage() {
   const ingredientesEspeciales = useMemo(() => {
     return productos.filter(p => p.esIngredienteEspecial && p.stock > 0)
   }, [productos])
+
+  // ─── Permiso especial de apertura para CAJERO ──────────
+  // Un cajero NO puede abrir mesas/comandas por defecto. El admin puede
+  // delegarle el permiso `apertura_mesa` por tiempo limitado. Lo
+  // chequeamos al montar el POS y refrescamos cuando cambia el usuario
+  // para mostrar un aviso claro y prevenir que el cajero intente
+  // enviar a cocina sin permiso (el server también lo bloquea, esto es
+  // sólo para mejorar la UX).
+  const esCajero = usuarioActual?.rol === 'cajero'
+  const [permisoAperturaVigente, setPermisoAperturaVigente] = useState<boolean | null>(null)
+  const [permisoAperturaInfo, setPermisoAperturaInfo] = useState<{
+    valido_hasta?: string
+  } | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    async function chequearPermiso() {
+      if (!usuarioActual || !esCajero) {
+        setPermisoAperturaVigente(null)
+        setPermisoAperturaInfo(null)
+        return
+      }
+      try {
+        const permisos = await getPermisosEspecialesApi({
+          usuario_id: usuarioActual.id,
+          tipo: 'apertura_mesa',
+          solo_vigentes: true,
+        })
+        if (cancelled) return
+        const vigente = permisos.length > 0
+        setPermisoAperturaVigente(vigente)
+        setPermisoAperturaInfo(vigente ? { valido_hasta: permisos[0].valido_hasta } : null)
+      } catch {
+        if (!cancelled) {
+          setPermisoAperturaVigente(false)
+          setPermisoAperturaInfo(null)
+        }
+      }
+    }
+    chequearPermiso()
+    return () => {
+      cancelled = true
+    }
+  }, [usuarioActual, esCajero, getPermisosEspecialesApi])
 
   // Load or create comanda on mount
   useEffect(() => {
@@ -134,9 +226,6 @@ export function POSPage() {
           }
           dispatch({ type: 'ADD_COMANDA', payload: newComanda })
           setCurrentComanda(newComanda)
-          // Mark table occupied locally + Neon
-          dispatch({ type: 'UPDATE_MESA', payload: { ...mesa, estado: 'ocupada' } })
-          updateMesa(mesa.id, { estado: 'ocupada' })
         }
       }
     }
@@ -189,15 +278,13 @@ export function POSPage() {
         }
         dispatch({ type: 'ADD_COMANDA', payload: newComanda })
         setCurrentComanda(newComanda)
-        dispatch({ type: 'UPDATE_MESA', payload: { ...mesa, estado: 'ocupada' } })
-        updateMesa(mesa.id, { estado: 'ocupada' })
       }
     }
   }
 
   // ─── Burger dialog ────────────────────────────────────
-  const handleSelectBurger = (burger: Producto) => {
-    if ((burger.stock ?? 0) <= 0) {
+  const handleSelectBurger = async (burger: Producto) => {
+    if ((burger.stock ?? 0) <= 0 && burger.modoStock !== 'receta') {
       showToast(`${burger.nombre} está agotado`, 'error')
       return
     }
@@ -206,8 +293,44 @@ export function POSPage() {
     setBurgerIngredientes([])
     setBurgerSalsas([])
     setBurgerEspeciales([])
+    setBurgerExtrasReceta([])
     setBurgerNotaEspecial('')
+    setBurgerRecetaBase([])
+    setBurgerRecetaExtras([])
+    setBurgerOpcionesQuesos(quesosFallback)
+    setBurgerOpcionesIngredientes(ingredientesEstandarFallback)
+    setBurgerOpcionesSalsas(salsasFallback)
     setShowBurgerDialog(true)
+    setBurgerRecetaLoading(true)
+    try {
+      const res = await fetch(
+        `/api/recetas?producto_id=${encodeURIComponent(burger.id)}&opciones=true`,
+      )
+      if (res.ok) {
+        const data = await res.json()
+        const opcionales = Array.isArray(data.opcionales) ? data.opcionales : []
+        const extras = Array.isArray(data.extras) ? data.extras : []
+        const base = Array.isArray(data.base) ? data.base : []
+        if (opcionales.length > 0) {
+          const split = splitOpcionalesReceta(opcionales)
+          setBurgerOpcionesQuesos(split.quesos.map(opcionLabel))
+          setBurgerOpcionesIngredientes(split.ingredientes.map(opcionLabel))
+          setBurgerOpcionesSalsas(split.salsas.map(opcionLabel))
+        }
+        setBurgerRecetaBase(base)
+        setBurgerRecetaExtras(extras)
+      }
+    } catch {
+      /* fallback lists already set */
+    } finally {
+      setBurgerRecetaLoading(false)
+    }
+  }
+
+  const toggleBurgerExtraReceta = (ingredienteId: string) => {
+    setBurgerExtrasReceta((prev) =>
+      prev.includes(ingredienteId) ? prev.filter((x) => x !== ingredienteId) : [...prev, ingredienteId],
+    )
   }
 
   const toggleQueso = (q: string) => {
@@ -253,10 +376,18 @@ export function POSPage() {
   const handleConfirmBurger = () => {
     if (!selectedBurger || !currentComanda) return
 
-    const especiales = especialesSeleccionados(burgerEspeciales)
+    const especialesProducto = especialesSeleccionados(burgerEspeciales)
+    const extrasReceta = burgerRecetaExtras
+      .filter((line) => burgerExtrasReceta.includes(line.ingrediente_id))
+      .map((line) => ({
+        id: line.ingrediente_id,
+        nombre: opcionLabel(line),
+        costoAdicional: Number(line.costo_adicional) || 0,
+      }))
+    const especiales = [...especialesProducto, ...extrasReceta]
     const costoEspeciales = especiales.reduce((sum, esp) => sum + esp.costoAdicional, 0)
 
-    const allIngredientes = [...burgerQuesos, ...burgerIngredientes]
+    const allIngredientes = [...burgerQuesos, ...burgerIngredientes, ...burgerSalsas]
 
     const newItem: ItemComanda = {
       id: generateId(),
@@ -266,7 +397,7 @@ export function POSPage() {
       cantidad: 1,
       ingredientesEstandar: allIngredientes,
       ingredientesEspeciales: especiales,
-      salsaSeleccionada: burgerSalsas.join(', '),
+      salsaSeleccionada: '',
       notas: '',
       notaEspecial: burgerNotaEspecial,
       precio: selectedBurger.precio + costoEspeciales,
@@ -388,7 +519,18 @@ export function POSPage() {
       showToast('Agrega items a la comanda primero', 'error')
       return
     }
+    // Cajero sin permiso vigente: cortamos antes de pegarle al server.
+    // El server igualmente rechazará (cinturón + tiradores) pero acá el
+    // mensaje es más claro y no tira la transacción a medias.
+    if (esCajero && permisoAperturaVigente === false) {
+      showToast(
+        'No tienes permiso vigente para abrir mesa. Pedile al administrador que te otorgue acceso temporal.',
+        'error',
+      )
+      return
+    }
 
+    let ordenCreadaParaRollback: string | null = null
     try {
       const ordenData = {
         mesa_id: currentComanda.mesaId,
@@ -404,6 +546,7 @@ export function POSPage() {
       const esOrdenPersistida = isPersistedId(currentComanda.id)
       const nuevaOrden = esOrdenPersistida ? null : await crearOrden(ordenData)
       const ordenId = esOrdenPersistida ? currentComanda.id : nuevaOrden?.id
+      ordenCreadaParaRollback = !esOrdenPersistida && ordenId ? ordenId : null
 
       if (ordenId) {
         const itemsPendientesDeEnviar = esOrdenPersistida
@@ -418,12 +561,17 @@ export function POSPage() {
             notaEspecial: item.notaEspecial || '',
             ingredientesEspeciales: item.ingredientesEspeciales || [],
           }
+          const extrasIngredientes = (item.ingredientesEspeciales || []).map((e) => ({
+            ingrediente_id: e.id,
+            cantidad: 1,
+          }))
           const itemCreado = await crearItemOrden({
             orden_id: ordenId,
             producto_id: item.productoId,
             cantidad: item.cantidad,
             precio_unitario: item.precio,
             modificadores: item.ingredientesEstandar || [],
+            extras_ingredientes: extrasIngredientes,
             notas_especiales: JSON.stringify(metadata),
             estado_item: 'pendiente',
           })
@@ -433,6 +581,7 @@ export function POSPage() {
             throw new Error(`No se pudo enviar ${item.productoNombre}`)
           }
         }
+        ordenCreadaParaRollback = null
 
         // If this is an existing comanda, adding more products must reopen it
         // for Cocina/Bar and refresh totals instead of creating a duplicate order.
@@ -446,7 +595,8 @@ export function POSPage() {
           })
         }
 
-        // Ensure mesa stays occupied
+        // La mesa se marca como ocupada SOLO al enviar la comanda a cocina/bar.
+        // Antes de este punto, la comanda existe únicamente en memoria local.
         const mesa = mesas.find(m => m.id === currentComanda.mesaId)
         if (mesa && mesa.estado !== 'ocupada') {
           await updateMesa(mesa.id, { estado: 'ocupada' })
@@ -506,7 +656,91 @@ export function POSPage() {
       }
     } catch (error) {
       console.error('[v0] Error sending to kitchen:', error)
-      showToast('Error al enviar a cocina', 'error')
+      if (ordenCreadaParaRollback) {
+        await fetch('/api/ordenes', {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: ordenCreadaParaRollback }),
+        }).catch(() => null)
+      }
+      const message = error instanceof Error ? error.message : 'Error al enviar a cocina'
+      showToast(message, 'error')
+    }
+  }
+
+  // ─── Delivery (entregar items listos) ─────────────────
+  // Lista de items en estados 'listo' o 'entregado' a través de TODAS las
+  // comandas activas (no pagadas/canceladas). El widget muestra ambos para
+  // que el mesero tenga claridad de qué entregó y qué falta por entregar.
+  const itemsEntregaTracking = useMemo(() => {
+    type EntregaItem = {
+      comandaId: string
+      itemId: string
+      mesaNombre: string
+      productoNombre: string
+      cantidad: number
+      categoria: string
+      variante?: string
+      ingredientesEstandar: string[]
+      ingredientesEspeciales: { nombre: string }[]
+      notaEspecial?: string
+      notas?: string
+      estado: 'listo' | 'entregado'
+    }
+    const out: EntregaItem[] = []
+    for (const c of comandas) {
+      if (c.estado === 'pagado' || c.estado === 'cancelado') continue
+      for (const it of c.items) {
+        if (it.estado === 'listo' || it.estado === 'entregado') {
+          out.push({
+            comandaId: c.id,
+            itemId: it.id,
+            mesaNombre: c.mesaNombre,
+            productoNombre: it.productoNombre,
+            cantidad: it.cantidad,
+            categoria: it.categoria || '',
+            variante: it.variante,
+            ingredientesEstandar: it.ingredientesEstandar || [],
+            ingredientesEspeciales: (it.ingredientesEspeciales || []).map((e) => ({
+              nombre: e.nombre,
+            })),
+            notaEspecial: it.notaEspecial,
+            notas: it.notas,
+            estado: it.estado,
+          })
+        }
+      }
+    }
+    return out
+  }, [comandas])
+
+  const pendientesEntregaCount = itemsEntregaTracking.filter(
+    (it) => it.estado === 'listo',
+  ).length
+
+  const handleMarcarEntregado = async (_comandaId: string, itemId: string) => {
+    if (entregandoIds.has(itemId)) return
+    setEntregandoIds((prev) => {
+      const next = new Set(prev)
+      next.add(itemId)
+      return next
+    })
+    try {
+      // El backend persiste el estado_item y sincroniza el estado de la
+      // orden automáticamente (todos entregados → orden entregada).
+      await actualizarItemOrden(itemId, { estado_item: 'entregado' })
+      await recargarOrdenes()
+      showToast('Producto entregado', 'success')
+    } catch (error) {
+      console.error('Error marcando entregado:', error)
+      const msg = error instanceof Error ? error.message : 'No se pudo marcar como entregado'
+      showToast(msg, 'error')
+    } finally {
+      setEntregandoIds((prev) => {
+        const next = new Set(prev)
+        next.delete(itemId)
+        return next
+      })
     }
   }
 
@@ -671,6 +905,11 @@ export function POSPage() {
   const nombreNegocio =
     configuracion.nombre_negocio || configuracion.nombreRestaurante || 'Soda Master'
 
+  // "Total" fiscal (consumo + IVA, sin propina). El "total" del POS general
+  // sigue siendo grand-total con propina porque ya se usa en otras partes
+  // (pago, persistencia de orden). En el ticket distinguimos los dos.
+  const totalFiscal = baseImponible + impuestoMonto
+
   const ticketDataActual = useMemo<TicketData | null>(() => {
     if (!currentComanda) return null
     return {
@@ -685,16 +924,16 @@ export function POSPage() {
         descuento: descuentoMonto,
         descuento_label: descuentoLabel,
         impuesto: impuestoMonto,
-        impuesto_label: impuestoHabilitado ? `Impuesto (${tasaImpuesto}%)` : null,
+        impuesto_label: impuestoHabilitado ? `IVA (${tasaImpuesto}%)` : null,
         propina: propinaMonto,
-        total,
+        total: totalFiscal,
+        total_a_pagar: totalFiscal + propinaMonto,
       },
     }
-  }, [currentComanda, nombreNegocio, subtotal, descuentoMonto, descuentoLabel, impuestoMonto, propinaMonto, total, impuestoHabilitado, tasaImpuesto])
+  }, [currentComanda, nombreNegocio, subtotal, descuentoMonto, descuentoLabel, impuestoMonto, propinaMonto, totalFiscal, impuestoHabilitado, tasaImpuesto])
 
   // ─── Precuenta ─────────────────────────────────────────
   const precuentaPropina = precuentaIncluirPropina ? propinaMonto : 0
-  const precuentaTotal = baseImponible + impuestoMonto + precuentaPropina
 
   const ticketDataPrecuenta = useMemo<TicketData | null>(() => {
     if (!currentComanda) return null
@@ -711,12 +950,13 @@ export function POSPage() {
         descuento: descuentoMonto,
         descuento_label: descuentoLabel,
         impuesto: impuestoMonto,
-        impuesto_label: impuestoHabilitado ? `Impuesto (${tasaImpuesto}%)` : null,
+        impuesto_label: impuestoHabilitado ? `IVA (${tasaImpuesto}%)` : null,
         propina: precuentaIncluirPropina ? propinaMonto : null,
-        total: precuentaTotal,
+        total: totalFiscal,
+        total_a_pagar: totalFiscal + precuentaPropina,
       },
     }
-  }, [currentComanda, nombreNegocio, subtotal, descuentoMonto, descuentoLabel, impuestoMonto, propinaMonto, precuentaIncluirPropina, precuentaTotal, impuestoHabilitado, tasaImpuesto])
+  }, [currentComanda, nombreNegocio, subtotal, descuentoMonto, descuentoLabel, impuestoMonto, propinaMonto, precuentaIncluirPropina, precuentaPropina, totalFiscal, impuestoHabilitado, tasaImpuesto])
 
   const itemsEnPreparacion = currentComanda
     ? currentComanda.items.filter((it) => it.estado && it.estado !== 'listo').length
@@ -766,7 +1006,36 @@ export function POSPage() {
   if (!selectedMesaId) {
     return (
       <div className="space-y-6">
-        <h1 className="text-2xl font-bold text-foreground">Selecciona una Mesa</h1>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h1 className="text-2xl font-bold text-foreground">Selecciona una Mesa</h1>
+          <EntregasButton
+            count={pendientesEntregaCount}
+            onClick={() => setShowEntregasDialog(true)}
+          />
+        </div>
+        {/* Aviso para cajeros sin permiso vigente para abrir mesa.
+            Pueden ver el POS (para cobrar) pero no podrán enviar
+            comandas a cocina hasta que el admin les otorgue acceso. */}
+        {esCajero && permisoAperturaVigente === false && (
+          <div className="rounded-lg border border-amber-500/50 bg-amber-500/10 p-3 text-sm">
+            <p className="font-semibold text-amber-500">
+              No tenés permiso para abrir mesas
+            </p>
+            <p className="text-muted-foreground">
+              Como cajero podés cobrar, pero para abrir una comanda nueva
+              necesitás que un administrador te otorgue el permiso
+              <span className="font-medium"> "Apertura de mesa"</span> con
+              vigencia. Mientras tanto, podés seleccionar una mesa sólo
+              para agregar/cobrar comandas ya abiertas por otro empleado.
+            </p>
+          </div>
+        )}
+        {esCajero && permisoAperturaVigente === true && permisoAperturaInfo?.valido_hasta && (
+          <div className="rounded-lg border border-emerald-500/40 bg-emerald-500/5 p-3 text-xs text-emerald-600">
+            Permiso de apertura de mesa vigente hasta{' '}
+            {new Date(permisoAperturaInfo.valido_hasta).toLocaleString()}
+          </div>
+        )}
         <div className="grid gap-4 grid-cols-2 sm:grid-cols-3 lg:grid-cols-4">
           {mesas.map((mesa) => (
             <Card
@@ -796,6 +1065,14 @@ export function POSPage() {
             </Card>
           ))}
         </div>
+
+        <EntregasDialog
+          open={showEntregasDialog}
+          onOpenChange={setShowEntregasDialog}
+          items={itemsEntregaTracking}
+          entregandoIds={entregandoIds}
+          onMarcarEntregado={handleMarcarEntregado}
+        />
       </div>
     )
   }
@@ -810,8 +1087,8 @@ export function POSPage() {
 
         {/* ── Products ── */}
         <div className="flex-1 overflow-auto md:border-r md:border-border p-4">
-          <div className="mb-4 flex items-center justify-between">
-            <div className="flex items-center gap-3">
+          <div className="mb-4 flex items-center justify-between gap-2">
+            <div className="flex items-center gap-3 flex-wrap">
               <h2 className="text-xl font-bold text-foreground">{selectedMesa?.nombre}</h2>
               {currentComanda && (
                 <Badge className={cn('text-white', getEstadoComandaColor(currentComanda.estado))}>
@@ -819,10 +1096,16 @@ export function POSPage() {
                 </Badge>
               )}
             </div>
-            <Button variant="outline" size="sm" onClick={handleChangeMesa}>
-              <ArrowLeft className="mr-2 h-4 w-4" />
-              Cambiar Mesa
-            </Button>
+            <div className="flex items-center gap-2">
+              <EntregasButton
+                count={pendientesEntregaCount}
+                onClick={() => setShowEntregasDialog(true)}
+              />
+              <Button variant="outline" size="sm" onClick={handleChangeMesa}>
+                <ArrowLeft className="mr-2 h-4 w-4" />
+                Cambiar Mesa
+              </Button>
+            </div>
           </div>
 
           {/* Mobile tabs */}
@@ -875,7 +1158,22 @@ export function POSPage() {
         {/* ── Order summary (side panel for md+) ── */}
         <aside className="hidden flex-col bg-muted/30 md:flex md:w-80 lg:w-96">
           <div className="border-b border-border p-4">
-            <h3 className="font-semibold text-foreground">Resumen de Comanda</h3>
+            <div className="flex items-center justify-between gap-2">
+              <h3 className="font-semibold text-foreground">Resumen de Comanda</h3>
+              {currentComanda && !isPersistedId(currentComanda.id) && currentComanda.items.length > 0 && (
+                <Badge variant="outline" className="border-amber-500/60 text-amber-600 text-[10px]">
+                  No enviada
+                </Badge>
+              )}
+            </div>
+            {currentComanda && (
+              <p className="mt-1 text-xs text-muted-foreground">
+                {currentComanda.mesaNombre}
+                {isPersistedId(currentComanda.id)
+                  ? ' • en cocina/bar — los nuevos ítems se enviarán como actualización'
+                  : ' • aún no enviada a cocina/bar'}
+              </p>
+            )}
           </div>
 
           <div className="flex-1 overflow-auto p-4">
@@ -1017,9 +1315,14 @@ export function POSPage() {
               <Button
                 className="bg-amber-500 text-zinc-900 hover:bg-amber-400 font-semibold"
                 onClick={handleEnviarCocina}
-                disabled={!currentComanda || currentComanda.items.length === 0 || currentComanda.estado !== 'pendiente'}
+                disabled={
+                  !currentComanda ||
+                  currentComanda.items.length === 0 ||
+                  !currentComanda.items.some((it) => !isPersistedId(it.id))
+                }
               >
-                <Send className="mr-2 h-4 w-4" /> Enviar
+                <Send className="mr-2 h-4 w-4" />
+                {currentComanda && isPersistedId(currentComanda.id) ? 'Enviar nuevos' : 'Enviar'}
               </Button>
               <Button
                 className="bg-green-600 text-white hover:bg-green-500 font-semibold"
@@ -1062,16 +1365,33 @@ export function POSPage() {
             className="absolute inset-x-0 bottom-0 flex max-h-[85vh] flex-col rounded-t-2xl border-t border-border bg-card shadow-2xl"
             style={{ height: '85vh' }}
           >
-            <div className="flex items-center justify-between border-b border-border p-4">
-              <h3 className="font-semibold text-foreground">Resumen de Comanda</h3>
-              <button
-                type="button"
-                onClick={() => setShowComandaDrawer(false)}
-                className="rounded-md p-1 text-muted-foreground hover:bg-muted"
-                aria-label="Cerrar"
-              >
-                <X className="h-5 w-5" />
-              </button>
+            <div className="border-b border-border p-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <h3 className="font-semibold text-foreground">Resumen de Comanda</h3>
+                  {currentComanda && !isPersistedId(currentComanda.id) && currentComanda.items.length > 0 && (
+                    <Badge variant="outline" className="border-amber-500/60 text-amber-600 text-[10px]">
+                      No enviada
+                    </Badge>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowComandaDrawer(false)}
+                  className="rounded-md p-1 text-muted-foreground hover:bg-muted"
+                  aria-label="Cerrar"
+                >
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
+              {currentComanda && (
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {currentComanda.mesaNombre}
+                  {isPersistedId(currentComanda.id)
+                    ? ' • en cocina/bar — los nuevos ítems se enviarán como actualización'
+                    : ' • aún no enviada a cocina/bar'}
+                </p>
+              )}
             </div>
             <div className="flex-1 overflow-auto bg-muted/30 p-4">
               {!currentComanda || currentComanda.items.length === 0 ? (
@@ -1249,10 +1569,11 @@ export function POSPage() {
                   disabled={
                     !currentComanda ||
                     currentComanda.items.length === 0 ||
-                    currentComanda.estado !== 'pendiente'
+                    !currentComanda.items.some((it) => !isPersistedId(it.id))
                   }
                 >
-                  <Send className="mr-2 h-4 w-4" /> Enviar
+                  <Send className="mr-2 h-4 w-4" />
+                  {currentComanda && isPersistedId(currentComanda.id) ? 'Enviar nuevos' : 'Enviar'}
                 </Button>
                 <Button
                   className="min-h-[56px] bg-green-600 font-semibold text-white hover:bg-green-500"
@@ -1286,6 +1607,21 @@ export function POSPage() {
               </div>
             </div>
 
+            {burgerRecetaBase.length > 0 && (
+              <div className="rounded-lg border border-border bg-muted/30 p-3">
+                <p className="mb-1 text-xs font-semibold uppercase text-muted-foreground">
+                  Incluye (receta)
+                </p>
+                <p className="text-sm text-foreground">
+                  {burgerRecetaBase.map((b) => opcionLabel(b)).join(', ')}
+                </p>
+              </div>
+            )}
+
+            {burgerRecetaLoading && (
+              <p className="text-center text-sm text-muted-foreground">Cargando opciones de receta...</p>
+            )}
+
             {/* QUESOS */}
             <div>
               <div className="mb-2 flex items-center justify-between">
@@ -1295,7 +1631,7 @@ export function POSPage() {
                 <span className="text-xs text-muted-foreground">{burgerQuesos.length}/{MAX_QUESOS} elegido</span>
               </div>
               <div className="grid grid-cols-2 gap-2">
-                {quesosDisponibles.map(q => (
+                {burgerOpcionesQuesos.map(q => (
                   <ToggleChip
                     key={q}
                     label={q}
@@ -1316,7 +1652,7 @@ export function POSPage() {
                 <span className="text-xs text-muted-foreground">{burgerIngredientes.length}/{MAX_INGREDIENTES} elegidos</span>
               </div>
               <div className="grid grid-cols-2 gap-2">
-                {ingredientesEstandar.map(ing => (
+                {burgerOpcionesIngredientes.map(ing => (
                   <ToggleChip
                     key={ing}
                     label={ing}
@@ -1337,7 +1673,7 @@ export function POSPage() {
                 <span className="text-xs text-muted-foreground">{burgerSalsas.length}/{MAX_SALSAS} elegidas</span>
               </div>
               <div className="grid grid-cols-2 gap-2">
-                {salsasDisponibles.map(s => (
+                {burgerOpcionesSalsas.map(s => (
                   <ToggleChip
                     key={s}
                     label={s}
@@ -1349,15 +1685,35 @@ export function POSPage() {
               </div>
             </div>
 
-            {ingredientesEspeciales.length > 0 && (
+            {(burgerRecetaExtras.length > 0 || ingredientesEspeciales.length > 0) && (
               <div>
                 <h4 className="mb-2 flex items-center gap-1.5 text-sm font-semibold uppercase tracking-wide text-amber-500">
-                  <Star className="h-4 w-4" /> Ingredientes Especiales
+                  <Star className="h-4 w-4" /> Extras
                 </h4>
                 <p className="mb-2 text-xs text-muted-foreground">
                   Sin límite. No cuentan para los 3 ingredientes estándar.
                 </p>
                 <div className="flex flex-wrap gap-2">
+                  {burgerRecetaExtras.map((line) => (
+                    <Badge
+                      key={line.ingrediente_id}
+                      variant={burgerExtrasReceta.includes(line.ingrediente_id) ? 'default' : 'outline'}
+                      className={cn(
+                        'cursor-pointer py-1.5 px-3',
+                        burgerExtrasReceta.includes(line.ingrediente_id)
+                          ? 'bg-amber-500 text-zinc-900 hover:bg-amber-400'
+                          : 'border-border hover:border-amber-500 text-foreground',
+                      )}
+                      onClick={() => toggleBurgerExtraReceta(line.ingrediente_id)}
+                    >
+                      {opcionLabel(line)}
+                      {(line.costo_adicional ?? 0) > 0 && (
+                        <span className="ml-1 font-semibold">
+                          + {formatCurrency(line.costo_adicional ?? 0)}
+                        </span>
+                      )}
+                    </Badge>
+                  ))}
                   {ingredientesEspeciales.map(esp => (
                     <Badge
                       key={esp.id}
@@ -1681,14 +2037,24 @@ export function POSPage() {
                   <span>Impuesto ({tasaImpuesto}%)</span><span>+{formatCurrency(impuestoMonto)}</span>
                 </div>
               )}
-              {precuentaIncluirPropina && propinaMonto > 0 && (
-                <div className="flex justify-between text-muted-foreground">
-                  <span>Propina</span><span>+{formatCurrency(propinaMonto)}</span>
-                </div>
-              )}
-              <div className="flex justify-between border-t border-border pt-2 text-base font-bold text-foreground">
-                <span>Total a mostrar</span><span>{formatCurrency(precuentaTotal)}</span>
+              <div className="flex justify-between border-t border-border pt-2 text-sm font-semibold text-foreground">
+                <span>Total (con IVA)</span><span>{formatCurrency(totalFiscal)}</span>
               </div>
+              {precuentaIncluirPropina && propinaMonto > 0 && (
+                <>
+                  <div className="flex justify-between text-muted-foreground">
+                    <span>Propina sugerida (sin IVA)</span>
+                    <span>+{formatCurrency(propinaMonto)}</span>
+                  </div>
+                  <div className="flex justify-between border-t border-border pt-2 text-base font-bold text-foreground">
+                    <span>Total sugerido a pagar</span>
+                    <span>{formatCurrency(totalFiscal + precuentaPropina)}</span>
+                  </div>
+                  <p className="pt-1 text-[10px] italic text-muted-foreground">
+                    La propina es sugerida y voluntaria.
+                  </p>
+                </>
+              )}
             </div>
           </div>
           <DialogFooter>
@@ -1821,6 +2187,14 @@ export function POSPage() {
         title="Copias para cocina y bar"
         closeLabel="Cerrar"
       />
+
+      <EntregasDialog
+        open={showEntregasDialog}
+        onOpenChange={setShowEntregasDialog}
+        items={itemsEntregaTracking}
+        entregandoIds={entregandoIds}
+        onMarcarEntregado={handleMarcarEntregado}
+      />
     </>
   )
 }
@@ -1836,6 +2210,7 @@ function ToggleChip({
       type="button"
       disabled={disabled}
       onClick={onToggle}
+      aria-pressed={selected}
       className={cn(
         'flex items-center gap-2 rounded-lg border px-3 py-2 text-left text-sm transition-colors',
         selected
@@ -1844,7 +2219,17 @@ function ToggleChip({
         disabled && 'cursor-not-allowed opacity-40'
       )}
     >
-      <Checkbox checked={selected} disabled={disabled} className="pointer-events-none h-4 w-4 shrink-0" />
+      <span
+        aria-hidden="true"
+        className={cn(
+          'flex h-4 w-4 shrink-0 items-center justify-center rounded border text-[10px] leading-none',
+          selected
+            ? 'border-amber-500 bg-amber-500 text-zinc-900'
+            : 'border-border bg-background'
+        )}
+      >
+        {selected && <span className="h-2 w-2 rounded-sm bg-zinc-900" />}
+      </span>
       {label}
     </button>
   )
@@ -1910,5 +2295,215 @@ function ProductSection({
         ))}
       </div>
     </div>
+  )
+}
+
+// ─────────────────────────────────────────────────────────
+// EntregasButton: botón con badge contador de items listos
+// ─────────────────────────────────────────────────────────
+type EntregaPendiente = {
+  comandaId: string
+  itemId: string
+  mesaNombre: string
+  productoNombre: string
+  cantidad: number
+  categoria: string
+  variante?: string
+  ingredientesEstandar: string[]
+  ingredientesEspeciales: { nombre: string }[]
+  notaEspecial?: string
+  notas?: string
+  estado: 'listo' | 'entregado'
+}
+
+function EntregasButton({ count, onClick }: { count: number; onClick: () => void }) {
+  return (
+    <Button
+      variant={count > 0 ? 'default' : 'outline'}
+      size="sm"
+      onClick={onClick}
+      className={cn(
+        'relative gap-2',
+        count > 0
+          ? 'bg-green-600 text-white hover:bg-green-500 animate-pulse'
+          : 'border-border'
+      )}
+    >
+      <Receipt className="h-4 w-4" />
+      <span>Para entregar</span>
+      <Badge
+        variant="secondary"
+        className={cn(
+          'ml-1 px-2 text-xs',
+          count > 0 ? 'bg-white text-green-700' : 'bg-muted text-muted-foreground'
+        )}
+      >
+        {count}
+      </Badge>
+    </Button>
+  )
+}
+
+// ─────────────────────────────────────────────────────────
+// EntregasDialog: lista de productos listos para entregar
+// ─────────────────────────────────────────────────────────
+function EntregasDialog({
+  open,
+  onOpenChange,
+  items,
+  entregandoIds,
+  onMarcarEntregado,
+}: {
+  open: boolean
+  onOpenChange: (v: boolean) => void
+  items: EntregaPendiente[]
+  entregandoIds: Set<string>
+  onMarcarEntregado: (comandaId: string, itemId: string) => Promise<void>
+}) {
+  const CATEGORIAS_BAR = ['bebidas', 'cervezas', 'jugos_bebidas', 'tragos']
+  const esBar = (cat: string) => CATEGORIAS_BAR.includes(cat)
+
+  const porMesa = items.reduce<Record<string, EntregaPendiente[]>>((acc, it) => {
+    acc[it.mesaNombre] ||= []
+    acc[it.mesaNombre].push(it)
+    return acc
+  }, {})
+  for (const m of Object.keys(porMesa)) {
+    porMesa[m].sort((a, b) => {
+      if (a.estado === b.estado) return 0
+      return a.estado === 'listo' ? -1 : 1
+    })
+  }
+  const mesas = Object.keys(porMesa).sort()
+  const pendientes = items.filter((it) => it.estado === 'listo').length
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-2xl max-h-[85vh] overflow-hidden flex flex-col">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <Receipt className="h-5 w-5 text-green-600" />
+            Productos para entregar
+            <Badge variant="outline" className="ml-2 border-green-500/60 text-green-700">
+              {pendientes} por entregar
+            </Badge>
+          </DialogTitle>
+        </DialogHeader>
+
+        <div className="flex-1 overflow-y-auto -mx-6 px-6">
+          {items.length === 0 ? (
+            <div className="py-12 text-center text-muted-foreground">
+              <Receipt className="mx-auto mb-2 h-10 w-10 opacity-40" />
+              <p>No hay productos listos en este momento.</p>
+              <p className="text-xs mt-1">Cuando cocina o bar marquen un ítem como Listo, aparecerá acá.</p>
+            </div>
+          ) : (
+            <div className="space-y-5">
+              {mesas.map((mesaNombre) => (
+                <div key={mesaNombre}>
+                  <h4 className="text-sm font-bold text-foreground mb-2">{mesaNombre}</h4>
+                  <ul className="space-y-2">
+                    {porMesa[mesaNombre].map((it) => {
+                      const yaEntregado = it.estado === 'entregado'
+                      const trabajando = entregandoIds.has(it.itemId)
+                      return (
+                        <li
+                          key={it.itemId}
+                          className={cn(
+                            'rounded-lg border p-3 transition-colors',
+                            yaEntregado
+                              ? 'border-border bg-muted/40 opacity-75'
+                              : 'border-green-500/40 bg-green-500/5'
+                          )}
+                        >
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span
+                                  className={cn(
+                                    'font-semibold',
+                                    yaEntregado
+                                      ? 'text-muted-foreground line-through'
+                                      : 'text-foreground'
+                                  )}
+                                >
+                                  {it.cantidad}× {it.productoNombre}
+                                </span>
+                                {it.variante && (
+                                  <span className="text-xs text-muted-foreground">({it.variante})</span>
+                                )}
+                                <Badge
+                                  variant="outline"
+                                  className={cn(
+                                    'text-[10px]',
+                                    esBar(it.categoria)
+                                      ? 'border-blue-500/50 text-blue-600'
+                                      : 'border-amber-500/50 text-amber-600'
+                                  )}
+                                >
+                                  {esBar(it.categoria) ? 'Bar' : 'Cocina'}
+                                </Badge>
+                                {yaEntregado && (
+                                  <Badge className="bg-emerald-600 text-white text-[10px]">
+                                    <Check className="mr-1 h-3 w-3" />
+                                    Entregado
+                                  </Badge>
+                                )}
+                              </div>
+                              {!yaEntregado && it.ingredientesEstandar.length > 0 && (
+                                <p className="text-xs text-muted-foreground mt-1">
+                                  + {it.ingredientesEstandar.join(', ')}
+                                </p>
+                              )}
+                              {!yaEntregado && it.ingredientesEspeciales.length > 0 && (
+                                <p className="text-xs text-amber-600 mt-1">
+                                  ⭐ {it.ingredientesEspeciales.map((e) => e.nombre).join(', ')}
+                                </p>
+                              )}
+                              {!yaEntregado && it.notaEspecial && (
+                                <p className="text-xs text-amber-600 mt-1">📝 {it.notaEspecial}</p>
+                              )}
+                              {!yaEntregado && it.notas && (
+                                <p className="text-xs italic text-muted-foreground mt-1">Nota: {it.notas}</p>
+                              )}
+                            </div>
+                            {yaEntregado ? (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                disabled
+                                className="shrink-0 cursor-default border-emerald-600/40 text-emerald-700 opacity-90"
+                              >
+                                <Check className="mr-1 h-4 w-4" />
+                                Ya entregado
+                              </Button>
+                            ) : (
+                              <Button
+                                size="sm"
+                                disabled={trabajando}
+                                onClick={() => onMarcarEntregado(it.comandaId, it.itemId)}
+                                className="bg-green-600 text-white hover:bg-green-500 shrink-0"
+                              >
+                                {trabajando ? '…' : 'Entregado'}
+                              </Button>
+                            )}
+                          </div>
+                        </li>
+                      )
+                    })}
+                  </ul>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>
+            Cerrar
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }

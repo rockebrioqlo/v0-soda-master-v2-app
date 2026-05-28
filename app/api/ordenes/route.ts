@@ -71,3 +71,17 @@ export async function PATCH(request: Request) {
     return Response.json({ error: 'Error en servidor' }, { status: 500 })
   }
 }
+
+export async function DELETE(request: Request) {
+  try {
+    const { id } = await request.json()
+    if (!id) {
+      return Response.json({ error: 'ID requerido' }, { status: 400 })
+    }
+    await db.eliminarOrden(id)
+    return Response.json({ success: true })
+  } catch (error) {
+    console.error('Delete orden error:', error)
+    return Response.json({ error: 'Error en servidor' }, { status: 500 })
+  }
+}

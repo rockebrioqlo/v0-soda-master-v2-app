@@ -40,7 +40,8 @@ export async function PATCH(request: Request) {
     return Response.json(item)
   } catch (error) {
     console.error('Update item error:', error)
-    return Response.json({ error: 'Error en servidor' }, { status: 500 })
+    const message = error instanceof Error ? error.message : 'Error en servidor'
+    return Response.json({ error: message }, { status: 500 })
   }
 }
 

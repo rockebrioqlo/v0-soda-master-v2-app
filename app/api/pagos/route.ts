@@ -34,10 +34,32 @@ export async function POST(request: Request) {
     if (!Number.isFinite(divididoEn) || divididoEn < 1) {
       return Response.json({ error: 'dividido_en inválido' }, { status: 400 })
     }
+    // Pago parcial opcional: el cliente puede mandar `item_orden_ids` para
+    // pagar SOLO esos items y dejar el resto abierto a otros pagos.
+    const itemIdsRaw = pago.item_orden_ids ?? pago.itemOrdenIds
+    if (itemIdsRaw !== undefined && !Array.isArray(itemIdsRaw)) {
+      return Response.json({ error: 'item_orden_ids debe ser un arreglo' }, { status: 400 })
+    }
+    // `item_partials` permite cobrar una porción de una línea con cantidad > 1
+    // (ej. 1 de 2 cervezas iguales). El backend splittea la línea automáticamente.
+    const itemPartialsRaw = pago.item_partials ?? pago.itemPartials
+    if (itemPartialsRaw !== undefined) {
+      if (!Array.isArray(itemPartialsRaw)) {
+        return Response.json({ error: 'item_partials debe ser un arreglo' }, { status: 400 })
+      }
+      for (const p of itemPartialsRaw) {
+        if (!p || typeof p.id !== 'string' || !Number.isFinite(Number(p.cantidad)) || Number(p.cantidad) <= 0) {
+          return Response.json(
+            { error: 'item_partials inválido: requiere { id: string, cantidad: number > 0 }' },
+            { status: 400 },
+          )
+        }
+      }
+    }
     const newPago = await db.crearPago(pago)
     return Response.json(newPago, { status: 201 })
-  } catch (error) {
+  } catch (error: any) {
     console.error('Create pago error:', error)
-    return Response.json({ error: 'Error en servidor' }, { status: 500 })
+    return Response.json({ error: error?.message || 'Error en servidor' }, { status: 500 })
   }
 }

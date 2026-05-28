@@ -4,9 +4,21 @@ export type Rol = 'administrador' | 'admin' | 'mesero' | 'cocina' | 'bar' | 'caj
 
 export type EstadoMesa = 'libre' | 'ocupada' | 'reservada'
 
-export type EstadoComanda = 'pendiente' | 'en_cocina' | 'en_preparacion' | 'listo' | 'problema' | 'pagado'
+export type EstadoComanda =
+  | 'pendiente'
+  | 'en_cocina'
+  | 'en_preparacion'
+  | 'listo'
+  | 'entregado'
+  | 'problema'
+  | 'pagado'
+  | 'cancelado'
+  // "Perro muerto": cliente consumió pero se fue sin pagar. La diferencia
+  // con `cancelado` es que en este caso los insumos sí se gastaron y la
+  // pérdida queda registrada en `perdidas_comanda` para reportes.
+  | 'perdida'
 
-export type EstadoItem = 'pendiente' | 'en_preparacion' | 'listo' | 'problema'
+export type EstadoItem = 'pendiente' | 'en_preparacion' | 'listo' | 'entregado' | 'problema'
 
 export type MetodoPago = 'efectivo' | 'tarjeta'
 
@@ -44,6 +56,9 @@ export interface Mesa {
   area?: string
 }
 
+/** Cómo se descuenta inventario al vender el producto */
+export type ModoStock = 'producto' | 'receta' | 'producto_y_receta'
+
 export interface Producto {
   id: string
   nombre: string
@@ -54,9 +69,43 @@ export interface Producto {
   formato: string
   esIngredienteEspecial: boolean
   costoAdicional: number
+  modoStock?: ModoStock
   variantes?: { nombre: string; precio: number }[]
 }
 
+/** Insumo real en inventario (tabla soda_master.ingredientes) */
+export interface IngredienteInsumo {
+  id: string
+  nombre: string
+  categoria: string
+  unidad_medida: string
+  stock_actual: number
+  stock_minimo: number
+  costo_unitario: number
+  activo: boolean
+}
+
+export interface RecetaIngredienteLinea {
+  id?: string
+  ingrediente_id: string
+  ingrediente_nombre?: string
+  cantidad: number
+  opcional: boolean
+  extra: boolean
+  costo_adicional: number
+  /** Si se define, el POS matchea modificadores por este nombre */
+  nombre_display?: string | null
+}
+
+export interface RecetaProducto {
+  id: string
+  producto_id: string
+  nombre: string
+  activo: boolean
+  ingredientes: RecetaIngredienteLinea[]
+}
+
+/** @deprecated Usar IngredienteInsumo — conservado por compatibilidad */
 export interface Ingrediente {
   id: string
   nombre: string
@@ -84,6 +133,19 @@ export interface ItemComanda {
   precio: number
   variante?: string
   estado: EstadoItem
+  /** True si este item ya fue pagado (en un pago parcial previo). */
+  pagado?: boolean
+  /** Id del pago que cubrió este item (cuando pagado=true). */
+  pagoId?: string | null
+  /** Persona (cuenta_persona) que paga este item (null = compartido). */
+  cuentaPersonaId?: string | null
+}
+
+export interface CuentaPersona {
+  id: string
+  ordenId: string
+  idx: number
+  nombre?: string | null
 }
 
 export interface Comanda {
@@ -102,6 +164,8 @@ export interface Comanda {
   motivoDescuento?: string
   descuentoAplicadoPor?: string
   descuentoAutorizadoPor?: string
+  /** Personas asociadas a esta comanda (división por productos). */
+  cuentasPersona?: CuentaPersona[]
 }
 
 export interface Pago {

@@ -14,7 +14,7 @@ import {
 } from './initial-data'
 import { showToast } from '@/components/toast'
 
-type PageType = 'dashboard' | 'mesas' | 'pos' | 'kds' | 'inventario' | 'usuarios' | 'pagos' | 'mermas' | 'reportes' | 'configuracion'
+type PageType = 'dashboard' | 'mesas' | 'pos' | 'kds' | 'inventario' | 'finanzas' | 'usuarios' | 'pagos' | 'mermas' | 'reportes' | 'configuracion'
 
 // POS navigation state
 interface POSNavigationState {
@@ -173,6 +173,61 @@ interface AppContextType {
   eliminarUsuarioApi: (id: string) => Promise<boolean>
   recargarUsuarios: () => Promise<void>
   crearPagoApi: (pago: any) => Promise<any>
+  registrarPerdidaApi: (payload: {
+    orden_id: string
+    motivo: string
+    autorizado_por: string
+    autorizado_por_nombre: string
+    tasa_impuesto?: number
+    impuesto_habilitado?: boolean
+  }) => Promise<{
+    id: string
+    monto_perdido: number
+    cantidad_items: number
+    responsable_id?: string | null
+    responsable_nombre?: string | null
+    responsable_rol?: string | null
+  }>
+  getPerdidasApi: (filtro?: { fecha?: string }) => Promise<any[]>
+  resolverPerdidaApi: (payload: {
+    perdida_id: string
+    monto?: number
+    metodo?: string
+    referencia?: string | null
+    resuelto_por_id: string
+    resuelto_por_nombre: string
+  }) => Promise<{ id: string; pago_id: string; monto: number }>
+  getPermisosEspecialesApi: (filtro?: {
+    usuario_id?: string
+    tipo?: string
+    solo_vigentes?: boolean
+  }) => Promise<any[]>
+  otorgarPermisoEspecialApi: (payload: {
+    usuario_id: string
+    tipo: string
+    valido_hasta: string
+    motivo?: string | null
+    otorgado_por: string
+    otorgado_por_nombre: string
+  }) => Promise<any>
+  revocarPermisoEspecialApi: (payload: {
+    id: string
+    revocado_por: string
+    revocado_por_nombre: string
+  }) => Promise<any>
+  // Cuentas por persona (división por productos persistida en BD)
+  getCuentasPersonaApi: (ordenId: string) => Promise<any[]>
+  crearCuentaPersonaApi: (payload: { orden_id: string; nombre?: string | null }) => Promise<any>
+  renombrarCuentaPersonaApi: (payload: { id: string; nombre: string | null }) => Promise<any>
+  eliminarCuentaPersonaApi: (id: string) => Promise<void>
+  asignarItemsACuentasApi: (payload: {
+    orden_id: string
+    asignaciones: Array<{
+      item_orden_id: string
+      cantidad: number
+      cuenta_persona_id: string | null
+    }>
+  }) => Promise<void>
   recargarPagos: (fecha?: string) => Promise<any[]>
   cargarConfiguracion: () => Promise<Record<string, any>>
   guardarConfiguracion: (data: Record<string, any>) => Promise<boolean>
@@ -247,8 +302,21 @@ function mapOrdenToComanda(orden: any, mesas: any[]): any {
         notas,
         notaEspecial,
         estado: i.estado_item || 'pendiente',
+        pagado: i.pagado === true,
+        pagoId: i.pago_id || null,
+        cuentaPersonaId: i.cuenta_persona_id || null,
       }
     })
+
+  const cuentasRaw: any[] = Array.isArray(orden.cuentas_persona)
+    ? orden.cuentas_persona
+    : []
+  const cuentasPersona = cuentasRaw.map((c: any) => ({
+    id: String(c.id),
+    ordenId: orden.id,
+    idx: Number(c.idx) || 0,
+    nombre: c.nombre || null,
+  }))
 
   return {
     id: orden.id,
@@ -266,7 +334,8 @@ function mapOrdenToComanda(orden: any, mesas: any[]): any {
     creadoAt: orden.created_at ? new Date(orden.created_at).getTime() : Date.now(),
     actualizadoAt: orden.updated_at ? new Date(orden.updated_at).getTime() : Date.now(),
     enviadoACocina: orden.enviado_a_cocina || false,
-    horaEnvio: orden.hora_envio ? new Date(orden.hora_envio).getTime() : null
+    horaEnvio: orden.hora_envio ? new Date(orden.hora_envio).getTime() : null,
+    cuentasPersona,
   }
 }
 
@@ -276,6 +345,7 @@ const permisosModulo: Record<string, Rol[]> = {
   pos: ['administrador', 'admin', 'mesero', 'cajero'],
   kds: ['administrador', 'admin', 'cocina', 'bar'],
   inventario: ['administrador', 'admin'],
+  finanzas: ['administrador', 'admin'],
   usuarios: ['administrador', 'admin'],
   pagos: ['administrador', 'admin', 'cajero'],
   mermas: ['administrador', 'admin', 'mesero', 'cocina', 'bar'],
@@ -351,24 +421,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
               .filter((c: any) => c.items.length > 0)
             dispatch({ type: 'SET_COMANDAS', payload: comandas })
 
-            // Fix mesa states: if a mesa is 'ocupada' but has no active comanda, reset it to 'libre'
-            const mesasConComandaActiva = new Set(
-              comandas
-                .filter((c: any) => !['pagado', 'cancelado'].includes(c.estado))
-                .map((c: any) => c.mesaId)
-            )
-            for (const mesa of loadedMesas) {
-              if (mesa.estado === 'ocupada' && !mesasConComandaActiva.has(mesa.id)) {
-                await fetch('/api/mesas', {
-                  method: 'PATCH',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ id: mesa.id, estado: 'libre' }),
-                })
-                mesa.estado = 'libre'
-              }
-            }
-            // Re-dispatch corrected mesas
-            dispatch({ type: 'SET_MESAS', payload: [...loadedMesas] })
+            // NOTA: ya no auto-liberamos mesas. Una mesa marcada como ocupada
+            // en la BD se respeta hasta que el mesero/admin la libere a mano,
+            // incluso si su comanda ya fue pagada. Esto coincide con el flujo
+            // real (los clientes pueden seguir en la mesa después de pagar).
           }
         }
 
@@ -589,29 +645,33 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         // after getting back the Neon id and doing UPDATE_COMANDA itself
         return newOrden
       }
+      const err = await res.json().catch(() => ({}))
+      throw new Error(err?.error || 'Error al crear orden')
     } catch (error) {
       console.error('Error creating orden:', error)
+      if (error instanceof Error) {
+        showToast(error.message, 'error')
+      }
+      throw error
     }
-    return null
   }, [])
 
   const updateOrden = useCallback(async (id: string, updates: any) => {
-    try {
-      const res = await fetch('/api/ordenes', {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id, ...updates }),
-      })
-      if (res.ok) {
-        // Update local comanda estado without full remap
-        dispatch({
-          type: 'UPDATE_COMANDA',
-          payload: { id, ...updates } as any,
-        })
-      }
-    } catch (error) {
-      console.error('Error updating orden:', error)
+    const res = await fetch('/api/ordenes', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id, ...updates }),
+    })
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}))
+      const msg = data?.error || `Error ${res.status} actualizando orden`
+      console.error('Error updating orden:', msg, data)
+      throw new Error(msg)
     }
+    dispatch({
+      type: 'UPDATE_COMANDA',
+      payload: { id, ...updates } as any,
+    })
   }, [])
 
   const enviarOrdenACocina = useCallback(async (ordenId: string) => {
@@ -679,19 +739,21 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       if (error instanceof Error) {
         showToast(error.message, 'error')
       }
+      throw error
     }
-    return null
   }, [])
 
   const actualizarItemOrden = useCallback(async (id: string, updates: any) => {
-    try {
-      await fetch('/api/items-orden', {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id, ...updates }),
-      })
-    } catch (error) {
-      console.error('Error updating item:', error)
+    const res = await fetch('/api/items-orden', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id, ...updates }),
+    })
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}))
+      const msg = data?.error || `Error ${res.status} actualizando ítem`
+      console.error('Error updating item:', msg, data)
+      throw new Error(msg)
     }
   }, [])
 
@@ -797,6 +859,196 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       throw new Error(data?.error || 'Error al registrar pago')
     }
     return await res.json()
+  }, [])
+
+  const registrarPerdidaApi = useCallback(async (payload: {
+    orden_id: string
+    motivo: string
+    autorizado_por: string
+    autorizado_por_nombre: string
+    tasa_impuesto?: number
+    impuesto_habilitado?: boolean
+  }) => {
+    const res = await fetch('/api/perdidas', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}))
+      throw new Error(data?.error || 'Error al registrar la pérdida')
+    }
+    return (await res.json()) as {
+      id: string
+      monto_perdido: number
+      cantidad_items: number
+      responsable_id?: string | null
+      responsable_nombre?: string | null
+      responsable_rol?: string | null
+    }
+  }, [])
+
+  const getPerdidasApi = useCallback(async (filtro?: { fecha?: string }) => {
+    const url = filtro?.fecha
+      ? `/api/perdidas?fecha=${encodeURIComponent(filtro.fecha)}`
+      : '/api/perdidas'
+    const res = await fetch(url)
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}))
+      throw new Error(data?.error || 'Error al cargar pérdidas')
+    }
+    const json = await res.json()
+    return Array.isArray(json) ? json : []
+  }, [])
+
+  const getPermisosEspecialesApi = useCallback(async (filtro?: {
+    usuario_id?: string
+    tipo?: string
+    solo_vigentes?: boolean
+  }) => {
+    const params = new URLSearchParams()
+    if (filtro?.usuario_id) params.set('usuario_id', filtro.usuario_id)
+    if (filtro?.tipo) params.set('tipo', filtro.tipo)
+    if (filtro?.solo_vigentes) params.set('solo_vigentes', 'true')
+    const qs = params.toString()
+    const res = await fetch(qs ? `/api/permisos-especiales?${qs}` : '/api/permisos-especiales')
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}))
+      throw new Error(data?.error || 'Error al cargar permisos especiales')
+    }
+    const json = await res.json()
+    return Array.isArray(json) ? json : []
+  }, [])
+
+  const otorgarPermisoEspecialApi = useCallback(async (payload: {
+    usuario_id: string
+    tipo: string
+    valido_hasta: string
+    motivo?: string | null
+    otorgado_por: string
+    otorgado_por_nombre: string
+  }) => {
+    const res = await fetch('/api/permisos-especiales', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}))
+      throw new Error(data?.error || 'Error al otorgar permiso')
+    }
+    return await res.json()
+  }, [])
+
+  const revocarPermisoEspecialApi = useCallback(async (payload: {
+    id: string
+    revocado_por: string
+    revocado_por_nombre: string
+  }) => {
+    const res = await fetch('/api/permisos-especiales', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}))
+      throw new Error(data?.error || 'Error al revocar permiso')
+    }
+    return await res.json()
+  }, [])
+
+  // --- Cuentas por persona (BD) ---
+  const getCuentasPersonaApi = useCallback(async (ordenId: string) => {
+    const res = await fetch(`/api/cuentas-persona?orden_id=${encodeURIComponent(ordenId)}`)
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}))
+      throw new Error(data?.error || 'Error al cargar personas')
+    }
+    const json = await res.json()
+    return Array.isArray(json) ? json : []
+  }, [])
+
+  const crearCuentaPersonaApi = useCallback(async (payload: {
+    orden_id: string
+    nombre?: string | null
+  }) => {
+    const res = await fetch('/api/cuentas-persona', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}))
+      throw new Error(data?.error || 'Error al crear persona')
+    }
+    return await res.json()
+  }, [])
+
+  const renombrarCuentaPersonaApi = useCallback(async (payload: {
+    id: string
+    nombre: string | null
+  }) => {
+    const res = await fetch('/api/cuentas-persona', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}))
+      throw new Error(data?.error || 'Error al renombrar persona')
+    }
+    return await res.json()
+  }, [])
+
+  const eliminarCuentaPersonaApi = useCallback(async (id: string) => {
+    const res = await fetch('/api/cuentas-persona', {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id }),
+    })
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}))
+      throw new Error(data?.error || 'Error al eliminar persona')
+    }
+  }, [])
+
+  const asignarItemsACuentasApi = useCallback(async (payload: {
+    orden_id: string
+    asignaciones: Array<{
+      item_orden_id: string
+      cantidad: number
+      cuenta_persona_id: string | null
+    }>
+  }) => {
+    const res = await fetch('/api/cuentas-persona/asignaciones', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}))
+      throw new Error(data?.error || 'Error al asignar items')
+    }
+  }, [])
+
+  const resolverPerdidaApi = useCallback(async (payload: {
+    perdida_id: string
+    monto?: number
+    metodo?: string
+    referencia?: string | null
+    resuelto_por_id: string
+    resuelto_por_nombre: string
+  }) => {
+    const res = await fetch('/api/perdidas/resolver', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}))
+      throw new Error(data?.error || 'Error al cobrar retroactivamente')
+    }
+    return (await res.json()) as { id: string; pago_id: string; monto: number }
   }, [])
 
   const recargarPagos = useCallback(async (fecha?: string) => {
@@ -1066,6 +1318,17 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       eliminarUsuarioApi,
       recargarUsuarios,
       crearPagoApi,
+      registrarPerdidaApi,
+      getPerdidasApi,
+      resolverPerdidaApi,
+      getPermisosEspecialesApi,
+      otorgarPermisoEspecialApi,
+      revocarPermisoEspecialApi,
+      getCuentasPersonaApi,
+      crearCuentaPersonaApi,
+      renombrarCuentaPersonaApi,
+      eliminarCuentaPersonaApi,
+      asignarItemsACuentasApi,
       recargarPagos,
       cargarConfiguracion,
       guardarConfiguracion,

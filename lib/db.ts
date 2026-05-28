@@ -77,11 +77,15 @@ function mapPago(row: any): Pago {
   } as Pago
 }
 
+const MODOS_STOCK_VALIDOS = ['producto', 'receta', 'producto_y_receta'] as const
+
 function mapProducto(row: any): Producto {
   const stock = row.stock !== undefined && row.stock !== null ? Number(row.stock) : 0
   const stockMinimo = row.stockMinimo !== undefined && row.stockMinimo !== null
     ? Number(row.stockMinimo)
     : (row.stock_minimo !== undefined && row.stock_minimo !== null ? Number(row.stock_minimo) : 5)
+  const modoRaw = row.modo_stock ?? row.modoStock ?? 'producto'
+  const modoStock = MODOS_STOCK_VALIDOS.includes(modoRaw) ? modoRaw : 'producto'
   return {
     ...row,
     precio: row.precio !== undefined && row.precio !== null ? Number(row.precio) : 0,
@@ -91,7 +95,618 @@ function mapProducto(row: any): Producto {
     costoAdicional: row.costo_adicional !== undefined && row.costo_adicional !== null
       ? Number(row.costo_adicional)
       : 0,
+    modoStock,
   } as Producto
+}
+
+let _itemEstadoReady = false
+
+/**
+ * Reemplaza el CHECK constraint legado de `items_orden.estado_item` para que
+ * admita el nuevo estado `'entregado'` (entregado por el mesero al cliente).
+ * Idempotente: se ejecuta una sola vez por proceso.
+ */
+/**
+ * Asegura que el CHECK constraint de `items_orden.estado_item` admita
+ * todos los estados que usa la aplicación (incluyendo 'entregado').
+ *
+ * Mantener idempotente y a prueba de carreras: en dev, el hot-reload de
+ * Next reinicia los flags de módulo, y dos peticiones casi simultáneas
+ * pueden pasar el guard `_itemEstadoReady` y disparar DROP + ADD en
+ * paralelo. El primero gana, el segundo recibe "constraint already
+ * exists". Para evitarlo:
+ *   1. corremos DROP + ADD dentro de un DO block (una sola query),
+ *   2. y si igual falla por colisión (42P07/42710), lo silenciamos.
+ */
+async function ensureItemEstadoSchema(): Promise<void> {
+  if (_itemEstadoReady) return
+  const sql = getSql()
+  try {
+    await sql`
+      DO $$
+      BEGIN
+        ALTER TABLE soda_master.items_orden
+          DROP CONSTRAINT IF EXISTS items_orden_estado_item_check;
+        ALTER TABLE soda_master.items_orden
+          ADD CONSTRAINT items_orden_estado_item_check
+          CHECK (estado_item IN ('pendiente','en_preparacion','listo','entregado','problema'));
+      EXCEPTION
+        WHEN duplicate_object THEN NULL;
+        WHEN duplicate_table THEN NULL;
+      END $$;
+    `
+  } catch (err: any) {
+    const code = err?.code || err?.cause?.code
+    const msg = (err?.message || '').toLowerCase()
+    if (
+      code === '42P07' ||
+      code === '42710' ||
+      msg.includes('already exists')
+    ) {
+      // Otra request ganó la carrera y dejó el constraint en el estado
+      // correcto. Lo damos por bueno.
+    } else {
+      throw err
+    }
+  }
+  _itemEstadoReady = true
+}
+
+let _permisosEspecialesReady = false
+
+/**
+ * Permisos "delegados" temporalmente por el admin a otro usuario. Hoy se
+ * usa para que el admin pueda autorizar a un CAJERO a abrir comandas en
+ * mesas (algo que normalmente sólo hacen meseros/admin) cuando no hay
+ * mesero disponible.
+ *
+ * - `tipo` queda como string libre para que después podamos sumar otros
+ *   permisos delegables (ej: cancelar comanda, aplicar descuento extra).
+ * - `valido_hasta` controla la vigencia. Pasada esa fecha el permiso
+ *   expira automáticamente, sin intervención del admin.
+ * - `revocado` permite cortar el permiso antes de tiempo sin perder el
+ *   histórico (útil para auditoría).
+ */
+async function ensurePermisosEspecialesTable(): Promise<void> {
+  if (_permisosEspecialesReady) return
+  const sql = getSql()
+  await sql`
+    CREATE TABLE IF NOT EXISTS soda_master.permisos_especiales (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      usuario_id UUID NOT NULL REFERENCES soda_master.usuarios(id) ON DELETE CASCADE,
+      tipo TEXT NOT NULL,
+      motivo TEXT NULL,
+      otorgado_por UUID NULL,
+      otorgado_por_nombre TEXT NULL,
+      valido_desde TIMESTAMPTZ NOT NULL DEFAULT now(),
+      valido_hasta TIMESTAMPTZ NOT NULL,
+      revocado BOOLEAN NOT NULL DEFAULT FALSE,
+      revocado_at TIMESTAMPTZ NULL,
+      revocado_por UUID NULL,
+      revocado_por_nombre TEXT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+  `
+  await sql`
+    CREATE INDEX IF NOT EXISTS permisos_especiales_usuario_idx
+      ON soda_master.permisos_especiales (usuario_id, tipo, valido_hasta)
+  `
+  _permisosEspecialesReady = true
+}
+
+let _itemPagoReady = false
+
+/**
+ * Agrega las columnas `pagado` y `pago_id` a `items_orden` si no existen.
+ * Sirven para registrar pagos PARCIALES: un cliente que se va antes y paga
+ * sólo lo que consumió marca sólo sus items como `pagado=true`, mientras
+ * que el resto de la mesa sigue con `pagado=false`. La orden completa pasa
+ * a estado `'pagado'` recién cuando todos sus items lo están.
+ * Idempotente: se ejecuta una sola vez por proceso.
+ */
+async function ensureItemPagoSchema(): Promise<void> {
+  if (_itemPagoReady) return
+  const sql = getSql()
+  await sql`
+    ALTER TABLE soda_master.items_orden
+      ADD COLUMN IF NOT EXISTS pagado BOOLEAN NOT NULL DEFAULT FALSE
+  `
+  await sql`
+    ALTER TABLE soda_master.items_orden
+      ADD COLUMN IF NOT EXISTS pago_id UUID NULL
+  `
+  _itemPagoReady = true
+}
+
+let _ordenEstadoReady = false
+
+/**
+ * Mismo concepto para `ordenes.estado`: agrega `'entregado'` como estado
+ * válido (cuando todos los items de la orden fueron entregados al cliente,
+ * pero todavía no se cobró).
+ */
+async function ensureOrdenEstadoSchema(): Promise<void> {
+  if (_ordenEstadoReady) return
+  const sql = getSql()
+  try {
+    await sql`
+      DO $$
+      BEGIN
+        ALTER TABLE soda_master.ordenes
+          DROP CONSTRAINT IF EXISTS ordenes_estado_check;
+        ALTER TABLE soda_master.ordenes
+          ADD CONSTRAINT ordenes_estado_check
+          CHECK (estado IN ('pendiente','en_cocina','en_preparacion','listo','entregado','problema','pagado','cancelado','perdida'));
+      EXCEPTION
+        WHEN duplicate_object THEN NULL;
+        WHEN duplicate_table THEN NULL;
+      END $$;
+    `
+  } catch (err: any) {
+    const code = err?.code || err?.cause?.code
+    const msg = (err?.message || '').toLowerCase()
+    if (
+      code === '42P07' ||
+      code === '42710' ||
+      msg.includes('already exists')
+    ) {
+      // Igual que arriba: si otra request paralela ya dejó el constraint
+      // bien, no es un error real.
+    } else {
+      throw err
+    }
+  }
+  _ordenEstadoReady = true
+}
+
+let _cuentasPersonaReady = false
+
+/**
+ * Personas que comparten una mesa/comanda.
+ *
+ * A cada `orden` (mesa abierta) se le pueden agregar 1..N personas. Cada
+ * `items_orden.cuenta_persona_id` apunta a la persona dueña de esa línea
+ * (NULL = compartido). Cuando un cliente paga sólo lo suyo, los items
+ * con su `cuenta_persona_id` se marcan pagados; el resto sigue abierto
+ * con sus propias asignaciones — por eso debe estar en BD y no en
+ * memoria del navegador: si el cajero refresca, otro reemplaza, o un
+ * mesero agrega un café más tarde, todo persiste.
+ *
+ * `idx` es un número humano (Persona 1, Persona 2...) único por orden.
+ * Lo recalculamos al crear así no salta cuando se borra alguna.
+ */
+async function ensureCuentasPersonaSchema(): Promise<void> {
+  if (_cuentasPersonaReady) return
+  const sql = getSql()
+  await sql`
+    CREATE TABLE IF NOT EXISTS soda_master.cuentas_persona (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      orden_id UUID NOT NULL REFERENCES soda_master.ordenes(id) ON DELETE CASCADE,
+      idx INT NOT NULL,
+      nombre TEXT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      UNIQUE (orden_id, idx)
+    )
+  `
+  await sql`
+    CREATE INDEX IF NOT EXISTS cuentas_persona_orden_idx
+      ON soda_master.cuentas_persona (orden_id, idx)
+  `
+  // cuenta_persona_id en items_orden (FK lógica; no ponemos FK para
+  // mantener compatibilidad con installs antiguos que aún tienen items
+  // viejos).
+  await sql`
+    ALTER TABLE soda_master.items_orden
+      ADD COLUMN IF NOT EXISTS cuenta_persona_id UUID NULL
+  `
+  await sql`
+    CREATE INDEX IF NOT EXISTS items_orden_cuenta_persona_idx
+      ON soda_master.items_orden (cuenta_persona_id)
+  `
+  _cuentasPersonaReady = true
+}
+
+let _perdidasTableReady = false
+
+/**
+ * Crea la tabla `perdidas_comanda` que registra los "perros muertos":
+ * cuando un cliente consumió pero se fue sin pagar. La fila guarda quién
+ * autorizó el cierre como pérdida, el motivo y el monto perdido (lo que
+ * faltaba por cobrar). El propósito es que el admin pueda revisar después
+ * cuánto se pierde por este motivo y eventualmente cruzar con el mesero
+ * responsable.
+ *
+ * Es importante distinguir esto de `cancelado`: una orden cancelada se
+ * "borra" como si la venta no hubiera ocurrido (típicamente cuando el
+ * cliente cambia de opinión antes de que se preparen los items). En
+ * cambio una "perdida" reconoce que los insumos sí se gastaron.
+ */
+async function ensurePerdidasTable(): Promise<void> {
+  if (_perdidasTableReady) return
+  const sql = getSql()
+  await sql`
+    CREATE TABLE IF NOT EXISTS soda_master.perdidas_comanda (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      orden_id UUID NOT NULL REFERENCES soda_master.ordenes(id) ON DELETE CASCADE,
+      mesa_id UUID NULL,
+      monto_perdido NUMERIC(12,2) NOT NULL DEFAULT 0,
+      cantidad_items INTEGER NOT NULL DEFAULT 0,
+      motivo TEXT NULL,
+      autorizado_por UUID NULL,
+      autorizado_por_nombre TEXT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+  `
+  // Columnas agregadas posteriormente (idempotentes) para:
+  //  - dejar constancia del MESERO/CAJERO responsable de haber abierto la
+  //    mesa (es quién carga con la pérdida hasta que se resuelva);
+  //  - permitir que un cliente vuelva más tarde y pague — la pérdida queda
+  //    "resuelta" referenciando al pago retroactivo, así no falsea reportes.
+  await sql`
+    ALTER TABLE soda_master.perdidas_comanda
+      ADD COLUMN IF NOT EXISTS responsable_id UUID NULL
+  `
+  await sql`
+    ALTER TABLE soda_master.perdidas_comanda
+      ADD COLUMN IF NOT EXISTS responsable_nombre TEXT NULL
+  `
+  await sql`
+    ALTER TABLE soda_master.perdidas_comanda
+      ADD COLUMN IF NOT EXISTS responsable_rol TEXT NULL
+  `
+  await sql`
+    ALTER TABLE soda_master.perdidas_comanda
+      ADD COLUMN IF NOT EXISTS resuelto BOOLEAN NOT NULL DEFAULT FALSE
+  `
+  await sql`
+    ALTER TABLE soda_master.perdidas_comanda
+      ADD COLUMN IF NOT EXISTS resuelto_at TIMESTAMPTZ NULL
+  `
+  await sql`
+    ALTER TABLE soda_master.perdidas_comanda
+      ADD COLUMN IF NOT EXISTS resuelto_por_id UUID NULL
+  `
+  await sql`
+    ALTER TABLE soda_master.perdidas_comanda
+      ADD COLUMN IF NOT EXISTS resuelto_por_nombre TEXT NULL
+  `
+  await sql`
+    ALTER TABLE soda_master.perdidas_comanda
+      ADD COLUMN IF NOT EXISTS pago_id UUID NULL
+  `
+  await sql`
+    CREATE INDEX IF NOT EXISTS perdidas_comanda_created_at_idx
+      ON soda_master.perdidas_comanda (created_at DESC)
+  `
+  await sql`
+    CREATE INDEX IF NOT EXISTS perdidas_comanda_responsable_idx
+      ON soda_master.perdidas_comanda (responsable_id)
+  `
+  await sql`
+    CREATE INDEX IF NOT EXISTS perdidas_comanda_resuelto_idx
+      ON soda_master.perdidas_comanda (resuelto)
+  `
+  _perdidasTableReady = true
+}
+
+let _recetasTableReady = false
+
+async function ensureRecetasTables(): Promise<void> {
+  if (_recetasTableReady) return
+  const sql = getSql()
+  await sql`ALTER TABLE soda_master.productos ADD COLUMN IF NOT EXISTS modo_stock TEXT NOT NULL DEFAULT 'producto'`
+  await sql`
+    DO $$ BEGIN
+      ALTER TABLE soda_master.productos
+        ADD CONSTRAINT productos_modo_stock_check
+        CHECK (modo_stock IN ('producto','receta','producto_y_receta'));
+    EXCEPTION WHEN duplicate_object THEN NULL;
+    END $$
+  `
+  await sql`
+    CREATE TABLE IF NOT EXISTS soda_master.ingredientes (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      nombre TEXT NOT NULL,
+      categoria TEXT NOT NULL DEFAULT 'insumos',
+      unidad_medida TEXT NOT NULL DEFAULT 'unidad',
+      stock_actual NUMERIC(12,3) NOT NULL DEFAULT 0,
+      stock_minimo NUMERIC(12,3) NOT NULL DEFAULT 0,
+      costo_unitario NUMERIC(12,2) NOT NULL DEFAULT 0,
+      activo BOOLEAN NOT NULL DEFAULT TRUE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+  `
+  await sql`
+    CREATE TABLE IF NOT EXISTS soda_master.recetas (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      producto_id UUID NOT NULL UNIQUE REFERENCES soda_master.productos(id) ON DELETE CASCADE,
+      nombre TEXT,
+      activo BOOLEAN NOT NULL DEFAULT TRUE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+  `
+  await sql`
+    CREATE TABLE IF NOT EXISTS soda_master.receta_ingredientes (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      receta_id UUID NOT NULL REFERENCES soda_master.recetas(id) ON DELETE CASCADE,
+      ingrediente_id UUID NOT NULL REFERENCES soda_master.ingredientes(id),
+      cantidad NUMERIC(12,3) NOT NULL DEFAULT 1,
+      opcional BOOLEAN NOT NULL DEFAULT FALSE,
+      extra BOOLEAN NOT NULL DEFAULT FALSE,
+      costo_adicional NUMERIC(12,2) NOT NULL DEFAULT 0,
+      nombre_display TEXT,
+      UNIQUE (receta_id, ingrediente_id)
+    )
+  `
+  await sql`
+    CREATE TABLE IF NOT EXISTS soda_master.movimientos_inventario (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      ingrediente_id UUID REFERENCES soda_master.ingredientes(id),
+      producto_id UUID REFERENCES soda_master.productos(id),
+      tipo TEXT NOT NULL CHECK (tipo IN ('venta','merma','ajuste','entrada','compra')),
+      cantidad NUMERIC(12,3) NOT NULL,
+      orden_id UUID,
+      item_orden_id UUID,
+      merma_id UUID,
+      compra_id UUID,
+      notas TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+  `
+  // Idempotente: añadir compra_id y ampliar tipos válidos si la tabla ya existía
+  await sql`ALTER TABLE soda_master.movimientos_inventario ADD COLUMN IF NOT EXISTS compra_id UUID`
+  await sql`
+    DO $$ BEGIN
+      ALTER TABLE soda_master.movimientos_inventario DROP CONSTRAINT movimientos_inventario_tipo_check;
+    EXCEPTION WHEN undefined_object THEN NULL;
+    END $$
+  `
+  await sql`
+    DO $$ BEGIN
+      ALTER TABLE soda_master.movimientos_inventario
+        ADD CONSTRAINT movimientos_inventario_tipo_check
+        CHECK (tipo IN ('venta','merma','ajuste','entrada','compra'));
+    EXCEPTION WHEN duplicate_object THEN NULL;
+    END $$
+  `
+  _recetasTableReady = true
+}
+
+let _comprasTableReady = false
+
+async function ensureComprasTables(): Promise<void> {
+  if (_comprasTableReady) return
+  await ensureRecetasTables()
+  const sql = getSql()
+  await sql`
+    CREATE TABLE IF NOT EXISTS soda_master.proveedores (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      nombre TEXT NOT NULL,
+      rut TEXT,
+      contacto TEXT,
+      telefono TEXT,
+      email TEXT,
+      direccion TEXT,
+      notas TEXT,
+      activo BOOLEAN NOT NULL DEFAULT TRUE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+  `
+  await sql`
+    CREATE TABLE IF NOT EXISTS soda_master.compras (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      proveedor_id UUID REFERENCES soda_master.proveedores(id),
+      tipo_documento TEXT NOT NULL DEFAULT 'boleta' CHECK (tipo_documento IN ('boleta','factura','nota','otro')),
+      numero_documento TEXT,
+      fecha DATE NOT NULL DEFAULT CURRENT_DATE,
+      subtotal NUMERIC(12,2) NOT NULL DEFAULT 0,
+      impuesto NUMERIC(12,2) NOT NULL DEFAULT 0,
+      total NUMERIC(12,2) NOT NULL DEFAULT 0,
+      notas TEXT,
+      usuario_id UUID,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+  `
+  await sql`
+    CREATE TABLE IF NOT EXISTS soda_master.compra_items (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      compra_id UUID NOT NULL REFERENCES soda_master.compras(id) ON DELETE CASCADE,
+      ingrediente_id UUID NOT NULL REFERENCES soda_master.ingredientes(id),
+      cantidad NUMERIC(12,3) NOT NULL,
+      precio_unitario NUMERIC(12,4) NOT NULL DEFAULT 0,
+      subtotal NUMERIC(12,2) NOT NULL DEFAULT 0,
+      notas TEXT
+    )
+  `
+  // Tipo de insumo para separar comida vs insumos del negocio
+  await sql`ALTER TABLE soda_master.ingredientes ADD COLUMN IF NOT EXISTS tipo TEXT NOT NULL DEFAULT 'comida'`
+  await sql`
+    DO $$ BEGIN
+      ALTER TABLE soda_master.ingredientes
+        ADD CONSTRAINT ingredientes_tipo_check
+        CHECK (tipo IN ('comida','negocio','otro'));
+    EXCEPTION WHEN duplicate_object THEN NULL;
+    END $$
+  `
+  _comprasTableReady = true
+}
+
+let _finanzasTableReady = false
+
+async function ensureFinanzasTables(): Promise<void> {
+  if (_finanzasTableReady) return
+  const sql = getSql()
+  await sql`
+    CREATE TABLE IF NOT EXISTS soda_master.activos (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      nombre TEXT NOT NULL,
+      categoria TEXT NOT NULL DEFAULT 'maquinaria',
+      descripcion TEXT,
+      fecha_compra DATE NOT NULL DEFAULT CURRENT_DATE,
+      costo_compra NUMERIC(14,2) NOT NULL DEFAULT 0,
+      vida_util_meses INTEGER NOT NULL DEFAULT 60,
+      valor_residual NUMERIC(14,2) NOT NULL DEFAULT 0,
+      metodo_depreciacion TEXT NOT NULL DEFAULT 'lineal',
+      proveedor_id UUID,
+      ubicacion TEXT,
+      numero_serie TEXT,
+      estado TEXT NOT NULL DEFAULT 'activo',
+      notas TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+  `
+  await sql`
+    DO $$ BEGIN
+      ALTER TABLE soda_master.activos
+        ADD CONSTRAINT activos_estado_check
+        CHECK (estado IN ('activo','baja','vendido','reparacion'));
+    EXCEPTION WHEN duplicate_object THEN NULL;
+    END $$
+  `
+  await sql`
+    CREATE TABLE IF NOT EXISTS soda_master.empleados (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      nombre TEXT NOT NULL,
+      cargo TEXT,
+      documento TEXT,
+      telefono TEXT,
+      email TEXT,
+      sueldo_base NUMERIC(14,2) NOT NULL DEFAULT 0,
+      periodicidad TEXT NOT NULL DEFAULT 'mensual',
+      fecha_ingreso DATE,
+      fecha_egreso DATE,
+      activo BOOLEAN NOT NULL DEFAULT TRUE,
+      usuario_id UUID,
+      notas TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+  `
+  await sql`
+    DO $$ BEGIN
+      ALTER TABLE soda_master.empleados
+        ADD CONSTRAINT empleados_periodicidad_check
+        CHECK (periodicidad IN ('mensual','quincenal','semanal','diario','por_hora'));
+    EXCEPTION WHEN duplicate_object THEN NULL;
+    END $$
+  `
+  await sql`
+    CREATE TABLE IF NOT EXISTS soda_master.gastos (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      fecha DATE NOT NULL DEFAULT CURRENT_DATE,
+      categoria TEXT NOT NULL DEFAULT 'otros',
+      descripcion TEXT,
+      monto NUMERIC(14,2) NOT NULL DEFAULT 0,
+      tipo TEXT NOT NULL DEFAULT 'operativo',
+      recurrente BOOLEAN NOT NULL DEFAULT FALSE,
+      periodicidad TEXT,
+      proveedor_id UUID,
+      empleado_id UUID,
+      activo_id UUID,
+      usuario_id UUID,
+      notas TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+  `
+  await sql`
+    DO $$ BEGIN
+      ALTER TABLE soda_master.gastos
+        ADD CONSTRAINT gastos_tipo_check
+        CHECK (tipo IN ('operativo','sueldo','servicio','impuesto','financiero','otros'));
+    EXCEPTION WHEN duplicate_object THEN NULL;
+    END $$
+  `
+  _finanzasTableReady = true
+}
+
+/**
+ * Calcula depreciación lineal de un activo a la fecha actual.
+ * `mensual = (costo - residual) / vida_util_meses`. Acumulada no excede vida útil.
+ */
+function computarDepreciacion(row: any) {
+  if (!row) return row
+  const costo = Number(row.costo_compra) || 0
+  const residual = Number(row.valor_residual) || 0
+  const vida = Math.max(1, Number(row.vida_util_meses) || 1)
+  const fechaCompra = row.fecha_compra ? new Date(row.fecha_compra) : new Date()
+  const hoy = new Date()
+  const mesesTranscurridos = Math.max(
+    0,
+    (hoy.getFullYear() - fechaCompra.getFullYear()) * 12 +
+      (hoy.getMonth() - fechaCompra.getMonth()),
+  )
+  const baseDepreciar = Math.max(0, costo - residual)
+  const mensual = baseDepreciar / vida
+  const mesesAplicables = Math.min(mesesTranscurridos, vida)
+  const acumulada = mensual * mesesAplicables
+  const valorActual = Math.max(residual, costo - acumulada)
+  return {
+    ...row,
+    costo_compra: costo,
+    valor_residual: residual,
+    vida_util_meses: vida,
+    depreciacion_mensual: Number(mensual.toFixed(2)),
+    depreciacion_acumulada: Number(acumulada.toFixed(2)),
+    meses_transcurridos: mesesTranscurridos,
+    valor_actual: Number(valorActual.toFixed(2)),
+    completamente_depreciado: mesesAplicables >= vida,
+  }
+}
+
+function mapIngredienteInsumo(row: any) {
+  return {
+    id: row.id,
+    nombre: row.nombre,
+    categoria: row.categoria || 'insumos',
+    unidad_medida: row.unidad_medida || 'unidad',
+    stock_actual: Number(row.stock_actual) || 0,
+    stock_minimo: Number(row.stock_minimo) || 0,
+    costo_unitario: Number(row.costo_unitario) || 0,
+    tipo: row.tipo || 'comida',
+    activo: row.activo !== false,
+  }
+}
+
+/** Parsea extras y modificadores desde el body o notas_especiales JSON */
+function parseSeleccionItem(item: {
+  modificadores?: unknown
+  notas_especiales?: string | null
+  seleccion_modificadores?: string[]
+  extras_ingredientes?: { ingrediente_id: string; cantidad?: number }[]
+}) {
+  const mods = Array.isArray(item.seleccion_modificadores)
+    ? item.seleccion_modificadores.map(String)
+    : Array.isArray(item.modificadores)
+      ? (item.modificadores as unknown[]).map(String)
+      : []
+
+  let extras: { ingrediente_id: string; cantidad: number }[] = []
+  if (Array.isArray(item.extras_ingredientes)) {
+    extras = item.extras_ingredientes.map((e) => ({
+      ingrediente_id: String(e.ingrediente_id),
+      cantidad: Number(e.cantidad) > 0 ? Number(e.cantidad) : 1,
+    }))
+  } else if (item.notas_especiales && String(item.notas_especiales).trim().startsWith('{')) {
+    try {
+      const meta = JSON.parse(String(item.notas_especiales))
+      const rawExtras = meta.ingredientesEspeciales || meta.extras_ingredientes || []
+      if (Array.isArray(rawExtras)) {
+        extras = rawExtras
+          .filter((e: any) => e?.id)
+          .map((e: any) => ({
+            ingrediente_id: String(e.id),
+            cantidad: Number(e.cantidad) > 0 ? Number(e.cantidad) : 1,
+          }))
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+  return { mods, extras }
 }
 
 export const db = {
@@ -308,6 +923,7 @@ export const db = {
         p.categoria_id,
         p.es_ingrediente_especial,
         p.costo_adicional,
+        COALESCE(p.modo_stock, 'producto') AS modo_stock,
         c.nombre AS categoria,
         COALESCE(inv.stock_actual, 0)  AS stock,
         COALESCE(inv.stock_minimo, 5)  AS "stockMinimo",
@@ -334,6 +950,7 @@ export const db = {
         p.categoria_id,
         p.es_ingrediente_especial,
         p.costo_adicional,
+        COALESCE(p.modo_stock, 'producto') AS modo_stock,
         c.nombre AS categoria,
         COALESCE(inv.stock_actual, 0)  AS stock,
         COALESCE(inv.stock_minimo, 5)  AS "stockMinimo",
@@ -360,6 +977,7 @@ export const db = {
       esIngredienteEspecial: boolean
       costoAdicional: number
       imagen_url: string
+      modoStock: string
     }>
   ) {
     const sql = getSql()
@@ -380,6 +998,7 @@ export const db = {
           es_ingrediente_especial = COALESCE(${updates.esIngredienteEspecial ?? null}, es_ingrediente_especial),
           costo_adicional = COALESCE(${updates.costoAdicional ?? null}, costo_adicional),
           imagen_url = COALESCE(${updates.imagen_url ?? null}, imagen_url),
+          modo_stock = COALESCE(${updates.modoStock ?? null}, modo_stock),
           updated_at = CURRENT_TIMESTAMP
       WHERE id = ${id}
       RETURNING id
@@ -396,6 +1015,7 @@ export const db = {
         p.categoria_id,
         p.es_ingrediente_especial,
         p.costo_adicional,
+        COALESCE(p.modo_stock, 'producto') AS modo_stock,
         c.nombre AS categoria,
         COALESCE(inv.stock_actual, 0)  AS stock,
         COALESCE(inv.stock_minimo, 5)  AS "stockMinimo",
@@ -422,7 +1042,8 @@ export const db = {
         inv.updated_at,
         p.precio,
         p.es_ingrediente_especial,
-        p.costo_adicional
+        p.costo_adicional,
+        COALESCE(p.modo_stock, 'producto') AS modo_stock
       FROM soda_master.inventario inv
       JOIN soda_master.productos p ON inv.producto_id = p.id
       JOIN soda_master.categorias c ON p.categoria_id = c.id
@@ -463,6 +1084,40 @@ export const db = {
   async crearOrden(orden: Omit<Orden, 'id' | 'created_at' | 'updated_at' | 'numero_orden'>) {
     const sql = getSql()
     const enviado = Boolean((orden as any).enviado_a_cocina)
+
+    // Control de acceso por rol: meseros/administradores/admins pueden
+    // abrir mesa sin restricción. Para que un CAJERO pueda hacerlo, el
+    // admin tiene que haberle otorgado el permiso especial
+    // `apertura_mesa` y todavía estar vigente. Esto se valida server-side
+    // para que ninguna vista pueda saltearse la regla.
+    if (orden.usuario_id) {
+      const usuarios = (await sql`
+        SELECT rol FROM soda_master.usuarios WHERE id = ${orden.usuario_id}
+      `) as Array<{ rol: string | null }>
+      const rol = (usuarios[0]?.rol || '').toLowerCase()
+      if (rol === 'cajero') {
+        const permitido = await this.tienePermisoEspecial(orden.usuario_id, 'apertura_mesa')
+        if (!permitido) {
+          throw new Error(
+            'El cajero no tiene un permiso vigente para abrir mesas. Pedile al administrador que se lo otorgue.',
+          )
+        }
+      }
+    }
+
+    // Limpia intentos fallidos previos: órdenes activas sin ítems no deben
+    // bloquear una mesa ni aparecer como "comanda activa" invisible al KDS.
+    // Importante: tratamos como "no activas" a pagado/cancelado/perdida.
+    // Las pérdidas (perro muerto) son históricos: la mesa puede volverse
+    // a usar libremente para una comanda nueva.
+    await sql`
+      DELETE FROM soda_master.ordenes o
+      WHERE o.mesa_id = ${orden.mesa_id}
+        AND o.estado NOT IN ('pagado', 'cancelado', 'perdida')
+        AND NOT EXISTS (
+          SELECT 1 FROM soda_master.items_orden i WHERE i.orden_id = o.id
+        )
+    `
     const result = await sql`
       WITH lock_mesa AS (
         SELECT pg_advisory_xact_lock(hashtext(${orden.mesa_id}::text)::bigint)
@@ -471,7 +1126,7 @@ export const db = {
         SELECT o.id
         FROM lock_mesa, soda_master.ordenes o
         WHERE o.mesa_id = ${orden.mesa_id}
-          AND o.estado NOT IN ('pagado', 'cancelado')
+          AND o.estado NOT IN ('pagado', 'cancelado', 'perdida')
         LIMIT 1
       )
       INSERT INTO soda_master.ordenes (
@@ -522,6 +1177,8 @@ export const db = {
   },
 
   async getOrdenesParaKDS(): Promise<Orden[]> {
+    await ensureItemPagoSchema()
+    await ensureCuentasPersonaSchema()
     const sql = getSql()
     const result = await sql`
       SELECT o.*,
@@ -536,16 +1193,30 @@ export const db = {
                    'precio_unitario', i.precio_unitario,
                    'modificadores', i.modificadores,
                    'notas_especiales', i.notas_especiales,
-                   'estado_item', i.estado_item
+                   'estado_item', i.estado_item,
+                   'pagado', i.pagado,
+                   'pago_id', i.pago_id,
+                   'cuenta_persona_id', i.cuenta_persona_id
                  ) ORDER BY i.created_at
                ) FILTER (WHERE i.id IS NOT NULL),
                '[]'::json
-             ) AS items
+             ) AS items,
+             COALESCE(
+               (
+                 SELECT json_agg(
+                   json_build_object('id', cp.id, 'idx', cp.idx, 'nombre', cp.nombre)
+                   ORDER BY cp.idx
+                 )
+                 FROM soda_master.cuentas_persona cp
+                 WHERE cp.orden_id = o.id
+               ),
+               '[]'::json
+             ) AS cuentas_persona
       FROM soda_master.ordenes o
       LEFT JOIN soda_master.items_orden i ON o.id = i.orden_id
       LEFT JOIN soda_master.productos p ON i.producto_id = p.id
       LEFT JOIN soda_master.categorias c ON p.categoria_id = c.id
-      WHERE o.estado NOT IN ('pagado', 'cancelado')
+      WHERE o.estado NOT IN ('pagado', 'cancelado', 'perdida')
       GROUP BY o.id
       ORDER BY o.created_at ASC
     `
@@ -592,13 +1263,14 @@ export const db = {
     const sql = getSql()
     const result = await sql`
       SELECT * FROM soda_master.ordenes 
-      WHERE mesa_id = ${mesaId} AND estado NOT IN ('pagado', 'cancelado')
+      WHERE mesa_id = ${mesaId} AND estado NOT IN ('pagado', 'cancelado', 'perdida')
       ORDER BY created_at DESC
     `
     return result as Orden[]
   },
 
   async actualizarOrden(id: string, updates: Partial<Orden>) {
+    await ensureOrdenEstadoSchema()
     const sql = getSql()
     const result = await sql`
       UPDATE soda_master.ordenes 
@@ -630,32 +1302,133 @@ export const db = {
     return result[0] as Orden
   },
 
+  async eliminarOrden(id: string) {
+    const sql = getSql()
+    await sql`DELETE FROM soda_master.items_orden WHERE orden_id = ${id}`
+    await sql`DELETE FROM soda_master.ordenes WHERE id = ${id}`
+    return { success: true }
+  },
+
   // Items de orden
-  async crearItemOrden(item: Omit<ItemOrden, 'id' | 'created_at'>) {
+  async crearItemOrden(item: Omit<ItemOrden, 'id' | 'created_at'> & {
+    seleccion_modificadores?: string[]
+    extras_ingredientes?: { ingrediente_id: string; cantidad?: number }[]
+  }) {
+    await ensureRecetasTables()
     const sql = getSql()
     const cantidad = Number(item.cantidad)
     if (!Number.isFinite(cantidad) || cantidad <= 0) {
       throw new Error('Cantidad inválida')
     }
 
-    const stockRows = await sql`
-      UPDATE soda_master.inventario
-      SET stock_actual = stock_actual - ${cantidad},
-          updated_at = CURRENT_TIMESTAMP
-      WHERE producto_id = ${item.producto_id}
-        AND stock_actual >= ${cantidad}
-      RETURNING stock_actual
+    const prodRows = await sql`
+      SELECT COALESCE(modo_stock, 'producto') AS modo_stock, nombre
+      FROM soda_master.productos WHERE id = ${item.producto_id} LIMIT 1
     `
-    if (stockRows.length === 0) {
-      throw new Error('Stock insuficiente para enviar el producto')
+    if (!prodRows[0]) throw new Error('Producto no encontrado')
+    const modoStock = String((prodRows[0] as any).modo_stock || 'producto')
+    const { mods, extras } = parseSeleccionItem(item)
+
+    const deductMap = new Map<string, number>()
+    const addDeduct = (ingredienteId: string, qty: number) => {
+      if (!ingredienteId || qty <= 0) return
+      deductMap.set(ingredienteId, (deductMap.get(ingredienteId) || 0) + qty)
     }
 
+    if (modoStock === 'receta' || modoStock === 'producto_y_receta') {
+      const recetaRows = await sql`
+        SELECT r.id FROM soda_master.recetas r
+        WHERE r.producto_id = ${item.producto_id} AND r.activo = true LIMIT 1
+      `
+      if (recetaRows[0]) {
+        const lineas = await sql`
+          SELECT ri.*, i.nombre AS ingrediente_nombre
+          FROM soda_master.receta_ingredientes ri
+          JOIN soda_master.ingredientes i ON i.id = ri.ingrediente_id
+          WHERE ri.receta_id = ${(recetaRows[0] as any).id} AND i.activo = true
+        `
+        const modsNorm = mods.map((m) => m.trim().toLowerCase())
+        const extraIds = new Set(extras.map((e) => e.ingrediente_id))
+
+        for (const line of lineas as any[]) {
+          const lineQty = Number(line.cantidad) * cantidad
+          const displayName = (line.nombre_display || line.ingrediente_nombre || '').trim().toLowerCase()
+          if (line.extra) {
+            const extraSel = extras.find((e) => e.ingrediente_id === line.ingrediente_id)
+            if (extraSel) addDeduct(line.ingrediente_id, lineQty * extraSel.cantidad)
+          } else if (line.opcional) {
+            if (displayName && modsNorm.some((m) => m === displayName || m.includes(displayName) || displayName.includes(m))) {
+              addDeduct(line.ingrediente_id, lineQty)
+            }
+          } else {
+            addDeduct(line.ingrediente_id, lineQty)
+          }
+        }
+      }
+    }
+
+    for (const [ingredienteId, qty] of deductMap) {
+      const check = await sql`
+        SELECT nombre, unidad_medida, stock_actual FROM soda_master.ingredientes
+        WHERE id = ${ingredienteId}::uuid
+      `
+      if (!check[0]) continue
+      const stockActual = Number((check[0] as any).stock_actual)
+      if (stockActual < qty) {
+        const nombre = (check[0] as any).nombre
+        const unidad = (check[0] as any).unidad_medida || 'unidad'
+        const faltan = Math.ceil((qty - stockActual) * 1000) / 1000
+        throw new Error(`Stock insuficiente: ${nombre} (faltan ${faltan} ${unidad})`)
+      }
+    }
+
+    for (const [ingredienteId, qty] of deductMap) {
+      await sql`
+        UPDATE soda_master.ingredientes
+        SET stock_actual = stock_actual - ${qty}, updated_at = now()
+        WHERE id = ${ingredienteId}::uuid
+      `
+    }
+
+    if (modoStock === 'producto' || modoStock === 'producto_y_receta') {
+      const stockRows = await sql`
+        UPDATE soda_master.inventario
+        SET stock_actual = stock_actual - ${cantidad},
+            updated_at = CURRENT_TIMESTAMP
+        WHERE producto_id = ${item.producto_id}
+          AND stock_actual >= ${cantidad}
+        RETURNING stock_actual
+      `
+      if (stockRows.length === 0) {
+        throw new Error('Stock insuficiente para enviar el producto')
+      }
+    }
+
+    const modificadoresJson = JSON.stringify(item.modificadores ?? mods)
     const result = await sql`
       INSERT INTO soda_master.items_orden (orden_id, producto_id, cantidad, precio_unitario, modificadores, notas_especiales, estado_item)
-      VALUES (${item.orden_id}, ${item.producto_id}, ${cantidad}, ${item.precio_unitario}, ${JSON.stringify(item.modificadores)}, ${item.notas_especiales}, 'pendiente')
+      VALUES (${item.orden_id}, ${item.producto_id}, ${cantidad}, ${item.precio_unitario}, ${modificadoresJson}, ${item.notas_especiales ?? null}, 'pendiente')
       RETURNING *
     `
-    return result[0] as ItemOrden
+    const inserted = result[0] as any
+
+    for (const [ingredienteId, qty] of deductMap) {
+      await sql`
+        INSERT INTO soda_master.movimientos_inventario
+          (ingrediente_id, producto_id, tipo, cantidad, orden_id, item_orden_id, notas)
+        VALUES (
+          ${ingredienteId}::uuid,
+          ${item.producto_id}::uuid,
+          'venta',
+          ${qty},
+          ${item.orden_id}::uuid,
+          ${inserted.id}::uuid,
+          ${'Venta item'}
+        )
+      `
+    }
+
+    return inserted as ItemOrden
   },
 
   async getItemsOrden(ordenId: string): Promise<ItemOrden[]> {
@@ -669,6 +1442,7 @@ export const db = {
   },
 
   async actualizarItemOrden(id: string, updates: Partial<ItemOrden>) {
+    await ensureItemEstadoSchema()
     const sql = getSql()
     const result = await sql`
       UPDATE soda_master.items_orden 
@@ -678,7 +1452,45 @@ export const db = {
       WHERE id = ${id}
       RETURNING *
     `
-    return result[0] as ItemOrden
+    const itemActualizado = result[0] as ItemOrden | undefined
+
+    // Sincronización del estado de la orden con el de sus items. Esto evita
+    // carreras del lado del cliente cuando el mesero marca múltiples items
+    // como entregados en rápida sucesión: el server es la única fuente de
+    // verdad de la transición listo → entregado de la orden completa.
+    if (itemActualizado?.orden_id && typeof updates.estado_item === 'string') {
+      await ensureOrdenEstadoSchema()
+      const items = (await sql`
+        SELECT estado_item FROM soda_master.items_orden
+        WHERE orden_id = ${itemActualizado.orden_id}
+      `) as Array<{ estado_item: string }>
+      if (items.length > 0) {
+        const todosEntregados = items.every((r) => r.estado_item === 'entregado')
+        const todosListos = items.every(
+          (r) => r.estado_item === 'listo' || r.estado_item === 'entregado',
+        )
+        const algunoProblema = items.some((r) => r.estado_item === 'problema')
+        const algunoEnPrep = items.some((r) => r.estado_item === 'en_preparacion')
+
+        let nuevoEstadoOrden: string | null = null
+        if (algunoProblema) nuevoEstadoOrden = 'problema'
+        else if (todosEntregados) nuevoEstadoOrden = 'entregado'
+        else if (todosListos) nuevoEstadoOrden = 'listo'
+        else if (algunoEnPrep) nuevoEstadoOrden = 'en_preparacion'
+
+        if (nuevoEstadoOrden) {
+          await sql`
+            UPDATE soda_master.ordenes
+            SET estado = ${nuevoEstadoOrden}, updated_at = CURRENT_TIMESTAMP
+            WHERE id = ${itemActualizado.orden_id}
+              AND estado NOT IN ('pagado','cancelado','perdida')
+              AND estado IS DISTINCT FROM ${nuevoEstadoOrden}
+          `
+        }
+      }
+    }
+
+    return itemActualizado as ItemOrden
   },
 
   async eliminarItemOrden(id: string) {
@@ -687,7 +1499,17 @@ export const db = {
   },
 
   // Pagos
+  //
+  // crearPago acepta opcionalmente `item_orden_ids: string[]` para soportar
+  // PAGOS PARCIALES por items (caso: un cliente se va antes y paga sólo lo
+  // que él consumió, mientras el resto sigue en la mesa). Cuando se entrega
+  // esa lista, sólo esos items se marcan como pagados; la orden completa
+  // pasa a `estado='pagado'` cuando todos sus items lo están. Cuando NO se
+  // entrega la lista, mantiene el comportamiento clásico de "pagar todo lo
+  // que falte por pagar de la orden".
   async crearPago(pago: any) {
+    await ensureItemPagoSchema()
+    await ensureOrdenEstadoSchema()
     const sql = getSql()
     const ordenId = pago.orden_id ?? pago.ordenId ?? pago.comandaId
     if (!ordenId) {
@@ -705,12 +1527,135 @@ export const db = {
     const vueltoVal = pago.vuelto !== undefined && pago.vuelto !== null ? Number(pago.vuelto) : null
     const referencia = pago.referencia ?? null
     const aprobado = pago.aprobado !== undefined ? !!pago.aprobado : true
-    const result = await sql`
+
+    const itemIdsRaw = pago.item_orden_ids ?? pago.itemOrdenIds
+    const itemIds: string[] = Array.isArray(itemIdsRaw)
+      ? itemIdsRaw.filter((x: unknown) => typeof x === 'string' && x.length > 0)
+      : []
+
+    // `item_partials` permite cobrar PARTE de una línea con cantidad > 1
+    // (ej.: hay un item_orden "2x Cerveza" y una persona paga sólo 1).
+    // En ese caso splitteamos la línea: bajamos la cantidad del original
+    // a la cantidad que se paga ahora y clonamos una línea nueva con la
+    // cantidad restante (queda abierta para que la pague otro cliente).
+    // Estructura: [{ id, cantidad }]
+    const itemPartialsRaw = pago.item_partials ?? pago.itemPartials
+    const itemPartials: Array<{ id: string; cantidad: number }> = Array.isArray(itemPartialsRaw)
+      ? itemPartialsRaw
+          .map((p: any) => ({
+            id: typeof p?.id === 'string' ? p.id : '',
+            cantidad: Number(p?.cantidad) || 0,
+          }))
+          .filter((p: { id: string; cantidad: number }) => p.id && p.cantidad > 0)
+      : []
+
+    const esParcial = itemIds.length > 0 || itemPartials.length > 0
+
+    const inserted = await sql`
       INSERT INTO soda_master.pagos (orden_id, metodo, monto, propina, descuento, dividido_en, vuelto, referencia, aprobado)
       VALUES (${ordenId}, ${metodoNormalizado}, ${monto}, ${propina}, ${descuento}, ${divididoEn}, ${vueltoVal}, ${referencia}, ${aprobado})
       RETURNING *
     `
-    return mapPago(result[0])
+    const pagoCreado = mapPago(inserted[0])
+    const pagoId = (inserted[0] as any).id
+
+    if (esParcial) {
+      // 1) Splits: por cada item con cobro parcial, dejamos la línea
+      //    original con la cantidad que se está cobrando (y pagada=TRUE)
+      //    y clonamos una nueva línea con el remanente sin pagar.
+      for (const partial of itemPartials) {
+        const originalRows = (await sql`
+          SELECT id, orden_id, producto_id, cantidad, precio_unitario, modificadores,
+                 notas_especiales, estado_item, pagado, cuenta_persona_id
+          FROM soda_master.items_orden
+          WHERE id = ${partial.id}::uuid AND orden_id = ${ordenId}
+          FOR UPDATE
+        `) as Array<any>
+        const original = originalRows[0]
+        if (!original) continue
+        if (original.pagado === true) continue
+        const cantidadOriginal = Number(original.cantidad) || 0
+        const cantidadCobrar = Math.min(partial.cantidad, cantidadOriginal)
+        if (cantidadCobrar <= 0) continue
+        if (cantidadCobrar >= cantidadOriginal) {
+          // Cobra la línea completa: igual que un item_orden_ids normal.
+          await sql`
+            UPDATE soda_master.items_orden
+            SET pagado = TRUE, pago_id = ${pagoId}::uuid
+            WHERE id = ${original.id}::uuid
+              AND pagado = FALSE
+          `
+          continue
+        }
+        // Cobra menos de la línea: split en BD. La línea restante hereda
+        // el `cuenta_persona_id` del original (el cliente que se fue ya
+        // pagó lo suyo; el resto sigue siendo de la misma persona que
+        // tenía asignada esa unidad… si quería repartirla a otro, debió
+        // reasignar antes de cobrar).
+        const cantidadRestante = cantidadOriginal - cantidadCobrar
+        await sql`
+          UPDATE soda_master.items_orden
+          SET cantidad = ${cantidadCobrar},
+              pagado = TRUE,
+              pago_id = ${pagoId}::uuid
+          WHERE id = ${original.id}::uuid
+        `
+        await sql`
+          INSERT INTO soda_master.items_orden
+            (orden_id, producto_id, cantidad, precio_unitario, modificadores,
+             notas_especiales, estado_item, pagado, cuenta_persona_id)
+          VALUES (
+            ${original.orden_id},
+            ${original.producto_id},
+            ${cantidadRestante},
+            ${original.precio_unitario},
+            ${original.modificadores ?? null},
+            ${original.notas_especiales ?? null},
+            ${original.estado_item ?? 'pendiente'},
+            FALSE,
+            ${original.cuenta_persona_id ?? null}
+          )
+        `
+      }
+
+      // 2) Líneas completas: ids normales que sí se cobran enteros.
+      if (itemIds.length > 0) {
+        await sql`
+          UPDATE soda_master.items_orden
+          SET pagado = TRUE, pago_id = ${pagoId}::uuid
+          WHERE orden_id = ${ordenId}
+            AND id = ANY(${itemIds}::uuid[])
+            AND pagado = FALSE
+        `
+      }
+    } else {
+      await sql`
+        UPDATE soda_master.items_orden
+        SET pagado = TRUE, pago_id = ${pagoId}::uuid
+        WHERE orden_id = ${ordenId}
+          AND pagado = FALSE
+      `
+    }
+
+    // Si ya no quedan items por pagar, cerramos la orden. Esto lo decide
+    // el servidor para evitar que clientes en paralelo dejen la orden
+    // "abierta a medias".
+    const pendientesRows = (await sql`
+      SELECT COUNT(*)::int AS cnt
+      FROM soda_master.items_orden
+      WHERE orden_id = ${ordenId} AND pagado = FALSE
+    `) as Array<{ cnt: number }>
+    const restantes = pendientesRows[0]?.cnt ?? 0
+    if (restantes === 0) {
+      await sql`
+        UPDATE soda_master.ordenes
+        SET estado = 'pagado', updated_at = CURRENT_TIMESTAMP
+        WHERE id = ${ordenId}
+          AND estado NOT IN ('pagado','cancelado','perdida')
+      `
+    }
+
+    return pagoCreado
   },
 
   async getPagos(filtro?: { fecha?: string }): Promise<Pago[]> {
@@ -736,6 +1681,551 @@ export const db = {
       `
     }
     return rows.map(mapPago)
+  },
+
+  // Permisos especiales (delegaciones temporales). El admin puede,
+  // por ejemplo, darle a un cajero permiso temporal de "apertura_mesa"
+  // cuando no hay meseros. La vigencia se controla por `valido_hasta`.
+  async otorgarPermisoEspecial(input: {
+    usuario_id: string
+    tipo: string
+    valido_hasta: string | Date | number
+    motivo?: string | null
+    otorgado_por: string
+    otorgado_por_nombre: string
+  }): Promise<any> {
+    await ensurePermisosEspecialesTable()
+    const sql = getSql()
+    const validoHasta = new Date(input.valido_hasta)
+    if (Number.isNaN(validoHasta.getTime())) {
+      throw new Error('valido_hasta no es una fecha válida')
+    }
+    if (validoHasta.getTime() <= Date.now()) {
+      throw new Error('valido_hasta debe ser una fecha futura')
+    }
+    const rows = (await sql`
+      INSERT INTO soda_master.permisos_especiales
+        (usuario_id, tipo, motivo, otorgado_por, otorgado_por_nombre, valido_hasta)
+      VALUES (
+        ${input.usuario_id}::uuid,
+        ${input.tipo},
+        ${input.motivo ?? null},
+        ${input.otorgado_por}::uuid,
+        ${input.otorgado_por_nombre},
+        ${validoHasta.toISOString()}::timestamptz
+      )
+      RETURNING *
+    `) as any[]
+    return rows[0]
+  },
+
+  async revocarPermisoEspecial(input: {
+    id: string
+    revocado_por: string
+    revocado_por_nombre: string
+  }): Promise<any> {
+    await ensurePermisosEspecialesTable()
+    const sql = getSql()
+    const rows = (await sql`
+      UPDATE soda_master.permisos_especiales
+      SET revocado = TRUE,
+          revocado_at = now(),
+          revocado_por = ${input.revocado_por}::uuid,
+          revocado_por_nombre = ${input.revocado_por_nombre}
+      WHERE id = ${input.id}::uuid AND revocado = FALSE
+      RETURNING *
+    `) as any[]
+    if (rows.length === 0) {
+      throw new Error('Permiso no encontrado o ya revocado')
+    }
+    return rows[0]
+  },
+
+  async getPermisosEspeciales(filtro?: {
+    usuario_id?: string
+    tipo?: string
+    solo_vigentes?: boolean
+  }): Promise<any[]> {
+    await ensurePermisosEspecialesTable()
+    const sql = getSql()
+    if (filtro?.usuario_id && filtro?.tipo && filtro?.solo_vigentes) {
+      return (await sql`
+        SELECT * FROM soda_master.permisos_especiales
+        WHERE usuario_id = ${filtro.usuario_id}::uuid
+          AND tipo = ${filtro.tipo}
+          AND revocado = FALSE
+          AND valido_hasta > now()
+        ORDER BY valido_hasta DESC
+      `) as any[]
+    }
+    if (filtro?.usuario_id && filtro?.tipo) {
+      return (await sql`
+        SELECT * FROM soda_master.permisos_especiales
+        WHERE usuario_id = ${filtro.usuario_id}::uuid
+          AND tipo = ${filtro.tipo}
+        ORDER BY created_at DESC
+      `) as any[]
+    }
+    if (filtro?.usuario_id) {
+      return (await sql`
+        SELECT * FROM soda_master.permisos_especiales
+        WHERE usuario_id = ${filtro.usuario_id}::uuid
+        ORDER BY created_at DESC
+      `) as any[]
+    }
+    if (filtro?.solo_vigentes) {
+      return (await sql`
+        SELECT * FROM soda_master.permisos_especiales
+        WHERE revocado = FALSE AND valido_hasta > now()
+        ORDER BY valido_hasta ASC
+      `) as any[]
+    }
+    return (await sql`
+      SELECT * FROM soda_master.permisos_especiales
+      ORDER BY created_at DESC
+      LIMIT 500
+    `) as any[]
+  },
+
+  /**
+   * Devuelve true si `usuario_id` puede realizar la acción indicada por
+   * `tipo` AHORA (permiso no revocado y dentro de vigencia). Es lo que
+   * llama `crearOrden` para decidir si el cajero puede abrir mesa.
+   */
+  async tienePermisoEspecial(usuario_id: string, tipo: string): Promise<boolean> {
+    await ensurePermisosEspecialesTable()
+    const sql = getSql()
+    const rows = (await sql`
+      SELECT 1 FROM soda_master.permisos_especiales
+      WHERE usuario_id = ${usuario_id}::uuid
+        AND tipo = ${tipo}
+        AND revocado = FALSE
+        AND valido_hasta > now()
+      LIMIT 1
+    `) as any[]
+    return rows.length > 0
+  },
+
+  // Pérdidas (perros muertos): cuando un cliente consumió pero se fue sin
+  // pagar. La función toma la orden, calcula el monto que quedaba sin pagar
+  // (suma del subtotal de items no pagados + IVA, sin propina) y deja un
+  // registro. La orden pasa a estado `'perdida'`, lo que la quita del
+  // listado de comandas activas y la diferencia claramente de `'pagado'`.
+  async registrarPerdida(input: {
+    orden_id: string
+    motivo: string
+    autorizado_por?: string | null
+    autorizado_por_nombre?: string | null
+    tasa_impuesto?: number
+    impuesto_habilitado?: boolean
+  }): Promise<{ id: string; monto_perdido: number; cantidad_items: number }> {
+    await ensurePerdidasTable()
+    await ensureItemPagoSchema()
+    await ensureOrdenEstadoSchema()
+    const sql = getSql()
+
+    // Traemos la orden + datos del usuario que la abrió. Ese usuario es
+    // el "responsable" — quien deberá responder por la pérdida hasta que
+    // el cliente, eventualmente, vuelva a pagar lo consumido.
+    const orden = (await sql`
+      SELECT o.id, o.mesa_id, o.estado, o.usuario_id,
+             u.nombre AS usuario_nombre, u.rol AS usuario_rol
+      FROM soda_master.ordenes o
+      LEFT JOIN soda_master.usuarios u ON u.id = o.usuario_id
+      WHERE o.id = ${input.orden_id}
+    `) as Array<{
+      id: string
+      mesa_id: string | null
+      estado: string
+      usuario_id: string | null
+      usuario_nombre: string | null
+      usuario_rol: string | null
+    }>
+    if (orden.length === 0) {
+      throw new Error('Orden no encontrada')
+    }
+    if (orden[0].estado === 'pagado') {
+      throw new Error('La orden ya está pagada, no aplica como perro muerto')
+    }
+    if (orden[0].estado === 'perdida') {
+      throw new Error('La orden ya está marcada como pérdida')
+    }
+    if (orden[0].estado === 'cancelado') {
+      throw new Error('La orden está cancelada, no se puede marcar como pérdida')
+    }
+
+    // Suma de items NO pagados (en pagos parciales previos puede haber
+    // items ya cobrados; esos NO se cuentan como pérdida).
+    const sumRows = (await sql`
+      SELECT
+        COALESCE(SUM(cantidad * precio_unitario), 0)::numeric AS subtotal,
+        COUNT(*)::int AS cant
+      FROM soda_master.items_orden
+      WHERE orden_id = ${input.orden_id} AND pagado = FALSE
+    `) as Array<{ subtotal: string | number; cant: number }>
+    const subtotal = Number(sumRows[0]?.subtotal ?? 0)
+    const cantidad = Number(sumRows[0]?.cant ?? 0)
+    const tasa = input.impuesto_habilitado === false ? 0 : Number(input.tasa_impuesto ?? 0)
+    const monto = subtotal + subtotal * (tasa / 100)
+
+    const motivo = (input.motivo || '').toString().trim() || 'Perro muerto'
+    const autorizadoPor = input.autorizado_por || null
+    const autorizadoPorNombre = input.autorizado_por_nombre || null
+    const responsableId = orden[0].usuario_id || null
+    const responsableNombre = orden[0].usuario_nombre || null
+    const responsableRol = orden[0].usuario_rol || null
+
+    const inserted = (await sql`
+      INSERT INTO soda_master.perdidas_comanda
+        (orden_id, mesa_id, monto_perdido, cantidad_items, motivo,
+         autorizado_por, autorizado_por_nombre,
+         responsable_id, responsable_nombre, responsable_rol)
+      VALUES (
+        ${input.orden_id}::uuid,
+        ${orden[0].mesa_id},
+        ${monto},
+        ${cantidad},
+        ${motivo},
+        ${autorizadoPor},
+        ${autorizadoPorNombre},
+        ${responsableId},
+        ${responsableNombre},
+        ${responsableRol}
+      )
+      RETURNING id
+    `) as Array<{ id: string }>
+
+    // Anotamos en `ordenes.notas` para que cualquiera que abra esa orden
+    // vea por qué se cerró sin pago, quién lo autorizó y quién era el
+    // responsable de la mesa al momento del incidente.
+    const responsableLabel = responsableNombre
+      ? ` — responsable ${responsableNombre}${
+          responsableRol ? ` (${responsableRol})` : ''
+        }`
+      : ''
+    const notaPerdida = `[PERRO MUERTO] ${motivo}${
+      autorizadoPorNombre ? ` — autorizó ${autorizadoPorNombre}` : ''
+    }${responsableLabel}`
+    await sql`
+      UPDATE soda_master.ordenes
+      SET estado = 'perdida',
+          notas = CASE
+            WHEN COALESCE(notas, '') = '' THEN ${notaPerdida}
+            ELSE notas || E'\n' || ${notaPerdida}
+          END,
+          updated_at = CURRENT_TIMESTAMP
+      WHERE id = ${input.orden_id}
+    `
+
+    return {
+      id: inserted[0].id,
+      monto_perdido: monto,
+      cantidad_items: cantidad,
+      responsable_id: responsableId,
+      responsable_nombre: responsableNombre,
+      responsable_rol: responsableRol,
+    }
+  },
+
+  /**
+   * Marca una pérdida como resuelta porque el cliente volvió a pagar lo
+   * consumido. Crea un pago "retroactivo" con `metodo` indicado (por
+   * defecto efectivo) y queda enlazado vía `pago_id`. La orden NO se
+   * vuelve a marcar como pagada — el `estado='perdida'` queda como
+   * histórico de que hubo un incidente, pero financieramente la pérdida
+   * desaparece de los reportes (filtrando `resuelto = true`).
+   */
+  async resolverPerdida(input: {
+    perdida_id: string
+    monto?: number
+    metodo?: string
+    referencia?: string | null
+    resuelto_por_id: string
+    resuelto_por_nombre: string
+  }): Promise<{
+    id: string
+    pago_id: string
+    monto: number
+  }> {
+    await ensurePerdidasTable()
+    const sql = getSql()
+
+    const perdidas = (await sql`
+      SELECT id, orden_id, monto_perdido, resuelto
+      FROM soda_master.perdidas_comanda
+      WHERE id = ${input.perdida_id}
+    `) as Array<{
+      id: string
+      orden_id: string
+      monto_perdido: string | number
+      resuelto: boolean
+    }>
+    if (perdidas.length === 0) {
+      throw new Error('Pérdida no encontrada')
+    }
+    if (perdidas[0].resuelto) {
+      throw new Error('Esta pérdida ya fue cobrada retroactivamente')
+    }
+    const ordenId = perdidas[0].orden_id
+    const montoOriginal = Number(perdidas[0].monto_perdido) || 0
+    const monto =
+      input.monto !== undefined && Number.isFinite(Number(input.monto))
+        ? Number(input.monto)
+        : montoOriginal
+    if (monto <= 0) {
+      throw new Error('El monto del cobro retroactivo debe ser mayor que 0')
+    }
+    const metodo = normalizarMetodoPago(input.metodo ?? 'efectivo')
+    const referencia = input.referencia ?? `retroactivo:${input.perdida_id}`
+
+    const inserted = (await sql`
+      INSERT INTO soda_master.pagos
+        (orden_id, metodo, monto, propina, descuento, dividido_en, vuelto, referencia, aprobado)
+      VALUES (${ordenId}, ${metodo}, ${monto}, 0, 0, 1, NULL, ${referencia}, TRUE)
+      RETURNING *
+    `) as any[]
+    const pagoId = (inserted[0] as any).id
+
+    await sql`
+      UPDATE soda_master.perdidas_comanda
+      SET resuelto = TRUE,
+          resuelto_at = now(),
+          resuelto_por_id = ${input.resuelto_por_id}::uuid,
+          resuelto_por_nombre = ${input.resuelto_por_nombre},
+          pago_id = ${pagoId}::uuid
+      WHERE id = ${input.perdida_id}
+    `
+
+    // Dejamos constancia en `ordenes.notas` para no perder el rastro.
+    const nota = `[PERRO MUERTO RESUELTO] cobrado retroactivamente $${monto.toFixed(0)} por ${input.resuelto_por_nombre}`
+    await sql`
+      UPDATE soda_master.ordenes
+      SET notas = CASE
+        WHEN COALESCE(notas, '') = '' THEN ${nota}
+        ELSE notas || E'\n' || ${nota}
+      END,
+      updated_at = CURRENT_TIMESTAMP
+      WHERE id = ${ordenId}
+    `
+
+    return { id: input.perdida_id, pago_id: pagoId, monto }
+  },
+
+  async getPerdidas(filtro?: { fecha?: string }): Promise<any[]> {
+    await ensurePerdidasTable()
+    const sql = getSql()
+    if (filtro?.fecha === 'hoy') {
+      return (await sql`
+        SELECT * FROM soda_master.perdidas_comanda
+        WHERE (created_at AT TIME ZONE 'America/Santiago')::date
+            = (now() AT TIME ZONE 'America/Santiago')::date
+        ORDER BY created_at DESC
+      `) as any[]
+    }
+    if (filtro?.fecha) {
+      return (await sql`
+        SELECT * FROM soda_master.perdidas_comanda
+        WHERE (created_at AT TIME ZONE 'America/Santiago')::date = ${filtro.fecha}::date
+        ORDER BY created_at DESC
+      `) as any[]
+    }
+    return (await sql`
+      SELECT * FROM soda_master.perdidas_comanda
+      ORDER BY created_at DESC
+      LIMIT 200
+    `) as any[]
+  },
+
+  // Cuentas por persona (Persona 1, 2, 3...). Persisten en BD para
+  // que al refrescar, cambiar de cajero, o agregar items más tarde no se
+  // pierda quién paga qué.
+  async getCuentasPersona(ordenId: string): Promise<any[]> {
+    await ensureCuentasPersonaSchema()
+    const sql = getSql()
+    return (await sql`
+      SELECT id, orden_id, idx, nombre, created_at
+      FROM soda_master.cuentas_persona
+      WHERE orden_id = ${ordenId}::uuid
+      ORDER BY idx ASC
+    `) as any[]
+  },
+
+  async crearCuentaPersona(input: {
+    orden_id: string
+    nombre?: string | null
+  }): Promise<any> {
+    await ensureCuentasPersonaSchema()
+    const sql = getSql()
+    // Calculamos el siguiente idx libre. Lockeamos la orden para evitar
+    // que dos cajeros creen Persona 3 al mismo tiempo.
+    const rows = (await sql`
+      WITH lock AS (
+        SELECT pg_advisory_xact_lock(hashtext(${input.orden_id}::text)::bigint)
+      ),
+      next AS (
+        SELECT COALESCE(MAX(idx), 0) + 1 AS next_idx
+        FROM soda_master.cuentas_persona
+        WHERE orden_id = ${input.orden_id}::uuid
+      )
+      INSERT INTO soda_master.cuentas_persona (orden_id, idx, nombre)
+      SELECT ${input.orden_id}::uuid, next.next_idx, ${input.nombre ?? null}
+      FROM next
+      RETURNING id, orden_id, idx, nombre, created_at
+    `) as any[]
+    return rows[0]
+  },
+
+  async renombrarCuentaPersona(id: string, nombre: string | null): Promise<any> {
+    await ensureCuentasPersonaSchema()
+    const sql = getSql()
+    const rows = (await sql`
+      UPDATE soda_master.cuentas_persona
+      SET nombre = ${nombre}
+      WHERE id = ${id}::uuid
+      RETURNING id, orden_id, idx, nombre, created_at
+    `) as any[]
+    return rows[0]
+  },
+
+  async eliminarCuentaPersona(id: string): Promise<void> {
+    await ensureCuentasPersonaSchema()
+    const sql = getSql()
+    // Desasignamos los items de esa persona antes de borrar para que
+    // queden compartidos y no se pierda nada cuando hay FK suelta.
+    await sql`
+      UPDATE soda_master.items_orden
+      SET cuenta_persona_id = NULL
+      WHERE cuenta_persona_id = ${id}::uuid
+    `
+    await sql`
+      DELETE FROM soda_master.cuentas_persona WHERE id = ${id}::uuid
+    `
+  },
+
+  /**
+   * Aplica un conjunto de asignaciones (item -> persona, con cantidad).
+   *
+   * El cliente puede mandar VARIAS asignaciones para el mismo item (por
+   * ejemplo, una "2x Cerveza" que se reparte 1 a P1 y 1 a P2). Para que
+   * no se pisen, agrupamos primero por `item_orden_id` y procesamos cada
+   * grupo en una sola pasada:
+   *   - 1 destino que cubre toda la cantidad → UPDATE cuenta_persona_id.
+   *   - varios destinos → el original se queda con el primer destino y
+   *     se clonan filas para los demás (y un sobrante compartido si las
+   *     cantidades no suman exactamente).
+   *
+   * Items ya pagados no se reasignan (mantiene consistencia con los
+   * reportes históricos de cuánto pagó cada uno).
+   */
+  async aplicarAsignacionesCuentas(input: {
+    orden_id: string
+    asignaciones: Array<{
+      item_orden_id: string
+      cantidad: number
+      cuenta_persona_id: string | null
+    }>
+  }): Promise<{ ok: true }> {
+    await ensureCuentasPersonaSchema()
+    const sql = getSql()
+    // Agrupar por item; consolidar destinos repetidos.
+    const grupos = new Map<string, Map<string, number>>() // itemId -> (destinoKey -> cantidad)
+    for (const a of input.asignaciones) {
+      if (!a.item_orden_id || !Number.isFinite(a.cantidad) || a.cantidad <= 0) continue
+      const destino = a.cuenta_persona_id || 'NULL'
+      if (!grupos.has(a.item_orden_id)) grupos.set(a.item_orden_id, new Map())
+      const m = grupos.get(a.item_orden_id)!
+      m.set(destino, (m.get(destino) || 0) + a.cantidad)
+    }
+
+    for (const [itemId, destinos] of grupos.entries()) {
+      const rows = (await sql`
+        SELECT id, orden_id, producto_id, cantidad, precio_unitario, modificadores,
+               notas_especiales, estado_item, pagado, cuenta_persona_id
+        FROM soda_master.items_orden
+        WHERE id = ${itemId}::uuid AND orden_id = ${input.orden_id}::uuid
+        FOR UPDATE
+      `) as any[]
+      const original = rows[0]
+      if (!original) continue
+      if (original.pagado === true) continue
+      const cantidadOriginal = Number(original.cantidad) || 0
+      if (cantidadOriginal <= 0) continue
+
+      // Lista ordenada de (destino, cantidad) con cantidades ya clampeadas.
+      let restante = cantidadOriginal
+      const planificado: Array<{ destino: string | null; cantidad: number }> = []
+      for (const [destinoKey, cantRaw] of destinos.entries()) {
+        if (restante <= 0) break
+        const cant = Math.min(cantRaw, restante)
+        if (cant <= 0) continue
+        planificado.push({
+          destino: destinoKey === 'NULL' ? null : destinoKey,
+          cantidad: cant,
+        })
+        restante -= cant
+      }
+
+      // Caso trivial: sin asignaciones efectivas.
+      if (planificado.length === 0) continue
+
+      // Caso simple: un sólo destino que cubre la totalidad.
+      if (planificado.length === 1 && planificado[0].cantidad >= cantidadOriginal) {
+        await sql`
+          UPDATE soda_master.items_orden
+          SET cuenta_persona_id = ${planificado[0].destino}
+          WHERE id = ${original.id}::uuid
+        `
+        continue
+      }
+
+      // Caso complejo: split. La línea original toma el primer destino
+      // con su cantidad; los demás se clonan a filas nuevas; si sobra,
+      // se crea una línea final compartida (null).
+      const [primero, ...resto] = planificado
+      await sql`
+        UPDATE soda_master.items_orden
+        SET cantidad = ${primero.cantidad},
+            cuenta_persona_id = ${primero.destino}
+        WHERE id = ${original.id}::uuid
+      `
+      for (const seg of resto) {
+        await sql`
+          INSERT INTO soda_master.items_orden
+            (orden_id, producto_id, cantidad, precio_unitario, modificadores,
+             notas_especiales, estado_item, pagado, cuenta_persona_id)
+          VALUES (
+            ${original.orden_id},
+            ${original.producto_id},
+            ${seg.cantidad},
+            ${original.precio_unitario},
+            ${original.modificadores ?? null},
+            ${original.notas_especiales ?? null},
+            ${original.estado_item ?? 'pendiente'},
+            FALSE,
+            ${seg.destino}
+          )
+        `
+      }
+      if (restante > 0) {
+        await sql`
+          INSERT INTO soda_master.items_orden
+            (orden_id, producto_id, cantidad, precio_unitario, modificadores,
+             notas_especiales, estado_item, pagado, cuenta_persona_id)
+          VALUES (
+            ${original.orden_id},
+            ${original.producto_id},
+            ${restante},
+            ${original.precio_unitario},
+            ${original.modificadores ?? null},
+            ${original.notas_especiales ?? null},
+            ${original.estado_item ?? 'pendiente'},
+            FALSE,
+            NULL
+          )
+        `
+      }
+    }
+    return { ok: true }
   },
 
   // Inventario
@@ -1265,6 +2755,818 @@ export const db = {
       out[row.clave] = parseConfigValor(row.valor, row.tipo)
     }
     return out
+  },
+
+  // ── Ingredientes y recetas ─────────────────────────────────────────────────
+  async getIngredientes(soloActivos = true) {
+    await ensureRecetasTables()
+    const sql = getSql()
+    const rows = soloActivos
+      ? await sql`
+          SELECT * FROM soda_master.ingredientes WHERE activo = true ORDER BY categoria, nombre
+        `
+      : await sql`
+          SELECT * FROM soda_master.ingredientes ORDER BY categoria, nombre
+        `
+    return (rows as any[]).map(mapIngredienteInsumo)
+  },
+
+  async crearIngrediente(input: {
+    nombre: string
+    categoria?: string
+    unidad_medida?: string
+    stock_actual?: number
+    stock_minimo?: number
+    costo_unitario?: number
+    tipo?: 'comida' | 'negocio' | 'otro'
+  }) {
+    await ensureComprasTables()
+    const sql = getSql()
+    const tipo = input.tipo && ['comida', 'negocio', 'otro'].includes(input.tipo)
+      ? input.tipo
+      : 'comida'
+    const rows = await sql`
+      INSERT INTO soda_master.ingredientes
+        (nombre, categoria, unidad_medida, stock_actual, stock_minimo, costo_unitario, tipo)
+      VALUES (
+        ${input.nombre},
+        ${input.categoria || 'insumos'},
+        ${input.unidad_medida || 'unidad'},
+        ${Number(input.stock_actual) || 0},
+        ${Number(input.stock_minimo) || 0},
+        ${Number(input.costo_unitario) || 0},
+        ${tipo}
+      )
+      RETURNING *
+    `
+    return mapIngredienteInsumo(rows[0])
+  },
+
+  async actualizarIngrediente(
+    id: string,
+    updates: Partial<{
+      nombre: string
+      categoria: string
+      unidad_medida: string
+      stock_actual: number
+      stock_minimo: number
+      costo_unitario: number
+      tipo: 'comida' | 'negocio' | 'otro'
+      activo: boolean
+    }>,
+  ) {
+    await ensureComprasTables()
+    const sql = getSql()
+    const tipo = updates.tipo && ['comida', 'negocio', 'otro'].includes(updates.tipo)
+      ? updates.tipo
+      : null
+    const rows = await sql`
+      UPDATE soda_master.ingredientes
+      SET
+        nombre = COALESCE(${updates.nombre ?? null}, nombre),
+        categoria = COALESCE(${updates.categoria ?? null}, categoria),
+        unidad_medida = COALESCE(${updates.unidad_medida ?? null}, unidad_medida),
+        stock_actual = COALESCE(${updates.stock_actual ?? null}, stock_actual),
+        stock_minimo = COALESCE(${updates.stock_minimo ?? null}, stock_minimo),
+        costo_unitario = COALESCE(${updates.costo_unitario ?? null}, costo_unitario),
+        tipo = COALESCE(${tipo}, tipo),
+        activo = COALESCE(${updates.activo ?? null}, activo),
+        updated_at = now()
+      WHERE id = ${id}::uuid
+      RETURNING *
+    `
+    return rows[0] ? mapIngredienteInsumo(rows[0]) : null
+  },
+
+  async getRecetaProducto(productoId: string) {
+    await ensureRecetasTables()
+    const sql = getSql()
+    const recetaRows = await sql`
+      SELECT r.*, p.nombre AS producto_nombre, COALESCE(p.modo_stock, 'producto') AS modo_stock
+      FROM soda_master.productos p
+      LEFT JOIN soda_master.recetas r ON r.producto_id = p.id AND r.activo = true
+      WHERE p.id = ${productoId}::uuid
+      LIMIT 1
+    `
+    if (!recetaRows[0]) return null
+    const r = recetaRows[0] as any
+    let ingredientes: any[] = []
+    if (r.id) {
+      const lineas = await sql`
+        SELECT ri.*, i.nombre AS ingrediente_nombre, i.unidad_medida
+        FROM soda_master.receta_ingredientes ri
+        JOIN soda_master.ingredientes i ON i.id = ri.ingrediente_id
+        WHERE ri.receta_id = ${r.id}
+        ORDER BY ri.extra ASC, ri.opcional ASC, i.nombre
+      `
+      ingredientes = (lineas as any[]).map((ln) => ({
+        id: ln.id,
+        ingrediente_id: ln.ingrediente_id,
+        ingrediente_nombre: ln.ingrediente_nombre,
+        cantidad: Number(ln.cantidad),
+        opcional: !!ln.opcional,
+        extra: !!ln.extra,
+        costo_adicional: Number(ln.costo_adicional) || 0,
+        nombre_display: ln.nombre_display,
+        unidad_medida: ln.unidad_medida,
+      }))
+    }
+    return {
+      id: r.id || null,
+      producto_id: productoId,
+      nombre: r.nombre || r.producto_nombre,
+      activo: r.activo !== false,
+      modo_stock: r.modo_stock || 'producto',
+      ingredientes,
+    }
+  },
+
+  async guardarRecetaProducto(
+    productoId: string,
+    payload: {
+      nombre?: string
+      modo_stock?: string
+      ingredientes: Array<{
+        ingrediente_id: string
+        cantidad: number
+        opcional?: boolean
+        extra?: boolean
+        costo_adicional?: number
+        nombre_display?: string | null
+      }>
+    },
+  ) {
+    await ensureRecetasTables()
+    const sql = getSql()
+    const modo = payload.modo_stock && MODOS_STOCK_VALIDOS.includes(payload.modo_stock as any)
+      ? payload.modo_stock
+      : null
+    if (modo) {
+      await sql`
+        UPDATE soda_master.productos SET modo_stock = ${modo}, updated_at = CURRENT_TIMESTAMP
+        WHERE id = ${productoId}::uuid
+      `
+    }
+
+    const existing = await sql`
+      SELECT id FROM soda_master.recetas WHERE producto_id = ${productoId}::uuid LIMIT 1
+    `
+    let recetaId: string
+    if (existing[0]) {
+      recetaId = (existing[0] as any).id
+      await sql`
+        UPDATE soda_master.recetas
+        SET nombre = COALESCE(${payload.nombre ?? null}, nombre), updated_at = now()
+        WHERE id = ${recetaId}::uuid
+      `
+      await sql`DELETE FROM soda_master.receta_ingredientes WHERE receta_id = ${recetaId}::uuid`
+    } else {
+      const ins = await sql`
+        INSERT INTO soda_master.recetas (producto_id, nombre, activo)
+        VALUES (${productoId}::uuid, ${payload.nombre ?? null}, true)
+        RETURNING id
+      `
+      recetaId = (ins[0] as any).id
+    }
+
+    for (const line of payload.ingredientes) {
+      await sql`
+        INSERT INTO soda_master.receta_ingredientes
+          (receta_id, ingrediente_id, cantidad, opcional, extra, costo_adicional, nombre_display)
+        VALUES (
+          ${recetaId}::uuid,
+          ${line.ingrediente_id}::uuid,
+          ${Number(line.cantidad) || 1},
+          ${!!line.opcional},
+          ${!!line.extra},
+          ${Number(line.costo_adicional) || 0},
+          ${line.nombre_display ?? null}
+        )
+      `
+    }
+    return this.getRecetaProducto(productoId)
+  },
+
+  /** Ingredientes opcionales/extras de la receta para personalización en POS */
+  async getOpcionesRecetaProducto(productoId: string) {
+    const receta = await this.getRecetaProducto(productoId)
+    if (!receta?.ingredientes?.length) return { base: [], opcionales: [], extras: [] }
+    const base = receta.ingredientes.filter((i: any) => !i.opcional && !i.extra)
+    const opcionales = receta.ingredientes.filter((i: any) => i.opcional && !i.extra)
+    const extras = receta.ingredientes.filter((i: any) => i.extra)
+    return { base, opcionales, extras, modo_stock: receta.modo_stock }
+  },
+
+  // ── Proveedores y compras ──────────────────────────────────────────────────
+  // Registrar compras reales actualiza stock e impacta el `costo_unitario` de
+  // cada insumo usando promedio ponderado, para que el margen del menú sea
+  // calculable a partir de precios reales y no estimados.
+
+  async getProveedores(soloActivos = true) {
+    await ensureComprasTables()
+    const sql = getSql()
+    const rows = soloActivos
+      ? await sql`
+          SELECT * FROM soda_master.proveedores
+          WHERE activo = true
+          ORDER BY nombre
+        `
+      : await sql`
+          SELECT * FROM soda_master.proveedores
+          ORDER BY nombre
+        `
+    return rows
+  },
+
+  async crearProveedor(payload: {
+    nombre: string
+    rut?: string
+    contacto?: string
+    telefono?: string
+    email?: string
+    direccion?: string
+    notas?: string
+  }) {
+    await ensureComprasTables()
+    const sql = getSql()
+    const rows = await sql`
+      INSERT INTO soda_master.proveedores
+        (nombre, rut, contacto, telefono, email, direccion, notas)
+      VALUES (
+        ${payload.nombre},
+        ${payload.rut ?? null},
+        ${payload.contacto ?? null},
+        ${payload.telefono ?? null},
+        ${payload.email ?? null},
+        ${payload.direccion ?? null},
+        ${payload.notas ?? null}
+      )
+      RETURNING *
+    `
+    return rows[0]
+  },
+
+  async actualizarProveedor(id: string, payload: {
+    nombre?: string
+    rut?: string
+    contacto?: string
+    telefono?: string
+    email?: string
+    direccion?: string
+    notas?: string
+    activo?: boolean
+  }) {
+    await ensureComprasTables()
+    const sql = getSql()
+    const rows = await sql`
+      UPDATE soda_master.proveedores SET
+        nombre    = COALESCE(${payload.nombre ?? null}, nombre),
+        rut       = COALESCE(${payload.rut ?? null}, rut),
+        contacto  = COALESCE(${payload.contacto ?? null}, contacto),
+        telefono  = COALESCE(${payload.telefono ?? null}, telefono),
+        email     = COALESCE(${payload.email ?? null}, email),
+        direccion = COALESCE(${payload.direccion ?? null}, direccion),
+        notas     = COALESCE(${payload.notas ?? null}, notas),
+        activo    = COALESCE(${payload.activo ?? null}, activo),
+        updated_at = now()
+      WHERE id = ${id}::uuid
+      RETURNING *
+    `
+    return rows[0] || null
+  },
+
+  async getCompras(filter: { limite?: number; proveedorId?: string } = {}) {
+    await ensureComprasTables()
+    const sql = getSql()
+    const limite = Math.min(Math.max(Number(filter.limite) || 100, 1), 500)
+    const rows = filter.proveedorId
+      ? await sql`
+          SELECT c.*, p.nombre AS proveedor_nombre
+          FROM soda_master.compras c
+          LEFT JOIN soda_master.proveedores p ON p.id = c.proveedor_id
+          WHERE c.proveedor_id = ${filter.proveedorId}::uuid
+          ORDER BY c.fecha DESC, c.created_at DESC
+          LIMIT ${limite}
+        `
+      : await sql`
+          SELECT c.*, p.nombre AS proveedor_nombre
+          FROM soda_master.compras c
+          LEFT JOIN soda_master.proveedores p ON p.id = c.proveedor_id
+          ORDER BY c.fecha DESC, c.created_at DESC
+          LIMIT ${limite}
+        `
+    return rows
+  },
+
+  async getCompraDetalle(compraId: string) {
+    await ensureComprasTables()
+    const sql = getSql()
+    const cab = await sql`
+      SELECT c.*, p.nombre AS proveedor_nombre
+      FROM soda_master.compras c
+      LEFT JOIN soda_master.proveedores p ON p.id = c.proveedor_id
+      WHERE c.id = ${compraId}::uuid
+      LIMIT 1
+    `
+    if (!cab[0]) return null
+    const items = await sql`
+      SELECT ci.*, i.nombre AS ingrediente_nombre, i.unidad_medida
+      FROM soda_master.compra_items ci
+      JOIN soda_master.ingredientes i ON i.id = ci.ingrediente_id
+      WHERE ci.compra_id = ${compraId}::uuid
+    `
+    return { ...(cab[0] as any), items }
+  },
+
+  /**
+   * Registra una compra: crea cabecera + ítems, incrementa stock_actual del
+   * insumo y actualiza costo_unitario por promedio ponderado.
+   * `costo_nuevo = (stock_actual*costo_actual + cantidad*precio) / (stock_actual+cantidad)`
+   */
+  async crearCompra(payload: {
+    proveedor_id?: string | null
+    tipo_documento?: 'boleta' | 'factura' | 'nota' | 'otro'
+    numero_documento?: string | null
+    fecha?: string | null
+    impuesto?: number
+    notas?: string | null
+    usuario_id?: string | null
+    items: Array<{
+      ingrediente_id: string
+      cantidad: number
+      precio_unitario: number
+      notas?: string | null
+    }>
+  }) {
+    await ensureComprasTables()
+    const sql = getSql()
+    if (!Array.isArray(payload.items) || payload.items.length === 0) {
+      throw new Error('La compra debe tener al menos un ítem')
+    }
+    for (const it of payload.items) {
+      if (!it.ingrediente_id) throw new Error('Ítem sin ingrediente_id')
+      if (!(Number(it.cantidad) > 0)) throw new Error('Cantidad inválida en ítem')
+      if (!(Number(it.precio_unitario) >= 0)) throw new Error('Precio inválido en ítem')
+    }
+    const subtotal = payload.items.reduce(
+      (s, it) => s + Number(it.cantidad) * Number(it.precio_unitario),
+      0,
+    )
+    const impuesto = Number(payload.impuesto) || 0
+    const total = subtotal + impuesto
+
+    const tipoDoc = payload.tipo_documento || 'boleta'
+    const fecha = payload.fecha || new Date().toISOString().slice(0, 10)
+
+    const cab = await sql`
+      INSERT INTO soda_master.compras
+        (proveedor_id, tipo_documento, numero_documento, fecha, subtotal, impuesto, total, notas, usuario_id)
+      VALUES (
+        ${payload.proveedor_id || null},
+        ${tipoDoc},
+        ${payload.numero_documento || null},
+        ${fecha},
+        ${subtotal},
+        ${impuesto},
+        ${total},
+        ${payload.notas || null},
+        ${payload.usuario_id || null}
+      )
+      RETURNING *
+    `
+    const compra = cab[0] as any
+
+    for (const it of payload.items) {
+      const subt = Number(it.cantidad) * Number(it.precio_unitario)
+      await sql`
+        INSERT INTO soda_master.compra_items
+          (compra_id, ingrediente_id, cantidad, precio_unitario, subtotal, notas)
+        VALUES (
+          ${compra.id}::uuid,
+          ${it.ingrediente_id}::uuid,
+          ${it.cantidad},
+          ${it.precio_unitario},
+          ${subt},
+          ${it.notas || null}
+        )
+      `
+
+      // Promedio ponderado y stock al toque
+      const ingRows = await sql`
+        SELECT stock_actual, costo_unitario
+        FROM soda_master.ingredientes WHERE id = ${it.ingrediente_id}::uuid
+      `
+      const stockActual = Number((ingRows[0] as any)?.stock_actual) || 0
+      const costoActual = Number((ingRows[0] as any)?.costo_unitario) || 0
+      const cantidad = Number(it.cantidad)
+      const precio = Number(it.precio_unitario)
+      const stockNuevo = stockActual + cantidad
+      const costoNuevo =
+        stockNuevo > 0
+          ? (stockActual * costoActual + cantidad * precio) / stockNuevo
+          : precio
+
+      await sql`
+        UPDATE soda_master.ingredientes
+        SET stock_actual = stock_actual + ${cantidad},
+            costo_unitario = ${costoNuevo},
+            updated_at = now()
+        WHERE id = ${it.ingrediente_id}::uuid
+      `
+      await sql`
+        INSERT INTO soda_master.movimientos_inventario
+          (ingrediente_id, tipo, cantidad, compra_id, notas)
+        VALUES (
+          ${it.ingrediente_id}::uuid,
+          'compra',
+          ${cantidad},
+          ${compra.id}::uuid,
+          ${`Compra ${tipoDoc} ${payload.numero_documento || ''}`.trim()}
+        )
+      `
+    }
+
+    return compra
+  },
+
+  /**
+   * Devuelve un análisis de margen por producto: para cada producto con receta,
+   * suma costo_unitario*cantidad de los insumos base y compara con precio.
+   */
+  async getMargenesProductos() {
+    await ensureComprasTables()
+    const sql = getSql()
+    const rows = await sql`
+      SELECT
+        p.id AS producto_id,
+        p.nombre AS producto_nombre,
+        c.nombre AS categoria,
+        p.precio,
+        COALESCE(p.modo_stock, 'producto') AS modo_stock,
+        COALESCE(SUM(
+          CASE WHEN ri.opcional = false AND ri.extra = false
+               THEN ri.cantidad * i.costo_unitario ELSE 0 END
+        ), 0)::NUMERIC(12,2) AS costo_receta
+      FROM soda_master.productos p
+      LEFT JOIN soda_master.categorias c ON c.id = p.categoria_id
+      LEFT JOIN soda_master.recetas r ON r.producto_id = p.id AND r.activo = true
+      LEFT JOIN soda_master.receta_ingredientes ri ON ri.receta_id = r.id
+      LEFT JOIN soda_master.ingredientes i ON i.id = ri.ingrediente_id
+      WHERE p.activo = true
+      GROUP BY p.id, p.nombre, c.nombre, p.precio, p.modo_stock
+      ORDER BY p.nombre
+    `
+    return (rows as any[]).map((r) => {
+      const precio = Number(r.precio) || 0
+      const costo = Number(r.costo_receta) || 0
+      const margen = precio - costo
+      const pct = precio > 0 ? (margen / precio) * 100 : 0
+      return {
+        producto_id: r.producto_id,
+        producto_nombre: r.producto_nombre,
+        categoria: r.categoria || 'sin_categoria',
+        modo_stock: r.modo_stock,
+        precio,
+        costo_receta: costo,
+        margen,
+        margen_pct: Number(pct.toFixed(2)),
+      }
+    })
+  },
+
+  // ── Activos / depreciación ────────────────────────────────────────────────
+  // Depreciación lineal:
+  //   depreciacion_mensual = (costo_compra - valor_residual) / vida_util_meses
+  //   acumulada = min(meses_transcurridos, vida_util_meses) * depreciacion_mensual
+  //   valor_actual = costo_compra - acumulada (mínimo = valor_residual)
+
+  async getActivos(soloActivos = true) {
+    await ensureFinanzasTables()
+    const sql = getSql()
+    const rows = soloActivos
+      ? await sql`
+          SELECT a.*, p.nombre AS proveedor_nombre
+          FROM soda_master.activos a
+          LEFT JOIN soda_master.proveedores p ON p.id = a.proveedor_id
+          WHERE a.estado = 'activo'
+          ORDER BY a.nombre
+        `
+      : await sql`
+          SELECT a.*, p.nombre AS proveedor_nombre
+          FROM soda_master.activos a
+          LEFT JOIN soda_master.proveedores p ON p.id = a.proveedor_id
+          ORDER BY a.nombre
+        `
+    return (rows as any[]).map((a) => computarDepreciacion(a))
+  },
+
+  async crearActivo(payload: {
+    nombre: string
+    categoria?: string
+    descripcion?: string
+    fecha_compra?: string
+    costo_compra: number
+    vida_util_meses: number
+    valor_residual?: number
+    metodo_depreciacion?: string
+    proveedor_id?: string | null
+    ubicacion?: string
+    numero_serie?: string
+    notas?: string
+  }) {
+    await ensureFinanzasTables()
+    const sql = getSql()
+    const fecha = payload.fecha_compra || new Date().toISOString().slice(0, 10)
+    const rows = await sql`
+      INSERT INTO soda_master.activos (
+        nombre, categoria, descripcion, fecha_compra, costo_compra,
+        vida_util_meses, valor_residual, metodo_depreciacion,
+        proveedor_id, ubicacion, numero_serie, notas
+      ) VALUES (
+        ${payload.nombre},
+        ${payload.categoria || 'maquinaria'},
+        ${payload.descripcion || null},
+        ${fecha},
+        ${payload.costo_compra},
+        ${payload.vida_util_meses},
+        ${payload.valor_residual ?? 0},
+        ${payload.metodo_depreciacion || 'lineal'},
+        ${payload.proveedor_id || null},
+        ${payload.ubicacion || null},
+        ${payload.numero_serie || null},
+        ${payload.notas || null}
+      )
+      RETURNING *
+    `
+    return computarDepreciacion(rows[0])
+  },
+
+  async actualizarActivo(id: string, payload: {
+    nombre?: string
+    categoria?: string
+    descripcion?: string
+    fecha_compra?: string
+    costo_compra?: number
+    vida_util_meses?: number
+    valor_residual?: number
+    metodo_depreciacion?: string
+    proveedor_id?: string | null
+    ubicacion?: string
+    numero_serie?: string
+    estado?: string
+    notas?: string
+  }) {
+    await ensureFinanzasTables()
+    const sql = getSql()
+    const rows = await sql`
+      UPDATE soda_master.activos SET
+        nombre              = COALESCE(${payload.nombre ?? null}, nombre),
+        categoria           = COALESCE(${payload.categoria ?? null}, categoria),
+        descripcion         = COALESCE(${payload.descripcion ?? null}, descripcion),
+        fecha_compra        = COALESCE(${payload.fecha_compra ?? null}::date, fecha_compra),
+        costo_compra        = COALESCE(${payload.costo_compra ?? null}, costo_compra),
+        vida_util_meses     = COALESCE(${payload.vida_util_meses ?? null}, vida_util_meses),
+        valor_residual      = COALESCE(${payload.valor_residual ?? null}, valor_residual),
+        metodo_depreciacion = COALESCE(${payload.metodo_depreciacion ?? null}, metodo_depreciacion),
+        proveedor_id        = COALESCE(${payload.proveedor_id ?? null}, proveedor_id),
+        ubicacion           = COALESCE(${payload.ubicacion ?? null}, ubicacion),
+        numero_serie        = COALESCE(${payload.numero_serie ?? null}, numero_serie),
+        estado              = COALESCE(${payload.estado ?? null}, estado),
+        notas               = COALESCE(${payload.notas ?? null}, notas),
+        updated_at = now()
+      WHERE id = ${id}::uuid
+      RETURNING *
+    `
+    return rows[0] ? computarDepreciacion(rows[0]) : null
+  },
+
+  async eliminarActivo(id: string) {
+    await ensureFinanzasTables()
+    const sql = getSql()
+    await sql`DELETE FROM soda_master.activos WHERE id = ${id}::uuid`
+    return { ok: true }
+  },
+
+  /**
+   * Resumen de depreciación de todo el portfolio para un periodo (mes/año).
+   */
+  async getResumenDepreciacion(periodo?: { year: number; month: number }) {
+    const activos = await this.getActivos(true)
+    const total = activos.reduce(
+      (acc, a: any) => {
+        acc.costo += Number(a.costo_compra) || 0
+        acc.depMensual += Number(a.depreciacion_mensual) || 0
+        acc.depAcumulada += Number(a.depreciacion_acumulada) || 0
+        acc.valorActual += Number(a.valor_actual) || 0
+        return acc
+      },
+      { costo: 0, depMensual: 0, depAcumulada: 0, valorActual: 0 },
+    )
+    return { activos, total, periodo: periodo || null }
+  },
+
+  // ── Empleados ──────────────────────────────────────────────────────────────
+  async getEmpleados(soloActivos = true) {
+    await ensureFinanzasTables()
+    const sql = getSql()
+    const rows = soloActivos
+      ? await sql`SELECT * FROM soda_master.empleados WHERE activo = true ORDER BY nombre`
+      : await sql`SELECT * FROM soda_master.empleados ORDER BY nombre`
+    return rows
+  },
+
+  async crearEmpleado(payload: {
+    nombre: string
+    cargo?: string
+    documento?: string
+    telefono?: string
+    email?: string
+    sueldo_base: number
+    periodicidad?: string
+    fecha_ingreso?: string
+    usuario_id?: string | null
+    notas?: string
+  }) {
+    await ensureFinanzasTables()
+    const sql = getSql()
+    const rows = await sql`
+      INSERT INTO soda_master.empleados (
+        nombre, cargo, documento, telefono, email,
+        sueldo_base, periodicidad, fecha_ingreso, usuario_id, notas
+      ) VALUES (
+        ${payload.nombre},
+        ${payload.cargo || null},
+        ${payload.documento || null},
+        ${payload.telefono || null},
+        ${payload.email || null},
+        ${payload.sueldo_base},
+        ${payload.periodicidad || 'mensual'},
+        ${payload.fecha_ingreso || null},
+        ${payload.usuario_id || null},
+        ${payload.notas || null}
+      )
+      RETURNING *
+    `
+    return rows[0]
+  },
+
+  async actualizarEmpleado(id: string, payload: {
+    nombre?: string
+    cargo?: string
+    documento?: string
+    telefono?: string
+    email?: string
+    sueldo_base?: number
+    periodicidad?: string
+    fecha_ingreso?: string
+    fecha_egreso?: string
+    activo?: boolean
+    usuario_id?: string | null
+    notas?: string
+  }) {
+    await ensureFinanzasTables()
+    const sql = getSql()
+    const rows = await sql`
+      UPDATE soda_master.empleados SET
+        nombre        = COALESCE(${payload.nombre ?? null}, nombre),
+        cargo         = COALESCE(${payload.cargo ?? null}, cargo),
+        documento     = COALESCE(${payload.documento ?? null}, documento),
+        telefono      = COALESCE(${payload.telefono ?? null}, telefono),
+        email         = COALESCE(${payload.email ?? null}, email),
+        sueldo_base   = COALESCE(${payload.sueldo_base ?? null}, sueldo_base),
+        periodicidad  = COALESCE(${payload.periodicidad ?? null}, periodicidad),
+        fecha_ingreso = COALESCE(${payload.fecha_ingreso ?? null}::date, fecha_ingreso),
+        fecha_egreso  = COALESCE(${payload.fecha_egreso ?? null}::date, fecha_egreso),
+        activo        = COALESCE(${payload.activo ?? null}, activo),
+        usuario_id    = COALESCE(${payload.usuario_id ?? null}, usuario_id),
+        notas         = COALESCE(${payload.notas ?? null}, notas),
+        updated_at = now()
+      WHERE id = ${id}::uuid
+      RETURNING *
+    `
+    return rows[0] || null
+  },
+
+  // ── Gastos del negocio ─────────────────────────────────────────────────────
+  async getGastos(filter: { desde?: string; hasta?: string; tipo?: string; limite?: number } = {}) {
+    await ensureFinanzasTables()
+    const sql = getSql()
+    const limite = Math.min(Math.max(Number(filter.limite) || 200, 1), 1000)
+    const desde = filter.desde || '1900-01-01'
+    const hasta = filter.hasta || '2999-12-31'
+    const tipo = filter.tipo && filter.tipo !== 'all' ? filter.tipo : null
+    const rows = tipo
+      ? await sql`
+          SELECT g.*, p.nombre AS proveedor_nombre, e.nombre AS empleado_nombre, a.nombre AS activo_nombre
+          FROM soda_master.gastos g
+          LEFT JOIN soda_master.proveedores p ON p.id = g.proveedor_id
+          LEFT JOIN soda_master.empleados e ON e.id = g.empleado_id
+          LEFT JOIN soda_master.activos a ON a.id = g.activo_id
+          WHERE g.fecha BETWEEN ${desde}::date AND ${hasta}::date
+            AND g.tipo = ${tipo}
+          ORDER BY g.fecha DESC, g.created_at DESC
+          LIMIT ${limite}
+        `
+      : await sql`
+          SELECT g.*, p.nombre AS proveedor_nombre, e.nombre AS empleado_nombre, a.nombre AS activo_nombre
+          FROM soda_master.gastos g
+          LEFT JOIN soda_master.proveedores p ON p.id = g.proveedor_id
+          LEFT JOIN soda_master.empleados e ON e.id = g.empleado_id
+          LEFT JOIN soda_master.activos a ON a.id = g.activo_id
+          WHERE g.fecha BETWEEN ${desde}::date AND ${hasta}::date
+          ORDER BY g.fecha DESC, g.created_at DESC
+          LIMIT ${limite}
+        `
+    return rows
+  },
+
+  async crearGasto(payload: {
+    fecha?: string
+    categoria?: string
+    descripcion?: string
+    monto: number
+    tipo?: string
+    recurrente?: boolean
+    periodicidad?: string
+    proveedor_id?: string | null
+    empleado_id?: string | null
+    activo_id?: string | null
+    usuario_id?: string | null
+    notas?: string
+  }) {
+    await ensureFinanzasTables()
+    const sql = getSql()
+    const fecha = payload.fecha || new Date().toISOString().slice(0, 10)
+    const tipo = payload.tipo || 'operativo'
+    const rows = await sql`
+      INSERT INTO soda_master.gastos (
+        fecha, categoria, descripcion, monto, tipo, recurrente, periodicidad,
+        proveedor_id, empleado_id, activo_id, usuario_id, notas
+      ) VALUES (
+        ${fecha}::date,
+        ${payload.categoria || 'otros'},
+        ${payload.descripcion || null},
+        ${payload.monto},
+        ${tipo},
+        ${payload.recurrente ?? false},
+        ${payload.periodicidad || null},
+        ${payload.proveedor_id || null},
+        ${payload.empleado_id || null},
+        ${payload.activo_id || null},
+        ${payload.usuario_id || null},
+        ${payload.notas || null}
+      )
+      RETURNING *
+    `
+    return rows[0]
+  },
+
+  async eliminarGasto(id: string) {
+    await ensureFinanzasTables()
+    const sql = getSql()
+    await sql`DELETE FROM soda_master.gastos WHERE id = ${id}::uuid`
+    return { ok: true }
+  },
+
+  async getResumenGastos(filter: { desde?: string; hasta?: string } = {}) {
+    await ensureFinanzasTables()
+    const sql = getSql()
+    const desde = filter.desde || new Date(new Date().getFullYear(), new Date().getMonth(), 1)
+      .toISOString().slice(0, 10)
+    const hasta = filter.hasta || new Date().toISOString().slice(0, 10)
+    const porTipo = await sql`
+      SELECT tipo, COALESCE(SUM(monto),0)::NUMERIC(14,2) AS total, COUNT(*)::INT AS cantidad
+      FROM soda_master.gastos
+      WHERE fecha BETWEEN ${desde}::date AND ${hasta}::date
+      GROUP BY tipo
+      ORDER BY total DESC
+    `
+    const totalRow = await sql`
+      SELECT COALESCE(SUM(monto),0)::NUMERIC(14,2) AS total
+      FROM soda_master.gastos
+      WHERE fecha BETWEEN ${desde}::date AND ${hasta}::date
+    `
+    const sueldosActivosRow = await sql`
+      SELECT COALESCE(SUM(
+        CASE periodicidad
+          WHEN 'mensual' THEN sueldo_base
+          WHEN 'quincenal' THEN sueldo_base * 2
+          WHEN 'semanal' THEN sueldo_base * 4
+          WHEN 'diario' THEN sueldo_base * 30
+          WHEN 'por_hora' THEN sueldo_base * 160
+          ELSE sueldo_base
+        END
+      ),0)::NUMERIC(14,2) AS sueldos_mensuales
+      FROM soda_master.empleados
+      WHERE activo = true
+    `
+    return {
+      desde,
+      hasta,
+      total: Number((totalRow[0] as any).total) || 0,
+      por_tipo: porTipo,
+      sueldos_proyectados_mes: Number((sueldosActivosRow[0] as any).sueldos_mensuales) || 0,
+    }
   },
 
   // ── Notificaciones cross-device ────────────────────────────────────────────
