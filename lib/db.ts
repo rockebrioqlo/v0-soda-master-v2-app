@@ -1818,7 +1818,14 @@ export const db = {
     autorizado_por_nombre?: string | null
     tasa_impuesto?: number
     impuesto_habilitado?: boolean
-  }): Promise<{ id: string; monto_perdido: number; cantidad_items: number }> {
+  }): Promise<{
+    id: string
+    monto_perdido: number
+    cantidad_items: number
+    responsable_id: string | null
+    responsable_nombre: string | null
+    responsable_rol: string | null
+  }> {
     await ensurePerdidasTable()
     await ensureItemPagoSchema()
     await ensureOrdenEstadoSchema()
