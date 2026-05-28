@@ -12,6 +12,7 @@ import {
   BarChart3,
   Settings,
   AlertTriangle,
+  Wallet,
   MoreHorizontal,
   X,
 } from 'lucide-react'
@@ -24,6 +25,7 @@ type PageType =
   | 'pos'
   | 'kds'
   | 'inventario'
+  | 'finanzas'
   | 'usuarios'
   | 'pagos'
   | 'mermas'
@@ -43,6 +45,7 @@ const ALL_ITEMS: NavEntry[] = [
   { page: 'pos', label: 'POS', icon: <ShoppingCart className="h-5 w-5" />, modulo: 'pos' },
   { page: 'kds', label: 'Cocina', icon: <ChefHat className="h-5 w-5" />, modulo: 'kds' },
   { page: 'inventario', label: 'Inventario', icon: <Package className="h-5 w-5" />, modulo: 'inventario' },
+  { page: 'finanzas', label: 'Finanzas', icon: <Wallet className="h-5 w-5" />, modulo: 'finanzas' },
   { page: 'usuarios', label: 'Usuarios', icon: <Users className="h-5 w-5" />, modulo: 'usuarios' },
   { page: 'pagos', label: 'Pagos', icon: <CreditCard className="h-5 w-5" />, modulo: 'pagos' },
   { page: 'mermas', label: 'Mermas', icon: <AlertTriangle className="h-5 w-5" />, modulo: 'mermas' },

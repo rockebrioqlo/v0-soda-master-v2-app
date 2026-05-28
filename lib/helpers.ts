@@ -73,8 +73,11 @@ export function getEstadoComandaColor(estado: string): string {
     en_cocina: 'bg-orange-500',
     en_preparacion: 'bg-yellow-500',
     listo: 'bg-green-500',
+    entregado: 'bg-emerald-600',
     problema: 'bg-red-500',
     pagado: 'bg-blue-500',
+    cancelado: 'bg-zinc-500',
+    perdida: 'bg-rose-700',
   }
   return colors[estado] || 'bg-gray-500'
 }
@@ -85,8 +88,11 @@ export function getEstadoComandaLabel(estado: string): string {
     en_cocina: 'En Cocina',
     en_preparacion: 'En Preparación',
     listo: 'Listo',
+    entregado: 'Entregado',
     problema: 'Problema',
     pagado: 'Pagado',
+    cancelado: 'Cancelada',
+    perdida: 'Perro muerto',
   }
   return labels[estado] || estado
 }

@@ -9,6 +9,7 @@ import { MesasPage } from "@/components/mesas-page"
 import { POSPage } from "@/components/pos-page"
 import { KDSPage } from "@/components/kds-page"
 import { InventarioPage } from "@/components/inventario-page"
+import { FinanzasPage } from "@/components/finanzas-page"
 import { UsuariosPage } from "@/components/usuarios-page"
 import { PagosPage } from "@/components/pagos-page"
 import { MermasPage } from "@/components/mermas-page"
@@ -57,6 +58,8 @@ function AppContent() {
         return <KDSPage />
       case "inventario":
         return <InventarioPage />
+      case "finanzas":
+        return <FinanzasPage />
       case "usuarios":
         return <UsuariosPage />
       case "pagos":

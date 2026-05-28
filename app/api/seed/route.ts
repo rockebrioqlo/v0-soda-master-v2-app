@@ -1,5 +1,6 @@
 import { neon } from '@neondatabase/serverless'
 import bcryptjs from 'bcryptjs'
+import { runSeedRecetasBase } from '@/lib/seed-recetas'
 
 // Checks if DB already has data - if yes, returns status. If no, seeds it.
 export async function POST() {
@@ -115,9 +116,13 @@ export async function POST() {
       `
     }
 
+    const recetasSeed = await runSeedRecetasBase()
+
     return Response.json({
       message: 'Base de datos inicializada correctamente',
       productos: insertedProds.length,
+      insumos: recetasSeed.insumos,
+      recetas: recetasSeed.recetas,
     })
   } catch (error) {
     console.error('[seed] error:', error)

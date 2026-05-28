@@ -72,7 +72,9 @@ export function KDSPage() {
     }
   }
 
-  // Filter comandas that are in kitchen flow
+  // Filter comandas that are still being prepared in cocina/bar.
+  // Once the comanda transitions to 'listo' or 'entregado' it is the mesero's
+  // responsibility (delivery widget in POS), so the KDS drops it.
   const comandasActivas = comandas.filter(
     (c) => c.estado === 'en_cocina' || c.estado === 'en_preparacion'
   )
@@ -87,11 +89,19 @@ export function KDSPage() {
 
   const isCocinaItem = (item: ItemComanda) => !isBarItem(item)
 
+  // Dejamos los ítems 'listo' a la vista (en verde tachado) para que el
+  // cocinero/bartender vea qué ya completó dentro de esa comanda; sólo
+  // ocultamos 'entregado' (eso ya está fuera de su estación). El card
+  // sólo se quita por completo cuando TODOS los ítems pasaron a listo
+  // (y la orden cambia a estado 'listo'), que es manejado por
+  // `comandasActivas` arriba.
   const getComandasForSection = (filterFn: (item: ItemComanda) => boolean) =>
     comandasActivas
       .map((comanda) => ({
         ...comanda,
-        items: comanda.items.filter((item) => filterFn(item) && item.estado !== 'listo'),
+        items: comanda.items.filter(
+          (item) => filterFn(item) && item.estado !== 'entregado'
+        ),
       }))
       .filter((comanda) => comanda.items.length > 0)
 
@@ -125,14 +135,36 @@ export function KDSPage() {
         itemIdsSet.has(item.id) ? { ...item, estado: estado as ItemComanda['estado'] } : item
       )
       const todosListos = itemsActualizados.length > 0 && itemsActualizados.every((item) => item.estado === 'listo')
+      // El estado de la ORDEN refleja lo "mas avanzado" de sus items pero
+      // sin saltarse: si marcamos sólo uno como listo, la orden sigue en
+      // 'en_preparacion' y nadie en el KDS la pierde de vista. Recién
+      // cuando TODOS quedaron listos, la orden pasa a 'listo' y sale del
+      // KDS hacia el widget de entregas.
       const estadoOrden = estado === 'listo'
         ? (todosListos ? 'listo' : 'en_preparacion')
         : estado
       await updateOrden(comandaId, { estado: estadoOrden })
       await recargarOrdenes()
-      const label =
-        estado === 'en_preparacion' ? 'En preparacion' : 'Lista para entregar'
-      showToast(`${comanda.mesaNombre} - ${label}`, 'success')
+
+      // Toast con contexto: si fue un solo ítem, mencionamos su nombre.
+      // Si fueron varios (bulk), avisamos cuántos.
+      const itemsAfectados = comanda.items.filter((it) => itemIdsSet.has(it.id))
+      const accion =
+        estado === 'en_preparacion'
+          ? 'en preparación'
+          : estado === 'listo'
+            ? todosListos
+              ? 'lista para entregar'
+              : 'listo'
+            : estado
+      let detalle: string
+      if (itemsAfectados.length === 1) {
+        const it = itemsAfectados[0]
+        detalle = `${it.productoNombre}`
+      } else {
+        detalle = `${itemsAfectados.length} items`
+      }
+      showToast(`${comanda.mesaNombre} • ${detalle} — ${accion}`, 'success')
 
       // Cuando toda la comanda quedó lista, avisar al mesero para que la
       // retire. Esto cierra el ciclo cocina↔mesero sin requerir que el
@@ -327,6 +359,13 @@ function EmptyState({ small = false }: { small?: boolean }) {
 }
 
 // Comanda Card
+//
+// El KDS muestra los ítems de una comanda agrupados por estación. Cada
+// ítem se puede mover de estado por separado: típicamente un jugo o una
+// cerveza está listo antes que la burger, y queremos avisar al mesero a
+// medida que cada producto está. Por eso cada `<li>` tiene sus propios
+// botones de "Preparando / Listo / Problema". Además hay un bloque
+// "Todos los pendientes →" abajo para mover en bulk cuando hace falta.
 function ComandaCard({
   comanda,
   onMarkReady,
@@ -342,16 +381,63 @@ function ComandaCard({
   isDelayed: boolean
   isBar?: boolean
 }) {
-  const [isUpdating, setIsUpdating] = useState(false)
+  const [updatingIds, setUpdatingIds] = useState<Set<string>>(new Set())
+  const [bulkUpdating, setBulkUpdating] = useState(false)
 
-  const handleStateChange = async (estado: string) => {
-    setIsUpdating(true)
+  const handleItemStateChange = async (itemId: string, estado: string) => {
+    setUpdatingIds((prev) => {
+      const next = new Set(prev)
+      next.add(itemId)
+      return next
+    })
     try {
-      await onMarkReady(comanda.id, estado, comanda.items.map((item) => item.id))
+      await onMarkReady(comanda.id, estado, [itemId])
     } finally {
-      setIsUpdating(false)
+      setUpdatingIds((prev) => {
+        const next = new Set(prev)
+        next.delete(itemId)
+        return next
+      })
     }
   }
+
+  // Bulk: aplica el estado a todos los ítems aún pendientes (no listos,
+  // no entregados). Útil cuando cocina termina varios ítems a la vez.
+  const handleBulkStateChange = async (estado: string) => {
+    const pendientes = comanda.items.filter(
+      (item) => item.estado !== 'listo' && item.estado !== 'entregado',
+    )
+    if (pendientes.length === 0) return
+    setBulkUpdating(true)
+    try {
+      await onMarkReady(
+        comanda.id,
+        estado,
+        pendientes.map((it) => it.id),
+      )
+    } finally {
+      setBulkUpdating(false)
+    }
+  }
+
+  const itemBadge = (estado: ItemComanda['estado']) => {
+    switch (estado) {
+      case 'listo':
+        return <Badge className="bg-green-600 text-white text-xs">Listo</Badge>
+      case 'en_preparacion':
+        return <Badge className="bg-amber-500 text-zinc-900 text-xs">Preparando</Badge>
+      case 'problema':
+        return <Badge className="bg-red-500 text-white text-xs">Problema</Badge>
+      case 'entregado':
+        return <Badge className="bg-zinc-500 text-white text-xs">Entregado</Badge>
+      default:
+        return <Badge variant="outline" className="text-xs">Pendiente</Badge>
+    }
+  }
+
+  const itemsPendientes = comanda.items.filter(
+    (item) => item.estado !== 'listo' && item.estado !== 'entregado',
+  )
 
   return (
     <Card
@@ -400,75 +486,144 @@ function ComandaCard({
       </CardHeader>
 
       <CardContent>
-        <ul className="mb-4 space-y-2">
-          {comanda.items.map((item) => (
-            <li key={item.id} className="rounded-lg bg-muted p-3">
-              <div className="flex items-start justify-between">
-                <span className="text-lg font-bold text-foreground">
-                  {item.cantidad}x {item.productoNombre}
-                </span>
-                {item.variante && (
-                  <span className="text-xs text-muted-foreground">({item.variante})</span>
+        <ul className="mb-4 space-y-3">
+          {comanda.items.map((item) => {
+            const isItemUpdating = updatingIds.has(item.id) || bulkUpdating
+            const listo = item.estado === 'listo' || item.estado === 'entregado'
+            return (
+              <li
+                key={item.id}
+                className={cn(
+                  'rounded-lg p-3 transition-colors',
+                  listo
+                    ? 'bg-green-500/10 border border-green-500/30'
+                    : 'bg-muted',
                 )}
-              </div>
-              {item.ingredientesEstandar?.length > 0 && (
-                <p className="mt-1 text-sm text-foreground">
-                  + {item.ingredientesEstandar.join(', ')}
-                </p>
-              )}
-              {item.ingredientesEspeciales?.length > 0 && (
-                <p className="mt-1 text-sm text-amber-500">
-                  ⭐ Especiales: {item.ingredientesEspeciales.map(esp => esp.nombre).join(', ')}
-                </p>
-              )}
-              {item.notaEspecial && (
-                <p className="mt-1 rounded bg-amber-500/15 p-2 text-sm font-medium text-amber-600">
-                  📝 {item.notaEspecial}
-                </p>
-              )}
-              {item.salsaSeleccionada && (
-                <p className="mt-1 text-sm text-muted-foreground">
-                  Salsa: {item.salsaSeleccionada}
-                </p>
-              )}
-              {item.notas && (
-                <p className="mt-1 rounded bg-yellow-500/20 p-2 text-sm font-medium text-yellow-600">
-                  Nota: {item.notas}
-                </p>
-              )}
-            </li>
-          ))}
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <span
+                    className={cn(
+                      'text-lg font-bold text-foreground',
+                      listo && 'line-through opacity-70',
+                    )}
+                  >
+                    {item.cantidad}x {item.productoNombre}
+                  </span>
+                  <div className="flex items-center gap-2">
+                    {item.variante && (
+                      <span className="text-xs text-muted-foreground">
+                        ({item.variante})
+                      </span>
+                    )}
+                    {itemBadge(item.estado)}
+                  </div>
+                </div>
+                {item.ingredientesEstandar?.length > 0 && (
+                  <p className="mt-1 text-sm text-foreground">
+                    + {item.ingredientesEstandar.join(', ')}
+                  </p>
+                )}
+                {item.ingredientesEspeciales?.length > 0 && (
+                  <p className="mt-1 text-sm text-amber-500">
+                    ⭐ Especiales:{' '}
+                    {item.ingredientesEspeciales.map((esp) => esp.nombre).join(', ')}
+                  </p>
+                )}
+                {item.notaEspecial && (
+                  <p className="mt-1 rounded bg-amber-500/15 p-2 text-sm font-medium text-amber-600">
+                    📝 {item.notaEspecial}
+                  </p>
+                )}
+                {item.salsaSeleccionada && (
+                  <p className="mt-1 text-sm text-muted-foreground">
+                    Salsa: {item.salsaSeleccionada}
+                  </p>
+                )}
+                {item.notas && (
+                  <p className="mt-1 rounded bg-yellow-500/20 p-2 text-sm font-medium text-yellow-600">
+                    Nota: {item.notas}
+                  </p>
+                )}
+
+                {/* Botones por ítem. Sólo se muestran cuando todavía hay
+                    algo que hacer con este ítem; si ya está listo o
+                    entregado, mostramos solo el badge. */}
+                {!listo && (
+                  <div className="mt-2 grid grid-cols-3 gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="min-h-[40px] text-xs font-semibold"
+                      onClick={() => handleItemStateChange(item.id, 'en_preparacion')}
+                      disabled={isItemUpdating || item.estado === 'en_preparacion'}
+                    >
+                      <Zap className="mr-1 h-3 w-3" />
+                      Preparando
+                    </Button>
+                    <Button
+                      size="sm"
+                      className="bg-green-600 min-h-[40px] text-xs font-bold text-white hover:bg-green-500"
+                      onClick={() => handleItemStateChange(item.id, 'listo')}
+                      disabled={isItemUpdating}
+                    >
+                      <Check className="mr-1 h-4 w-4" />
+                      Listo
+                    </Button>
+                    <Button
+                      variant="destructive"
+                      size="sm"
+                      className="min-h-[40px] text-xs font-semibold"
+                      onClick={() => handleItemStateChange(item.id, 'problema')}
+                      disabled={isItemUpdating}
+                    >
+                      <AlertCircle className="mr-1 h-3 w-3" />
+                      Problema
+                    </Button>
+                  </div>
+                )}
+              </li>
+            )
+          })}
         </ul>
 
-        {/* Action buttons — touch-friendly */}
-        <div className="grid grid-cols-3 gap-2">
-          <Button
-            variant="outline"
-            className="border-border min-h-[56px] text-sm font-semibold"
-            onClick={() => handleStateChange('en_preparacion')}
-            disabled={isUpdating}
-          >
-            <Zap className="mr-1 h-4 w-4" />
-            Preparando
-          </Button>
-          <Button
-            className="bg-green-600 min-h-[56px] text-base font-bold text-white hover:bg-green-500"
-            onClick={() => handleStateChange('listo')}
-            disabled={isUpdating}
-          >
-            <Check className="mr-1 h-5 w-5" />
-            Listo
-          </Button>
-          <Button
-            variant="destructive"
-            className="min-h-[56px] text-sm font-semibold"
-            onClick={() => handleStateChange('problema')}
-            disabled={isUpdating}
-          >
-            <AlertCircle className="mr-1 h-4 w-4" />
-            Problema
-          </Button>
-        </div>
+        {/* Bulk para mover todos los pendientes a la vez. Cuando ya no
+            quedan pendientes, ocultamos los botones (la comanda está por
+            salir del KDS apenas se actualicen los listados). */}
+        {itemsPendientes.length > 0 && (
+          <div className="rounded-lg border border-dashed border-border p-2">
+            <p className="mb-2 text-center text-xs uppercase tracking-wide text-muted-foreground">
+              Todos los pendientes ({itemsPendientes.length})
+            </p>
+            <div className="grid grid-cols-3 gap-2">
+              <Button
+                variant="outline"
+                className="border-border min-h-[44px] text-xs font-semibold"
+                onClick={() => handleBulkStateChange('en_preparacion')}
+                disabled={bulkUpdating}
+              >
+                <Zap className="mr-1 h-3 w-3" />
+                Preparando
+              </Button>
+              <Button
+                className="bg-green-600 min-h-[44px] text-sm font-bold text-white hover:bg-green-500"
+                onClick={() => handleBulkStateChange('listo')}
+                disabled={bulkUpdating}
+              >
+                <Check className="mr-1 h-4 w-4" />
+                Listo
+              </Button>
+              <Button
+                variant="destructive"
+                className="min-h-[44px] text-xs font-semibold"
+                onClick={() => handleBulkStateChange('problema')}
+                disabled={bulkUpdating}
+              >
+                <AlertCircle className="mr-1 h-3 w-3" />
+                Problema
+              </Button>
+            </div>
+          </div>
+        )}
       </CardContent>
     </Card>
   )

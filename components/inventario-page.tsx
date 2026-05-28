@@ -29,7 +29,25 @@ import {
 } from '@/components/ui/table'
 import { cn } from '@/lib/utils'
 import { formatCurrency } from '@/lib/helpers'
-import { Edit, AlertTriangle, Package, Search, RefreshCw, Star } from 'lucide-react'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import {
+  Edit,
+  AlertTriangle,
+  Package,
+  Search,
+  RefreshCw,
+  Star,
+  Plus,
+  BookOpen,
+  FlaskConical,
+  Truck,
+  ShoppingBag,
+  TrendingUp,
+} from 'lucide-react'
+import { RecetaEditorDialog } from '@/components/receta-editor-dialog'
+import { ProveedoresTab } from '@/components/proveedores-tab'
+import { ComprasTab } from '@/components/compras-tab'
+import { MargenesTab } from '@/components/margenes-tab'
 import { showToast } from '@/components/toast'
 import { Switch } from '@/components/ui/switch'
 
@@ -45,6 +63,18 @@ interface InventarioRow {
   precio?: number
   es_ingrediente_especial?: boolean
   costo_adicional?: number
+  modo_stock?: string
+}
+
+interface InsumoRow {
+  id: string
+  nombre: string
+  categoria: string
+  unidad_medida: string
+  stock_actual: number
+  stock_minimo: number
+  costo_unitario: number
+  tipo?: 'comida' | 'negocio' | 'otro'
 }
 
 const CATEGORIAS = [
@@ -57,9 +87,36 @@ const CATEGORIAS = [
   { value: 'tragos',          label: 'Tragos' },
 ]
 
+const MODO_STOCK_LABEL: Record<string, string> = {
+  producto: 'Producto',
+  receta: 'Receta',
+  producto_y_receta: 'Producto + receta',
+}
+
 export function InventarioPage() {
+  const [mainTab, setMainTab] = useState<
+    'productos' | 'insumos' | 'proveedores' | 'compras' | 'margenes'
+  >('productos')
   const [items, setItems]               = useState<InventarioRow[]>([])
+  const [insumos, setInsumos]           = useState<InsumoRow[]>([])
   const [loading, setLoading]           = useState(true)
+  const [loadingInsumos, setLoadingInsumos] = useState(false)
+  const [seedingRecetas, setSeedingRecetas] = useState(false)
+  const [recetaProducto, setRecetaProducto] = useState<{ id: string; nombre: string } | null>(null)
+  const [showInsumoDialog, setShowInsumoDialog] = useState(false)
+  const [editingInsumo, setEditingInsumo] = useState<InsumoRow | null>(null)
+  const [insumoForm, setInsumoForm] = useState({
+    nombre: '',
+    categoria: 'insumos',
+    unidad_medida: 'unidad',
+    stock_actual: '0',
+    stock_minimo: '0',
+    costo_unitario: '0',
+    tipo: 'comida' as 'comida' | 'negocio' | 'otro',
+  })
+  const [filtroTipoInsumo, setFiltroTipoInsumo] = useState<'all' | 'comida' | 'negocio' | 'otro'>(
+    'all',
+  )
   const [searchTerm, setSearchTerm]     = useState('')
   const [catFilter, setCatFilter]       = useState('all')
   const [showDialog, setShowDialog]     = useState(false)
@@ -90,7 +147,77 @@ export function InventarioPage() {
     }
   }, [])
 
+  const loadInsumos = useCallback(async () => {
+    setLoadingInsumos(true)
+    try {
+      const res = await fetch('/api/ingredientes')
+      if (res.ok) {
+        const data = await res.json()
+        setInsumos(Array.isArray(data) ? data : [])
+      }
+    } catch {
+      showToast('Error al cargar insumos', 'error')
+    } finally {
+      setLoadingInsumos(false)
+    }
+  }, [])
+
   useEffect(() => { loadInventario() }, [loadInventario])
+  useEffect(() => {
+    if (mainTab === 'insumos') loadInsumos()
+  }, [mainTab, loadInsumos])
+
+  const handleSeedRecetas = async () => {
+    setSeedingRecetas(true)
+    try {
+      const res = await fetch('/api/seed-recetas', { method: 'POST' })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.error || 'Error en seed')
+      showToast(`Recetas: ${data.recetas}, insumos: ${data.insumos}`, 'success')
+      await loadInventario()
+      await loadInsumos()
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : 'Error', 'error')
+    } finally {
+      setSeedingRecetas(false)
+    }
+  }
+
+  const handleSaveInsumo = async () => {
+    const payload = {
+      nombre: insumoForm.nombre.trim(),
+      categoria: insumoForm.categoria,
+      unidad_medida: insumoForm.unidad_medida,
+      stock_actual: Number(insumoForm.stock_actual) || 0,
+      stock_minimo: Number(insumoForm.stock_minimo) || 0,
+      costo_unitario: Number(insumoForm.costo_unitario) || 0,
+      tipo: insumoForm.tipo,
+    }
+    if (!payload.nombre) {
+      showToast('Nombre requerido', 'error')
+      return
+    }
+    try {
+      const res = editingInsumo
+        ? await fetch(`/api/ingredientes/${editingInsumo.id}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          })
+        : await fetch('/api/ingredientes', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          })
+      if (!res.ok) throw new Error('Error al guardar')
+      showToast(editingInsumo ? 'Insumo actualizado' : 'Insumo creado', 'success')
+      setShowInsumoDialog(false)
+      setEditingInsumo(null)
+      await loadInsumos()
+    } catch {
+      showToast('Error al guardar insumo', 'error')
+    }
+  }
 
   const filtered = items.filter(item => {
     const matchSearch = item.producto_nombre.toLowerCase().includes(searchTerm.toLowerCase())
@@ -191,17 +318,56 @@ export function InventarioPage() {
             </p>
           )}
         </div>
-        <Button
-          variant="outline"
-          onClick={loadInventario}
-          disabled={loading}
-          className="border-border"
-        >
-          <RefreshCw className={cn('mr-2 h-4 w-4', loading && 'animate-spin')} />
-          {loading ? 'Cargando...' : 'Refrescar'}
-        </Button>
+        <div className="flex flex-wrap gap-2">
+          <Button
+            variant="outline"
+            onClick={handleSeedRecetas}
+            disabled={seedingRecetas}
+            className="border-border"
+          >
+            <BookOpen className={cn('mr-2 h-4 w-4', seedingRecetas && 'animate-spin')} />
+            {seedingRecetas ? 'Generando...' : 'Generar recetas base'}
+          </Button>
+          <Button
+            variant="outline"
+            onClick={() => {
+              loadInventario()
+              if (mainTab === 'insumos') loadInsumos()
+            }}
+            disabled={loading || loadingInsumos}
+            className="border-border"
+          >
+            <RefreshCw className={cn('mr-2 h-4 w-4', (loading || loadingInsumos) && 'animate-spin')} />
+            Refrescar
+          </Button>
+        </div>
       </div>
 
+      <Tabs
+        value={mainTab}
+        onValueChange={(v) =>
+          setMainTab(v as 'productos' | 'insumos' | 'proveedores' | 'compras' | 'margenes')
+        }
+      >
+        <TabsList className="flex flex-wrap">
+          <TabsTrigger value="productos" className="gap-2">
+            <Package className="h-4 w-4" /> Productos
+          </TabsTrigger>
+          <TabsTrigger value="insumos" className="gap-2">
+            <FlaskConical className="h-4 w-4" /> Insumos
+          </TabsTrigger>
+          <TabsTrigger value="proveedores" className="gap-2">
+            <Truck className="h-4 w-4" /> Proveedores
+          </TabsTrigger>
+          <TabsTrigger value="compras" className="gap-2">
+            <ShoppingBag className="h-4 w-4" /> Compras
+          </TabsTrigger>
+          <TabsTrigger value="margenes" className="gap-2">
+            <TrendingUp className="h-4 w-4" /> Márgenes
+          </TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="productos" className="mt-4 space-y-6">
       {/* Filters */}
       <div className="flex flex-col gap-4 sm:flex-row">
         <div className="relative flex-1">
@@ -285,6 +451,7 @@ export function InventarioPage() {
                   <TableRow className="border-border">
                     <TableHead className="text-muted-foreground">Producto</TableHead>
                     <TableHead className="text-muted-foreground">Categoría</TableHead>
+                    <TableHead className="text-muted-foreground">Modo stock</TableHead>
                     <TableHead className="text-muted-foreground">Unidad</TableHead>
                     <TableHead className="text-right text-muted-foreground">Stock actual</TableHead>
                     <TableHead className="text-right text-muted-foreground">Stock mín.</TableHead>
@@ -323,6 +490,9 @@ export function InventarioPage() {
                           {item.categoria?.replace('_', ' ')}
                         </Badge>
                       </TableCell>
+                      <TableCell className="text-xs text-muted-foreground">
+                        {MODO_STOCK_LABEL[item.modo_stock || 'producto'] || item.modo_stock}
+                      </TableCell>
                       <TableCell className="text-muted-foreground">{item.unidad_medida}</TableCell>
                       <TableCell className={cn('text-right', stockColor(item))}>
                         {item.stock_actual}
@@ -338,9 +508,24 @@ export function InventarioPage() {
                         )}
                       </TableCell>
                       <TableCell className="text-right">
-                        <Button variant="ghost" size="icon" onClick={() => handleEdit(item)}>
-                          <Edit className="h-4 w-4" />
-                        </Button>
+                        <div className="flex justify-end gap-1">
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            title="Editar receta"
+                            onClick={() =>
+                              setRecetaProducto({
+                                id: item.producto_id,
+                                nombre: item.producto_nombre,
+                              })
+                            }
+                          >
+                            <BookOpen className="h-4 w-4" />
+                          </Button>
+                          <Button variant="ghost" size="icon" onClick={() => handleEdit(item)}>
+                            <Edit className="h-4 w-4" />
+                          </Button>
+                        </div>
                       </TableCell>
                     </TableRow>
                   ))}
@@ -350,6 +535,213 @@ export function InventarioPage() {
           )}
         </CardContent>
       </Card>
+        </TabsContent>
+
+        <TabsContent value="insumos" className="mt-4 space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <Select
+              value={filtroTipoInsumo}
+              onValueChange={(v) =>
+                setFiltroTipoInsumo(v as 'all' | 'comida' | 'negocio' | 'otro')
+              }
+            >
+              <SelectTrigger className="w-52">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">Todos los insumos</SelectItem>
+                <SelectItem value="comida">Para comida</SelectItem>
+                <SelectItem value="negocio">Para el negocio</SelectItem>
+                <SelectItem value="otro">Otros</SelectItem>
+              </SelectContent>
+            </Select>
+            <Button
+              onClick={() => {
+                setEditingInsumo(null)
+                setInsumoForm({
+                  nombre: '',
+                  categoria: 'insumos',
+                  unidad_medida: 'unidad',
+                  stock_actual: '0',
+                  stock_minimo: '0',
+                  costo_unitario: '0',
+                  tipo: 'comida',
+                })
+                setShowInsumoDialog(true)
+              }}
+            >
+              <Plus className="mr-2 h-4 w-4" /> Nuevo insumo
+            </Button>
+          </div>
+          <Card className="border-border bg-card">
+            <CardContent className="p-0">
+              {loadingInsumos ? (
+                <p className="p-8 text-center text-muted-foreground">Cargando insumos...</p>
+              ) : insumos.length === 0 ? (
+                <p className="p-8 text-center text-muted-foreground">
+                  No hay insumos. Usa &quot;Generar recetas base&quot; o crea uno manualmente.
+                </p>
+              ) : (
+                (() => {
+                  const filtrados = insumos.filter((ing) =>
+                    filtroTipoInsumo === 'all' ? true : (ing.tipo || 'comida') === filtroTipoInsumo,
+                  )
+                  return (
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Insumo</TableHead>
+                          <TableHead>Tipo</TableHead>
+                          <TableHead>Categoría</TableHead>
+                          <TableHead>Unidad</TableHead>
+                          <TableHead className="text-right">Stock</TableHead>
+                          <TableHead className="text-right">Mín.</TableHead>
+                          <TableHead className="text-right">Costo</TableHead>
+                          <TableHead className="text-right">Acciones</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {filtrados.map((ing) => (
+                          <TableRow key={ing.id}>
+                            <TableCell className="font-medium">{ing.nombre}</TableCell>
+                            <TableCell>
+                              <Badge variant="outline" className="text-xs capitalize">
+                                {ing.tipo || 'comida'}
+                              </Badge>
+                            </TableCell>
+                            <TableCell>{ing.categoria}</TableCell>
+                            <TableCell>{ing.unidad_medida}</TableCell>
+                            <TableCell className="text-right">{ing.stock_actual}</TableCell>
+                            <TableCell className="text-right text-muted-foreground">
+                              {ing.stock_minimo}
+                            </TableCell>
+                            <TableCell className="text-right text-muted-foreground">
+                              {formatCurrency(ing.costo_unitario)}
+                            </TableCell>
+                            <TableCell className="text-right">
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                onClick={() => {
+                                  setEditingInsumo(ing)
+                                  setInsumoForm({
+                                    nombre: ing.nombre,
+                                    categoria: ing.categoria,
+                                    unidad_medida: ing.unidad_medida,
+                                    stock_actual: String(ing.stock_actual),
+                                    stock_minimo: String(ing.stock_minimo),
+                                    costo_unitario: String(ing.costo_unitario),
+                                    tipo: ing.tipo || 'comida',
+                                  })
+                                  setShowInsumoDialog(true)
+                                }}
+                              >
+                                <Edit className="h-4 w-4" />
+                              </Button>
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  )
+                })()
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="proveedores" className="mt-4">
+          <ProveedoresTab />
+        </TabsContent>
+
+        <TabsContent value="compras" className="mt-4">
+          <ComprasTab />
+        </TabsContent>
+
+        <TabsContent value="margenes" className="mt-4">
+          <MargenesTab />
+        </TabsContent>
+      </Tabs>
+
+      {recetaProducto && (
+        <RecetaEditorDialog
+          open={!!recetaProducto}
+          onOpenChange={(o) => !o && setRecetaProducto(null)}
+          productoId={recetaProducto.id}
+          productoNombre={recetaProducto.nombre}
+          onSaved={loadInventario}
+        />
+      )}
+
+      <Dialog open={showInsumoDialog} onOpenChange={setShowInsumoDialog}>
+        <DialogContent className="border-border bg-card">
+          <DialogHeader>
+            <DialogTitle>{editingInsumo ? 'Editar insumo' : 'Nuevo insumo'}</DialogTitle>
+          </DialogHeader>
+          <div className="grid gap-3 py-2">
+            <Input
+              placeholder="Nombre"
+              value={insumoForm.nombre}
+              onChange={(e) => setInsumoForm({ ...insumoForm, nombre: e.target.value })}
+            />
+            <div className="grid grid-cols-2 gap-2">
+              <Select
+                value={insumoForm.tipo}
+                onValueChange={(v) =>
+                  setInsumoForm({ ...insumoForm, tipo: v as 'comida' | 'negocio' | 'otro' })
+                }
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="comida">Comida (entra en receta)</SelectItem>
+                  <SelectItem value="negocio">
+                    Negocio (limpieza, empaque, papelería)
+                  </SelectItem>
+                  <SelectItem value="otro">Otro</SelectItem>
+                </SelectContent>
+              </Select>
+              <Input
+                placeholder="Categoría"
+                value={insumoForm.categoria}
+                onChange={(e) => setInsumoForm({ ...insumoForm, categoria: e.target.value })}
+              />
+            </div>
+            <Input
+              placeholder="Unidad (unidad, kg, litro...)"
+              value={insumoForm.unidad_medida}
+              onChange={(e) => setInsumoForm({ ...insumoForm, unidad_medida: e.target.value })}
+            />
+            <div className="grid grid-cols-3 gap-2">
+              <Input
+                type="number"
+                placeholder="Stock"
+                value={insumoForm.stock_actual}
+                onChange={(e) => setInsumoForm({ ...insumoForm, stock_actual: e.target.value })}
+              />
+              <Input
+                type="number"
+                placeholder="Mínimo"
+                value={insumoForm.stock_minimo}
+                onChange={(e) => setInsumoForm({ ...insumoForm, stock_minimo: e.target.value })}
+              />
+              <Input
+                type="number"
+                placeholder="Costo unit."
+                value={insumoForm.costo_unitario}
+                onChange={(e) => setInsumoForm({ ...insumoForm, costo_unitario: e.target.value })}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowInsumoDialog(false)}>
+              Cancelar
+            </Button>
+            <Button onClick={handleSaveInsumo}>Guardar</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Edit stock dialog */}
       <Dialog open={showDialog} onOpenChange={setShowDialog}>

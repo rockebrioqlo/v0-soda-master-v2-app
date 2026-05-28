@@ -64,6 +64,24 @@ Sistema POS completo para sodas y restaurantes desarrollado con Next.js 16, Reac
 - [x] Categorias de inventario
 - [x] Movimientos de entrada/salida
 - [x] Historial de movimientos
+- [x] **Recetas reales por producto** con `modo_stock` (`producto`/`receta`/`producto_y_receta`)
+- [x] **Insumos reales** (`soda_master.ingredientes`) con tipo `comida`/`negocio`/`otro`
+- [x] **Pestañas dedicadas**: Productos, Insumos, Proveedores, Compras, Márgenes
+- [x] **Editor de recetas** con cantidades, opcional/extra y costo adicional por línea
+- [x] **Generador de recetas base** (POST `/api/seed-recetas`) idempotente
+
+### 6.1 Proveedores y Compras
+- [x] CRUD completo de proveedores (RUT, contacto, teléfono, email, dirección)
+- [x] Registro de boletas/facturas con líneas (insumo, cantidad, precio)
+- [x] **Promedio ponderado** en `costo_unitario` cada vez que se registra una compra
+- [x] Trazabilidad en `movimientos_inventario` con tipo `compra` y `compra_id`
+- [x] Vista detalle de cada compra con todos sus ítems
+
+### 6.2 Márgenes
+- [x] Costo por receta (`Σ cantidad × costo_unitario` de insumos base)
+- [x] Margen $ y % por producto
+- [x] KPIs globales: total con receta, sin costo definido, margen total potencial, % promedio
+- [x] Semáforo de color: verde ≥60%, ámbar ≥35%, rojo <35%
 
 ### 7. Gestion de Usuarios
 - [x] CRUD completo de usuarios
@@ -71,6 +89,14 @@ Sistema POS completo para sodas y restaurantes desarrollado con Next.js 16, Reac
 - [x] Activar/desactivar usuarios
 - [x] Validacion de datos
 - [x] Cambio de PIN
+
+### 7.1 Finanzas (nuevo módulo)
+- [x] Acceso desde sidebar/bottom-nav (ícono `Wallet`), permisos `administrador`/`admin`
+- [x] **Pestaña Gastos**: filtro por fecha/tipo, KPIs (total, sueldos pagados, servicios, sueldos proyectados/mes), tipos `operativo`/`sueldo`/`servicio`/`impuesto`/`financiero`/`otros`, recurrencia, FKs opcionales a `proveedor`/`empleado`/`activo`
+- [x] **Pestaña Empleados / sueldos**: alta, periodicidad (mensual/quincenal/semanal/diario/por_hora), vínculo opcional a `usuarios`, proyección automática a mensual con factores estándar
+- [x] **Pestaña Activos**: máquinas y mobiliario con costo, vida útil en meses, valor residual, **depreciación lineal automática** al día de hoy (mensual, acumulada, valor actual neto)
+- [x] **Pestaña Márgenes**: reutiliza el cálculo de costo de receta y muestra rentabilidad por producto
+- [x] **Botón "Cargar datos de demostración"** (POST `/api/seed-demo`) que pobla todo de forma coherente con los usuarios iniciales
 
 ### 8. Pagos y Caja
 - [x] Metodos de pago: efectivo, tarjeta (Transbank)
@@ -459,6 +485,51 @@ Cada uno incluye archivo:línea aproximada, causa y propuesta de fix corta.
     - Nuevo módulo `lib/print-ticket.ts` que genera HTML imprimible con `@page` y CSS. Nuevo `PrintPreviewDialog` muestra el ticket en `<iframe>` con zoom y dispara la impresión. Tab "Impresión" en Configuración permite personalizar ancho (58/72/80/110/A4 o libre), familia tipográfica, tamaño en pt, márgenes, encabezado, pie y mostrar logo, con vista previa en vivo y botón "Probar impresión". POS y Pagos usan el dialog reutilizable y respetan la configuración del usuario; sirve para impresoras térmicas, A4 o "Guardar como PDF".
     - **Precuenta para el cliente:** se añadió el tipo `precuenta` al motor de impresión. En POS, botón "Precuenta para cliente" → mini-dialog con switch "Incluir propina" + vista previa del total → al confirmar abre el `PrintPreviewDialog`. La precuenta lleva el encabezado "PRECUENTA — No es comprobante de pago", muestra todo lo consumido en la mesa y marca los ítems aún en preparación con su estado ("Pendiente", "En preparación", "Con problema") y un aviso al pie con el conteo de ítems que faltan.
 
+19. **[NUEVO]** Tanda 6 — Recetas reales e inventario por insumos
+    - **Modelo de datos** (idempotente desde `lib/db.ts → ensureRecetasTables`):
+      - `soda_master.ingredientes` (insumos reales con `nombre`, `categoria`, `unidad_medida`, `stock_actual`, `stock_minimo`, `costo_unitario`, `tipo` ∈ {`comida`,`negocio`,`otro`}, `activo`).
+      - `soda_master.recetas` (cabecera por producto, FK única a `productos`).
+      - `soda_master.receta_ingredientes` (líneas con `cantidad`, `opcional`, `extra`, `costo_adicional`, `nombre_display`).
+      - `soda_master.movimientos_inventario` extendida con `tipo='compra'` y `compra_id`.
+      - Columna `productos.modo_stock` (`producto`/`receta`/`producto_y_receta`, default `producto` para no romper datos existentes).
+    - **`crearItemOrden` refactorizado**: ahora es la fuente única de descuento de stock. Lee `modo_stock` y descuenta del producto, expande la receta (base siempre, opcional según `modificadores`, extra según `extras_ingredientes`/`notas_especiales.ingredientesEspeciales`), o ambos. Valida stock antes de insertar e informa errores claros (`Stock insuficiente: Pan brioche (faltan 3 unidad)`). Registra cada descuento en `movimientos_inventario` para trazabilidad.
+    - **APIs nuevas**: `GET/POST /api/ingredientes`, `PATCH /api/ingredientes/[id]`, `GET/POST /api/recetas` (con `?opciones=true` para el POS), `PATCH /api/productos/[id]` extendido para `modo_stock`.
+    - **POS actualizado**: al personalizar un burger consulta `/api/recetas?producto_id=...&opciones=true`. Quesos/ingredientes/salsas vienen de la receta (con fallback a `initial-data.ts`). Al enviar a cocina envía `extras_ingredientes` con `ingrediente_id` reales en lugar de strings.
+    - **Inventario UI**: pestañas Productos | Insumos | Proveedores | Compras | Márgenes con filtro de tipo en Insumos, columna `Modo stock` y `Costo` en las tablas, editor de receta accesible desde cada producto, botón **Generar recetas base** que llama `/api/seed-recetas` (idempotente).
+    - **Seed integrado** en `lib/seed-recetas.ts` + `POST /api/seed-recetas`. El seed principal `POST /api/seed` ahora invoca también `runSeedRecetasBase()` después de inicializar productos.
+
+20. **[NUEVO]** Tanda 7 — Proveedores, Compras y Márgenes
+    - **Modelo de datos** (idempotente desde `ensureComprasTables`):
+      - `soda_master.proveedores` (nombre, rut, contacto, teléfono, email, dirección, notas, activo).
+      - `soda_master.compras` (cabecera con `proveedor_id`, `tipo_documento` ∈ {`boleta`,`factura`,`nota`,`otro`}, `numero_documento`, `fecha`, `subtotal`, `impuesto`, `total`, `usuario_id`).
+      - `soda_master.compra_items` (líneas con `ingrediente_id`, `cantidad`, `precio_unitario`, `subtotal`).
+    - **Lógica clave**: `db.crearCompra` inserta cabecera + ítems, suma cantidades al `stock_actual` del insumo y recalcula `costo_unitario` con **promedio ponderado** (`(stock·costo + cantidad·precio) / (stock+cantidad)`), registrando movimiento `'compra'` con `compra_id` para trazabilidad full.
+    - **APIs**: `GET/POST /api/proveedores`, `PATCH /api/proveedores/[id]`, `GET/POST /api/compras`, `GET /api/compras/[id]`, `GET /api/margenes`.
+    - **UI Inventario** (3 pestañas nuevas):
+      - **Proveedores**: CRUD completo con activar/desactivar.
+      - **Compras**: lista con fecha/proveedor/tipo doc./totales + formulario con líneas (selector de insumo + cantidad + precio sugerido del último costo) + impuesto + total en vivo. Vista de detalle con todos los ítems.
+      - **Márgenes**: por producto suma `cantidad·costo_unitario` de insumos base y compara con precio. Semáforo de color por % margen.
+
+21. **[NUEVO]** Tanda 8 — Finanzas, activos, depreciación y gastos
+    - **Modelo de datos** (idempotente desde `ensureFinanzasTables`):
+      - `soda_master.activos` (nombre, categoría, `costo_compra`, `vida_util_meses`, `valor_residual`, `metodo_depreciacion` lineal, `proveedor_id`, ubicación, n° serie, estado ∈ {`activo`,`reparacion`,`baja`,`vendido`}).
+      - `soda_master.empleados` (nombre, cargo, documento, contacto, `sueldo_base`, `periodicidad` ∈ {`mensual`,`quincenal`,`semanal`,`diario`,`por_hora`}, fechas ingreso/egreso, `usuario_id` opcional).
+      - `soda_master.gastos` (fecha, `tipo` ∈ {`operativo`,`sueldo`,`servicio`,`impuesto`,`financiero`,`otros`}, categoría libre, `monto`, recurrente + periodicidad, FKs opcionales a `proveedor`/`empleado`/`activo`).
+      - Columna `ingredientes.tipo` (`comida`/`negocio`/`otro`) para separar insumos de cocina vs limpieza/empaque/papelería.
+    - **Depreciación lineal automática** (helper `computarDepreciacion`): calcula al vuelo `mensual = (costo − residual) / vida_util_meses`, `acumulada = min(meses_transcurridos, vida_util) × mensual`, `valor_actual = max(residual, costo − acumulada)` y marca `completamente_depreciado` cuando aplica.
+    - **APIs nuevas**: `GET/POST /api/activos`, `PATCH/DELETE /api/activos/[id]`, `GET /api/depreciacion` (resumen portfolio), `GET/POST /api/empleados`, `PATCH /api/empleados/[id]`, `GET/POST /api/gastos`, `DELETE /api/gastos/[id]`, `GET /api/gastos?resumen=true&desde=&hasta=`.
+    - **Nueva página Finanzas** (`components/finanzas-page.tsx`) accesible desde sidebar y bottom-nav, permisos `administrador`/`admin`. Cuatro pestañas: **Gastos**, **Empleados/sueldos**, **Activos y depreciación**, **Márgenes**.
+    - **Insumos por tipo** en Inventario → Insumos: filtro arriba (Todos/Comida/Negocio/Otro), columna `Tipo` y `Costo`, selector en el diálogo de alta/edición.
+
+22. **[NUEVO]** Tanda 8.1 — Seed de demostración coherente (`POST /api/seed-demo`)
+    - **Botón "Cargar datos de demostración"** en el header de Finanzas (ámbar). Es **idempotente**: detecta registros existentes por nombre/email/serie y no duplica.
+    - Crea/usa: insumos base (vía `runSeedRecetasBase`) + **9 insumos del negocio** (servilletas, bolsas delivery, vasos, tapas, cajas burger, papel térmico, lavavajilla, cloro, bolsas basura) marcados `tipo='negocio'`.
+    - **8 proveedores** reales (Carnicería El Buen Corte, Panadería La Esquina, Distribuidora Andina, Verduras del Mercado, Lácteos Premium, Importadora de Licores, Insumos Profesionales, Inmobiliaria Centro).
+    - **5 empleados** vinculados a los `usuarios` iniciales del seed: Carlos García (Cajero, $650k), María López (Mesera, $580k), Pedro Martínez (Cocinero, $780k), Laura Rodríguez (Bartender, $720k) + Ana Soto (Ayudante cocina, $520k, sin usuario).
+    - **10 activos** con costos, vida útil y fechas reales para que la depreciación quede calculada: plancha, freidora doble, refrigerador 600L, congelador 400L, cafetera 2 grupos, tablet POS, 2 impresoras térmicas (Cocina/Bar), mesas+sillas, aire acondicionado split.
+    - **7 compras recientes** (sólo si no hay compras previas): factura/boleta por proveedor con líneas que actualizan stock y `costo_unitario` con promedio ponderado, dejando los **márgenes calculados con precios reales**.
+    - **12 gastos del último mes**: arriendo $1.2M, luz/agua/internet/gas, 5 sueldos asociados al empleado correspondiente, mantención de freidora asociada al activo, patente municipal.
+
 18. **[NUEVO]** Tanda 5.1 — KDS doble (impresión física como respaldo del KDS digital)
     - **Motor de impresión:** `lib/print-ticket.ts` ahora soporta los tipos `'cocina'` y `'bar'` (sin precios, con cantidades en tamaño grande y notas/especiales/salsas resaltadas) además de los existentes (`'comanda'`, `'boleta'`, `'precuenta'`). Nueva función `buildMultiTicketHtml(tickets, config)` une varios tickets en un solo documento con `page-break-after: always`, de modo que cocina + bar se imprimen en un solo trabajo de impresión. Helper público `splitComandaParaEstaciones(comanda, productos, { nombreNegocio, soloPendientes })` separa los ítems entre cocina y bar reutilizando exactamente la misma regla que usa el KDS digital (`CATEGORIAS_BAR = ['bebidas','cervezas','jugos_bebidas','tragos']`).
     - **Configuración:** nuevo campo `Configuracion.impresora_copias_auto` (default `true`) y switch en Configuración → Impresión: "Preguntar por copias para cocina y bar (KDS doble)". Si se desactiva, "Enviar a cocina" no abre ningún diálogo de impresión.
@@ -632,9 +703,9 @@ Esta sección agrupa las decisiones que están **postergadas a propósito** dura
 ---
 
 ## Version
-- **Version:** 3.5.2-notif-crossdevice
+- **Version:** 3.8.0-finanzas
 - **Fecha:** Mayo 2026
-- **Estado:** Sistema Completo 100% Real con BD Neon + 5 tandas de bugs corregidas
-- **BD:** Neon PostgreSQL con 7 categorías, 33 productos, inventario real
+- **Estado:** Sistema Completo 100% Real con BD Neon + 5 tandas de bugs + 3 tandas de funcionalidad (recetas, compras, finanzas)
+- **BD:** Neon PostgreSQL con 7 categorías, 33 productos, inventario por insumos, recetas reales, proveedores, compras, activos, empleados, gastos
 - **Ambiente:** Vercel deployment ready
-- **Última Actualización:** Tanda 5.2 (Mayo 2026) — Notificaciones cross-device (bug #28). Nueva tabla `soda_master.notificaciones` (auto-bootstrap), endpoints `GET/POST /api/notificaciones` y `PATCH /api/notificaciones/[id]`. Cuando cocina marca "problema" o "listo" se persiste una notificación dirigida al mesero dueño de la orden; el cliente hace polling cada 10 s (solo con tab visible) y dispatcha las nuevas. El toast tiene auto-dismiss diferenciado (10 s problema / 6 s listo), botón "Ir a POS" para problemas y persiste el `vista=true` en backend al cerrar para no re-entregar. Reemplaza el "roadmap WebSocket" sin perder el contrato. 24/28 bugs del scan corregidos + funcionalidades de "Precuenta", "KDS doble opt-in" y notificaciones cross-device; los 4 bugs restantes son #9-#10 (postergados a producción final), #11 (refuerzo opcional), #23 (mesas), #24, #26-#27 (cosmética / housekeeping).
+- **Última Actualización:** Tandas 6 → 8.1 (Mayo 2026) — Recetas reales por producto con `modo_stock` y descuento real de insumos en `crearItemOrden`; módulo Proveedores + Compras con promedio ponderado en `costo_unitario`; nuevo módulo **Finanzas** (gastos, sueldos, empleados, activos con depreciación lineal automática, márgenes); insumos clasificados por `tipo` (comida/negocio/otro); endpoint `/api/seed-demo` idempotente que pobla todo coherente con los usuarios iniciales (Carlos García, María López, Pedro Martínez, Laura Rodríguez, Ana Soto). Antes de eso (Tanda 5.2) — Notificaciones cross-device (bug #28). Nueva tabla `soda_master.notificaciones` (auto-bootstrap), endpoints `GET/POST /api/notificaciones` y `PATCH /api/notificaciones/[id]`. Cuando cocina marca "problema" o "listo" se persiste una notificación dirigida al mesero dueño de la orden; el cliente hace polling cada 10 s (solo con tab visible) y dispatcha las nuevas. El toast tiene auto-dismiss diferenciado (10 s problema / 6 s listo), botón "Ir a POS" para problemas y persiste el `vista=true` en backend al cerrar para no re-entregar. Reemplaza el "roadmap WebSocket" sin perder el contrato. 24/28 bugs del scan corregidos + funcionalidades de "Precuenta", "KDS doble opt-in" y notificaciones cross-device; los 4 bugs restantes son #9-#10 (postergados a producción final), #11 (refuerzo opcional), #23 (mesas), #24, #26-#27 (cosmética / housekeeping).

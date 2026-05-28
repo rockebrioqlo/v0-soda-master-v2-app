@@ -32,6 +32,14 @@ export async function PATCH(
       updates.costoAdicional = n
     }
     if (typeof body.imagen_url === 'string') updates.imagen_url = body.imagen_url
+    const modoRaw = body.modo_stock ?? body.modoStock
+    if (modoRaw !== undefined) {
+      const modo = String(modoRaw)
+      if (!['producto', 'receta', 'producto_y_receta'].includes(modo)) {
+        return Response.json({ error: 'modo_stock inválido' }, { status: 400 })
+      }
+      updates.modoStock = modo
+    }
 
     if (Object.keys(updates).length === 0) {
       return Response.json({ error: 'Sin campos a actualizar' }, { status: 400 })
