@@ -98,7 +98,17 @@ export interface TicketTotales {
   impuesto?: number | null
   impuesto_label?: string | null
   propina?: number | null
+  /**
+   * "Total" en sentido fiscal: subtotal − descuento + IVA, SIN propina.
+   * Es el monto facturable / sujeto a IVA. Si no se especifica
+   * `total_a_pagar`, se asume que el cliente paga este valor.
+   */
   total: number
+  /**
+   * Monto que el cliente entrega (Total + propina). Sólo aparece en
+   * boleta/precuenta cuando hay propina; en estaciones / cocina se omite.
+   */
+  total_a_pagar?: number | null
   pagado?: number | null
   vuelto?: number | null
 }
@@ -145,6 +155,7 @@ const ESTADO_ITEM_LABEL: Record<EstadoItem, string> = {
   pendiente: 'Pendiente',
   en_preparacion: 'En preparación',
   listo: 'Listo',
+  entregado: 'Entregado',
   problema: 'Con problema',
 }
 
@@ -342,35 +353,73 @@ function renderTicketBody(data: TicketData, cfg: TicketPrintConfig, opts: { isLa
     if (data.totales.impuesto && data.totales.impuesto > 0) {
       totalesHtml.push(`
         <div class="row">
-          <div class="row-left">${escapeHtml(data.totales.impuesto_label || 'Impuesto')}</div>
+          <div class="row-left">${escapeHtml(data.totales.impuesto_label || 'IVA')}</div>
           <div class="row-right">+${escapeHtml(formatCurrency(data.totales.impuesto))}</div>
         </div>
       `)
     }
-    if (data.totales.propina && data.totales.propina > 0) {
-      totalesHtml.push(`
-        <div class="row">
-          <div class="row-left">Propina</div>
-          <div class="row-right">+${escapeHtml(formatCurrency(data.totales.propina))}</div>
-        </div>
-      `)
-    }
+    const hayPropina = !!(data.totales.propina && data.totales.propina > 0)
+    // "Total" fiscal (incluye IVA, NO incluye propina). Si no hay propina
+    // este es directamente el total a pagar.
     totalesHtml.push(`
       <div class="row total">
-        <div class="row-left">TOTAL</div>
+        <div class="row-left">${hayPropina ? 'TOTAL (con IVA)' : 'TOTAL'}</div>
         <div class="row-right">${escapeHtml(formatCurrency(data.totales.total))}</div>
       </div>
     `)
+    if (hayPropina) {
+      // En precuenta/comanda la propina es SUGERIDA (el cliente decide cuánto
+      // pagar de propina al volver con la cuenta). En boleta ya se cobró,
+      // así que ahí va sin la palabra "sugerida".
+      const propinaLabel = isBoleta ? 'Propina (sin IVA)' : 'Propina sugerida (sin IVA)'
+      const totalAPagarLabel = isBoleta ? 'TOTAL A PAGAR' : 'TOTAL SUGERIDO A PAGAR'
+      totalesHtml.push(`
+        <div class="row">
+          <div class="row-left">${propinaLabel}</div>
+          <div class="row-right">+${escapeHtml(formatCurrency(data.totales.propina!))}</div>
+        </div>
+      `)
+      const totalAPagar =
+        data.totales.total_a_pagar != null
+          ? data.totales.total_a_pagar
+          : data.totales.total + (data.totales.propina || 0)
+      totalesHtml.push(`
+        <div class="row total">
+          <div class="row-left">${totalAPagarLabel}</div>
+          <div class="row-right">${escapeHtml(formatCurrency(totalAPagar))}</div>
+        </div>
+      `)
+      // Nota explícita: la propina es sugerida y opcional. Sólo en precuenta
+      // (la cuenta que se entrega al cliente para decidir).
+      if (isPrecuenta) {
+        totalesHtml.push(`
+          <div class="row" style="margin-top:6px">
+            <div class="row-left muted" style="font-size:10px; font-style:italic">
+              La propina es sugerida y voluntaria.
+            </div>
+            <div class="row-right"></div>
+          </div>
+        `)
+      }
+    }
   }
 
   const pagoHtml: string[] = []
   if (isBoleta && data.metodo_pago) {
     pagoHtml.push(`<div class="muted center">Método: ${escapeHtml(data.metodo_pago.toUpperCase())}</div>`)
   }
-  if (isBoleta && data.dividido_en && data.dividido_en > 1 && data.monto_por_persona) {
+  // El monto por persona aparece tanto en boleta como en precuenta: para que
+  // el cliente pueda decidir si paga separado al recibir la cuenta. En
+  // precuenta el monto es "sugerido" (porque depende de la propina elegida).
+  if ((isBoleta || isPrecuenta) && data.dividido_en && data.dividido_en > 1 && data.monto_por_persona) {
+    const dividirLabel = isPrecuenta ? 'Sugerido por persona' : 'Por persona'
     pagoHtml.push(`
       <div class="muted center">
-        Dividido entre ${data.dividido_en} personas: ${escapeHtml(formatCurrency(data.monto_por_persona))} c/u
+        Dividido entre ${data.dividido_en} personas
+      </div>
+      <div class="row total">
+        <div class="row-left">${dividirLabel} (×${data.dividido_en})</div>
+        <div class="row-right">${escapeHtml(formatCurrency(data.monto_por_persona))} c/u</div>
       </div>
     `)
   }
