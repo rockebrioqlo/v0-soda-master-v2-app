@@ -292,14 +292,15 @@ Sistema POS completo para sodas y restaurantes desarrollado con Next.js 16, Reac
 Lista priorizada de bugs reales (no nitpicks) detectados después de poner la app en producción.
 Cada uno incluye archivo:línea aproximada, causa y propuesta de fix corta.
 
-### Estado actual del scan (28 bugs)
+### Estado actual del scan (28 bugs originales + 23 nuevos post-Tanda 9 = 51 bugs)
 
 - **Corregidos en Tandas 1-9:** 24 bugs (#1-#8, #11-#22, #25, #28 — *los marcados como `[CORREGIDO ✅]`*).
 - **Pendientes para producción final** (decisión consciente): #9 (PINs demo visibles) y #10 (APIs sin auth). Ver sección 🚨 al final del documento.
-- **Pendientes activos:**
+- **Pendientes activos del scan original:**
   - Alta: #11 (transacción única `crearOrden` + items — refuerzo, ya hay locks).
   - Media: #23 (nombre personalizado de mesa).
   - Baja: #24 (logs `[v0]`), #26 (initError visible), #27 (commits con `Co-authored-by: Cursor`).
+- **Nuevos detectados en scan post-Tanda 9 (28 Mayo 2026):** 23 bugs adicionales (#29-#51) — 7 críticos (A1-A7), 8 importantes (B1-B8), 8 menores (C1-C8). Ver sección "Bugs Pendientes — Scan post-Tanda 9" más abajo.
 
 ### Mayo 2026 — Tandas 9 / 9.1 (resumen ejecutivo)
 - División por productos: estado persistido en BD (`cuentas_persona` + `items_orden.cuenta_persona_id`). Soporta agregar/quitar personas en caliente y reasignaciones que splittean líneas a nivel BD.
@@ -311,6 +312,155 @@ Cada uno incluye archivo:línea aproximada, causa y propuesta de fix corta.
 - KDS por ítem: botones Preparando/Listo/Problema por unidad + acción bulk.
 - Migraciones idempotentes: bloques `DO $$ EXCEPTION WHEN duplicate_object` para constraints `items_orden_estado_item_check` y `ordenes_estado_check`.
 - Deploy Vercel: `pnpm install --frozen-lockfile` + `packageManager: pnpm@10.0.0`. Build limpio con todas las rutas nuevas.
+
+---
+
+## Bugs Pendientes — Scan post-Tanda 9 (Mayo 2026)
+
+Análisis profundo ejecutado el 28/Mayo/2026 después del deploy de las Tandas 9 y 9.1. `tsc --noEmit` pasa limpio. Estos son bugs detectados por revisión de código sobre las funciones críticas modificadas (`crearPago`, `aplicarAsignacionesCuentas`, `registrarPerdida`, `crearOrden`, `recargarOrdenes`, KDS por ítem) y sobre la arquitectura general.
+
+### Resumen
+- **23 bugs nuevos** identificados (7 críticos, 8 importantes, 8 menores).
+- **Ninguno bloquea producción de demo** porque requieren concurrencia o manipulación intencional de API.
+- **Los críticos (A1, A2, A5, A6, A7)** afectan integridad financiera o UX inmediata y deberían atacarse antes de operación real con caja abierta.
+
+### 🔴 CRÍTICOS — afectan datos / reportes / dinero
+
+29. **[A1] `db.crearPago` no es atómico ni valida el monto contra los items**
+    - **Archivo:** `lib/db.ts:1512-1661`
+    - **Causas combinadas:**
+      1. Cada `await sql\`...\`` con `@neondatabase/serverless` HTTP es un statement independiente, sin lock entre statements. El `FOR UPDATE` dentro del `SELECT` original es inútil porque la transacción cierra al finalizar el await.
+      2. No hay `pg_advisory_xact_lock(orden_id)`. Dos cajeros pagando la misma orden en paralelo pueden crear dos filas en `pagos` y dejar items en estados inconsistentes.
+      3. El monto lo controla el cliente (`pago.monto`) y NO se valida contra la suma real de `items_orden.precio_unitario * cantidad` de los items que se cobran. Un POST a `/api/pagos` con `monto: 1` por una mesa de $50.000 se acepta. Mismo problema con `propina` y `descuento`.
+    - **Riesgo:** Carrera entre cajeros → doble pago. Manipulación → reportes incorrectos / cierre Z descuadrado.
+    - **Fix sugerido:** envolver en `sql.transaction([...])` (driver HTTP soporta multi-statement vía CTE); calcular monto en servidor a partir de `item_orden_ids`/`item_partials` ignorando el `monto` del cliente.
+
+30. **[A2] `db.aplicarAsignacionesCuentas` tampoco es atómico, ni valida pertenencia**
+    - **Archivo:** `lib/db.ts:2138-2247`
+    - **Causas:**
+      1. Cada item se procesa con `SELECT ... FOR UPDATE` seguido de UPDATE/INSERT como statements separados → el lock se pierde entre instrucciones (mismo patrón que A1).
+      2. No se valida que `cuenta_persona_id` pertenezca a `orden_id`. Un POST malicioso puede asignar items de la orden A a una persona de la orden B.
+      3. Dos cajeros aplicando asignaciones al mismo tiempo pueden splittear la misma línea dos veces.
+    - **Fix sugerido:** `pg_advisory_xact_lock(hashtext(orden_id))` al inicio + `WHERE cp.orden_id = items_orden.orden_id` en validación SQL.
+
+31. **[A3] `eliminarCuentaPersona` borra el historial de quién pagó qué**
+    - **Archivo:** `lib/db.ts:2108-2121`
+    - **Causa:** El UPDATE `SET cuenta_persona_id = NULL WHERE cuenta_persona_id = id` NO filtra por `pagado = FALSE`. Si Persona 1 ya pagó y luego el cajero la quita (porque ya se fue), todos sus items pagados pierden la asignación. Rompe el reporte "qué pagó cada persona".
+    - **Fix:** agregar `AND pagado = FALSE` al UPDATE; o impedir eliminar personas con items ya pagados (mejor opción para reportes históricos).
+
+32. **[A4] `recargarOrdenes` tiene `state.comandas` como dependencia → polling se reinicia en cada cambio**
+    - **Archivo:** `lib/app-context.tsx:694-723`
+    - **Causa:** `useCallback(..., [state.comandas])`. Cada vez que `comandas` cambia (cada poll de 7s o cada `UPDATE_COMANDA`), `recargarOrdenes` se reasigna → en `kds-page.tsx` el `useEffect([recargarOrdenes])` desmonta y vuelve a montar el `setInterval`.
+    - **Consecuencias:** doble-fetch innecesario inmediato; respuestas lentas pueden sobreescribir datos más recientes; KDS parpadea visualmente.
+    - **Fix:** `const comandasRef = useRef(state.comandas)`; leer `comandasRef.current` dentro de `recargarOrdenes`; dependencias `[]`. Mismo patrón aplica al polling de notificaciones y de usuario activo.
+
+33. **[A5] El primer pago siempre muestra "Mesa desconocida"**
+    - **Archivos:** `lib/db.ts:1556-1561`, `lib/app-context.tsx:850-862`
+    - **Causa:** El fix de "Mesa desconocida" se hizo en `getPagos()` (JOIN con `mesas`), pero `crearPago()` hace `INSERT ... RETURNING *` SIN el JOIN. El pago recién creado se devuelve sin `mesa_id` ni `mesa_nombre`. `crearPagoApi` lo dispatchea con `ADD_PAGO` y no llama `recargarPagos`, así que en "Pagos Recientes" el pago aparece con la fallback `comanda?.mesaNombre`. Si fue un pago que cerró la comanda y luego se navega y vuelve, la comanda ya no está en `state.comandas` → vuelve a verse "Mesa desconocida".
+    - **Fix:** cambiar el INSERT a CTE + JOIN para devolver `mesa_id`/`mesa_nombre`; alternativa rápida: llamar `recargarPagos()` después de `dispatch(ADD_PAGO)` en `handleConfirmarPago`.
+
+34. **[A6] POST `/api/ordenes` mapea mal el error de permisos especiales**
+    - **Archivo:** `app/api/ordenes/route.ts:41-53`
+    - **Causa:** Cuando `db.crearOrden` lanza "El cajero no tiene un permiso vigente para abrir mesas…", el handler sólo detecta `error.message.includes('comanda activa')` → devuelve **500 con "Error en servidor"** en vez de **403 con el mensaje real**. El cajero ve un error genérico y no entiende que necesita el permiso especial que justamente la feature de Tanda 9 creó.
+    - **Fix:** detectar `error.message.includes('permiso vigente')` → 403 con el mensaje original.
+
+35. **[A7] PATCH `/api/ordenes` acepta cambios arbitrarios**
+    - **Archivo:** `app/api/ordenes/route.ts:55-73`
+    - **Causa:** `const { id, action, ...updates } = await request.json()` + `db.actualizarOrden(id, updates)`. `actualizarOrden` acepta `subtotal`, `total`, `impuesto`, `estado`, `notas`. Sin auth ni allowlist de campos, cualquiera con la URL puede `PATCH` para cambiar el total de una orden a cero antes del cobro, o pasar `estado='pagado'` sin generar un pago.
+    - **Fix:** middleware de auth + allowlist server-side de campos modificables (`estado` sólo a un conjunto válido y según rol).
+
+### 🟠 IMPORTANTES — bugs funcionales, no afectan dinero directamente
+
+36. **[B1] `crearOrden` borra órdenes recién creadas por otra request**
+    - **Archivo:** `lib/db.ts:1115-1122`
+    - **Causa:** El `DELETE FROM ordenes WHERE NOT EXISTS (... items)` se ejecuta antes del lock por mesa. Si un mesero acaba de crear una orden y aún no insertó items, otra request entrando casi simultáneamente puede borrarla. Ventana pequeña (ms) pero existe.
+    - **Fix:** mover el DELETE dentro del CTE con el lock, o sólo borrar órdenes con `created_at < now() - interval '5 minutes'`.
+
+37. **[B2] `registrarPerdida` permite doble registro en paralelo**
+    - **Archivo:** `lib/db.ts:1825-1946`
+    - **Causa:** Sin `pg_advisory_xact_lock`. Dos admins clicando "Registrar pérdida" a la vez crean dos filas en `perdidas_comanda` para la misma orden. El UPDATE de `ordenes.estado='perdida'` es idempotente, pero quedan dos registros financieros distintos.
+    - **Fix:** lock por `orden_id` + chequeo previo `WHERE NOT EXISTS (SELECT 1 FROM perdidas_comanda WHERE orden_id = X AND resuelto = FALSE)`.
+
+38. **[B3] `resolverPerdida` no valida el monto**
+    - **Archivo:** `lib/db.ts:1956-2030`
+    - **Causa:** El cajero puede "resolver" una pérdida de $50.000 cobrando $1. No hay validación contra `monto_perdido`.
+    - **Riesgo:** Permite blanquear pérdidas a precio cero o casi cero.
+    - **Fix:** rechazar `monto < monto_perdido * 0.9` (o similar) salvo que el rol sea `admin` y se exija un motivo escrito.
+
+39. **[B4] Prorrateo de descuento usa `subtotalCompleto` sobre TODOS los items (incluyendo pagados)**
+    - **Archivo:** `components/pagos-page.tsx:272-281`
+    - **Causa:** Si la comanda recibe un ítem nuevo después de un pago parcial, el cálculo de descuento prorrateado se desbalancea (el divisor cambia). El cliente que se va primero podría pagar más o menos descuento del que le corresponde según el orden de los pagos.
+    - **Fix:** referenciar `subtotalCompleto` sólo sobre items vigentes en el momento del pago o, mejor, persistir el descuento prorrateado en `items_orden`.
+
+40. **[B5] KDS: marcar "problema" sobre 1 ítem pone TODA la orden en `estado='problema'`**
+    - **Archivo:** `components/kds-page.tsx:115-130`
+    - **Causa:** Granular para `listo` (`estadoOrden = todosListos ? 'listo' : 'en_preparacion'`) pero monolítico para `problema`. Si la cocina marca problema en una bebida del bar, la orden completa pasa a "problema" y deja confuso al otro KDS y al mesero.
+    - **Fix:** la orden pasa a `'problema'` sólo si hay al menos un item con problema; el resto sigue en su estado. Idealmente `estado_orden = max(estados_items)` con prioridad `problema > en_preparacion > pendiente > listo`.
+
+41. **[B6] `handleMarkReady` no maneja errores**
+    - **Archivo:** `components/kds-page.tsx:111-182`
+    - **Causa:** Sin `try/catch` alrededor del `Promise.all` + `updateOrden`. Si una llamada falla a mitad, queda BD con algunos items marcados y otros no, y la UI muestra el error de React boundary genérico.
+    - **Fix:** envolver en try/catch, revertir UI optimista al fallar, mostrar toast con detalle.
+
+42. **[B7] Polling agresivo combinado**
+    - **Archivos:** `components/kds-page.tsx:55`, `lib/app-context.tsx:566` y `:1258`
+    - **Causa:** Con KDS abierto: 1 fetch cada 7s a `/api/ordenes?kds=true` + `/api/mesas` (2 requests), 1 cada 10s a `/api/notificaciones`, 1 cada 60s a `/api/usuarios`. ≈ **1080 requests/hora por sesión**, ≈ **2.6M/mes/usuario** asumiendo 8h de uso.
+    - **Riesgo:** Para Vercel + Neon serverless es mucho cómputo y eventualmente costo. Hobby aguanta; producción con varios cajeros simultáneos toca límites.
+    - **Fix:** subir intervalo de KDS a 15s, agrupar `mesas` y `notificaciones` en un solo endpoint, o migrar a SSE cuando la latencia importe. Trade-off de UX.
+
+43. **[B8] `[v0]` legacy todavía en `pos-page.tsx`**
+    - **Archivo:** `components/pos-page.tsx:658`
+    - **Causa:** `console.error('[v0] Error sending to kitchen:', error)`. Bug #24 del scan original sigue vivo, ya catalogado como baja prioridad.
+
+### 🟡 MENORES — cosmética / consistencia
+
+44. **[C1] `pagosRecientes = pagos.sort(...)` muta el state**
+    - **Archivo:** `components/pagos-page.tsx:624-626`
+    - **Causa:** `.sort()` muta el array; en cada render reordena `state.pagos`. Inofensivo en práctica porque Redux/useReducer no se entera, pero rompe el principio de inmutabilidad.
+    - **Fix:** `[...pagos].sort(...)`.
+
+45. **[C2] `setEfectivoRecibido` no sanitiza**
+    - **Causa:** Si el cajero escribe `12.500,50` o `12,500.50`, `parseFloat` devuelve `12.5`. No hay máscara numérica chilena. El cajero podría confirmar con tolerancia de ±$0.5 pensando que ingresó $12.500 cuando en realidad ingresó $12.
+    - **Fix:** input máscara o parser que tolere separadores chilenos.
+
+46. **[C3] Endpoints sin auth (general) — 5 nuevos**
+    - **Archivos:** `/api/cuentas-persona`, `/api/cuentas-persona/asignaciones`, `/api/perdidas`, `/api/perdidas/resolver`, `/api/permisos-especiales`.
+    - **Causa:** Instancia del bug general #10, pero con 5 endpoints sensibles más sin protección desde Tanda 9.
+    - **Acción:** se cubrirá cuando se haga el middleware JWT mencionado en "🚨 Correcciones obligatorias antes de producción final".
+
+47. **[C4] `crearOrden` valida rol pero la UI no muestra "solicita permiso"**
+    - **Archivo:** `components/pos-page.tsx`
+    - **Causa:** El servidor valida `tienePermisoEspecial` correctamente, pero el POS no muestra mensaje accionable cuando falla. Se ve sólo el toast genérico (potenciado por A6).
+    - **Fix:** cuando recibe 403/error de permiso, mostrar mensaje "Pídele al admin un permiso temporal de apertura de mesa" y, opcionalmente, un botón para abrir el dialog de permisos especiales.
+
+48. **[C5] `mapPago` deja `total` legacy si llega**
+    - **Archivo:** `lib/db.ts:56-80`
+    - **Causa:** `Pago` ya no usa `total` (canónico es `monto`), pero `mapPago` hace `...row` y reexporta cualquier campo extra. Si BD por alguna razón devuelve `total`, queda colgado.
+    - **Fix:** mapear explícitamente sólo los campos necesarios en vez de spread del row.
+
+49. **[C6] Falta índice sobre `items_orden.pagado`**
+    - **Causa:** Las queries del cierre de caja, KDS, `crearPago` y `aplicarAsignacionesCuentas` filtran por `pagado=FALSE`. Con miles de filas, es la primera columna que va a doler.
+    - **Fix:** `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_items_orden_pagado ON soda_master.items_orden(orden_id, pagado) WHERE pagado = FALSE`.
+
+50. **[C7] `notificaciones-toast.tsx`: `setTimeout` de auto-dismiss no se cancela en unmount**
+    - **Causa:** Si el componente desmonta mientras hay un timeout pendiente, el callback corre apuntando a estado obsoleto. Riesgo bajo de memory leak.
+    - **Fix:** `useEffect` con `return () => clearTimeout(handle)`.
+
+51. **[C8] Quitar persona sin items sigue listada si hay items nuevos en la misma vista**
+    - **Archivo:** `components/pagos-page.tsx:2113-2122`
+    - **Causa:** El botón "quitar" se muestra cuando `p.items.length === 0 && numPersonasInt > 1`. Si entre clicks aparece un item asignado a esa persona (porque el cajero asignó algo arriba), el botón sigue visible hasta el siguiente render. UX confuso pero no crítico.
+
+### Orden de ataque recomendado
+
+1. **A1 + A5** (servidor calcula monto + JOIN en RETURNING de `crearPago`). Bloquea distorsión de cuadre de caja y resuelve "Mesa desconocida" en el primer pago. Una sola refactorización a `crearPago`.
+2. **A6** (mapeo del error de permisos especiales). 5 minutos.
+3. **A2 + B2** (locks por `orden_id` en `aplicarAsignacionesCuentas` y `registrarPerdida`).
+4. **A3** (no borrar asignaciones de items ya pagados al eliminar persona).
+5. **A4** (`recargarOrdenes` con ref).
+6. **B3** (validar monto de `resolverPerdida`).
+7. **B4** (prorrateo de descuento en pagos parciales encadenados).
+8. **B5 + B6** (KDS: granularidad de `problema` y manejo de errores).
+9. C1–C8 como housekeeping.
 
 ### ALTA prioridad — afectan flujo de negocio o exponen datos
 
@@ -784,4 +934,4 @@ Esta sección agrupa las decisiones que están **postergadas a propósito** dura
 - **Estado:** Sistema Completo 100% Real con BD Neon + 5 tandas de bugs + 4 tandas de funcionalidad (recetas, compras, finanzas, split-bill persistido)
 - **BD:** Neon PostgreSQL con 7 categorías, 33 productos, inventario por insumos, recetas reales, proveedores, compras, activos, empleados, gastos, cuentas por persona, pérdidas, permisos especiales
 - **Ambiente:** Vercel deployment ready (instalación pinneada a pnpm 10 vía Corepack)
-- **Última Actualización:** Tanda 9 / 9.1 (Mayo 2026) — **Split bill persistido en BD**: nuevas tablas `soda_master.cuentas_persona` y columnas `items_orden.cuenta_persona_id`/`pagado`/`pago_id`; APIs `/api/cuentas-persona`, `/api/cuentas-persona/asignaciones`. Soporta múltiples destinos por línea (server splittea las líneas necesarias y conserva `cuenta_persona_id` en el remanente al cobrar parcial). UI permite agregar/quitar personas dinámicamente y persiste el estado al refrescar y entre dispositivos. **Pagos parciales**: `crearPago` acepta `item_orden_ids[]` y `item_partials[]`. **Bugfix botón "Confirmar Pago Parcial"**: eliminado auto-relleno de efectivo que daba discrepancias de redondeo + tolerancia ½ peso. **Bugfix "Mesa desconocida"** en Pagos Recientes vía JOIN en `getPagos`. **Perro muerto**: tabla `perdidas_comanda`, captura del responsable que abrió la mesa, registro de pérdida y resolución retroactiva (`/api/perdidas`, `/api/perdidas/resolver`). **Permisos especiales** (`apertura_mesa`): admin habilita temporalmente a un cajero (`/api/permisos-especiales`). **KDS por ítem**: botones individuales Preparando/Listo/Problema más acción bulk; los `listo` quedan visibles dimmed y los `entregado` desaparecen. Migraciones idempotentes con `DO $$ EXCEPTION WHEN duplicate_object` para constraints. **Deploy fix** en Vercel: `pnpm install --frozen-lockfile` + `packageManager: pnpm@10.0.0`. Antes de eso (Tandas 6 → 8.1) — Recetas reales por producto con `modo_stock` y descuento real de insumos en `crearItemOrden`; módulo Proveedores + Compras con promedio ponderado en `costo_unitario`; módulo **Finanzas** (gastos, sueldos, empleados, activos con depreciación lineal automática, márgenes); insumos clasificados por `tipo` (comida/negocio/otro); endpoint `/api/seed-demo` idempotente. Y antes (Tanda 5.2) — Notificaciones cross-device (bug #28). 24/28 bugs del scan corregidos; los restantes son #9-#10 (postergados a producción final), #11 (refuerzo opcional), #23 (mesas), #24, #26-#27 (cosmética / housekeeping).
+- **Última Actualización:** Scan post-Tanda 9 (28 Mayo 2026) — análisis profundo del sistema detectó 23 bugs nuevos (7 críticos, 8 importantes, 8 menores) sobre las funciones modificadas en Tanda 9. Los críticos atacan integridad financiera: `crearPago` no es atómico ni valida monto contra items (A1), `aplicarAsignacionesCuentas` no es atómico ni valida pertenencia (A2), `eliminarCuentaPersona` borra historial de items pagados (A3), `recargarOrdenes` con dep rota provoca re-mount del polling (A4), primer pago muestra "Mesa desconocida" porque el INSERT no hace JOIN (A5), POST `/api/ordenes` devuelve 500 en vez de 403 con permisos especiales (A6), PATCH `/api/ordenes` acepta cambios arbitrarios sin allowlist (A7). Documentados en sección "Bugs Pendientes — Scan post-Tanda 9". Antes de esto (Tanda 9 / 9.1) — **Split bill persistido en BD**: nuevas tablas `soda_master.cuentas_persona` y columnas `items_orden.cuenta_persona_id`/`pagado`/`pago_id`; APIs `/api/cuentas-persona`, `/api/cuentas-persona/asignaciones`. Soporta múltiples destinos por línea (server splittea las líneas necesarias y conserva `cuenta_persona_id` en el remanente al cobrar parcial). UI permite agregar/quitar personas dinámicamente y persiste el estado al refrescar y entre dispositivos. **Pagos parciales**: `crearPago` acepta `item_orden_ids[]` y `item_partials[]`. **Bugfix botón "Confirmar Pago Parcial"**: eliminado auto-relleno de efectivo que daba discrepancias de redondeo + tolerancia ½ peso. **Bugfix "Mesa desconocida"** en Pagos Recientes vía JOIN en `getPagos`. **Perro muerto**: tabla `perdidas_comanda`, captura del responsable que abrió la mesa, registro de pérdida y resolución retroactiva (`/api/perdidas`, `/api/perdidas/resolver`). **Permisos especiales** (`apertura_mesa`): admin habilita temporalmente a un cajero (`/api/permisos-especiales`). **KDS por ítem**: botones individuales Preparando/Listo/Problema más acción bulk; los `listo` quedan visibles dimmed y los `entregado` desaparecen. Migraciones idempotentes con `DO $$ EXCEPTION WHEN duplicate_object` para constraints. **Deploy fix** en Vercel: `pnpm install --frozen-lockfile` + `packageManager: pnpm@10.0.0`. Antes de eso (Tandas 6 → 8.1) — Recetas reales por producto con `modo_stock` y descuento real de insumos en `crearItemOrden`; módulo Proveedores + Compras con promedio ponderado en `costo_unitario`; módulo **Finanzas** (gastos, sueldos, empleados, activos con depreciación lineal automática, márgenes); insumos clasificados por `tipo` (comida/negocio/otro); endpoint `/api/seed-demo` idempotente. Y antes (Tanda 5.2) — Notificaciones cross-device (bug #28). 24/28 bugs del scan corregidos; los restantes son #9-#10 (postergados a producción final), #11 (refuerzo opcional), #23 (mesas), #24, #26-#27 (cosmética / housekeeping).
