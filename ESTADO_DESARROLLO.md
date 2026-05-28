@@ -100,12 +100,20 @@ Sistema POS completo para sodas y restaurantes desarrollado con Next.js 16, Reac
 
 ### 8. Pagos y Caja
 - [x] Metodos de pago: efectivo, tarjeta (Transbank)
-- [x] Pago dividido
-- [x] Propinas
-- [x] Calculo de cambio
+- [x] Pago dividido (equitativa y por productos)
+- [x] **División por productos PERSISTIDA en BD** (`cuentas_persona` + `items_orden.cuenta_persona_id`)
+- [x] **Pago parcial por línea**: cobra X de Y unidades de un mismo `items_orden`; el server splittea la línea en BD
+- [x] **Cobrar a Persona N**: si la mesa quedó dividida, el botón muestra el monto directo de esa persona y arma el pago parcial automático
+- [x] **Agregar/quitar personas dinámicamente** desde el cajero (hasta 12 por mesa) sin perder estado al refrescar ni entre dispositivos
+- [x] Propinas (sugeridas, no obligatorias; ticket marca "Propina sugerida" en precuenta y "Propina (sin IVA)" en boleta)
+- [x] Precuenta para el cliente antes de cobrar, con división por productos opcional (una cuenta por persona en un solo trabajo de impresión)
+- [x] Calculo de cambio (con tolerancia de redondeo de medio peso para evitar quedar pegado por centavos)
 - [x] Apertura y cierre de caja
 - [x] Resumen de caja (Z report)
-- [x] Historial de transacciones
+- [x] Historial de transacciones (muestra el nombre real de la mesa aunque la comanda ya esté cerrada — JOIN BD)
+- [x] **Perro muerto** (cliente que se fue sin pagar): admin registra pérdida con motivo y responsable (quien abrió la mesa); queda en `perdidas_comanda` y la orden pasa a `estado='perdida'`
+- [x] **Cobro retroactivo de pérdida**: si el cliente vuelve a pagar, el cajero la marca como cobrada y crea el pago vinculado
+- [x] **Permisos especiales** (`apertura_mesa`): admin habilita temporalmente a un cajero para abrir mesas cuando no hay meseros, con vigencia configurable
 
 ### 9. Reportes y Estadisticas
 - [x] Filtro por rango de fechas
@@ -165,14 +173,23 @@ Sistema POS completo para sodas y restaurantes desarrollado con Next.js 16, Reac
 - `usuarios` - Usuarios del sistema con PIN hasheado
 - `mesas` - Mesas del restaurante
 - `categorias` - Categorías de productos
-- `productos` - Catálogo de productos
+- `productos` - Catálogo de productos (con `modo_stock`)
 - `modificadores` - Opciones/modificadores de productos
-- `ordenes` - Órdenes de mesas/clientes
-- `items_orden` - Líneas de items en ordenes
+- `ordenes` - Órdenes de mesas/clientes (estados incluyen `pagado`, `perdida`, `cancelado`)
+- `items_orden` - Líneas de items en ordenes (con `estado_item`, `pagado`, `pago_id`, `cuenta_persona_id`)
 - `pagos` - Registro de pagos
 - `inventario` - Stock actual de productos
-- `movimientos_inventario` - Historial de movimientos
+- `movimientos_inventario` - Historial de movimientos (tipos `venta`, `compra`, `ajuste`, `merma`)
 - `configuracion` - Configuración del negocio
+- `descuentos` - Descuento por orden (único por `orden_id`)
+- `mermas` - Pérdidas de stock por motivo
+- `notificaciones` - Notificaciones cross-device (mesero/cocina/bar)
+- `cuentas_persona` - Personas que comparten una mesa para división por productos (persistido)
+- `perdidas_comanda` - "Perro muerto" (clientes que se fueron sin pagar) + resoluciones
+- `permisos_especiales` - Permisos temporales otorgados por admin (ej. `apertura_mesa` para cajero)
+- `ingredientes`, `recetas`, `receta_ingredientes` - Recetas reales por producto
+- `proveedores`, `compras`, `compra_items` - Trazabilidad de compras y costos
+- `activos`, `empleados`, `gastos` - Módulo Finanzas (depreciación, sueldos, gastos)
 
 ### Estructura de Archivos
 ```
@@ -277,12 +294,23 @@ Cada uno incluye archivo:línea aproximada, causa y propuesta de fix corta.
 
 ### Estado actual del scan (28 bugs)
 
-- **Corregidos en Tandas 1-5:** 23 bugs (#1-#8, #11-#22, #25 — *los marcados como `[CORREGIDO ✅]`*).
+- **Corregidos en Tandas 1-9:** 24 bugs (#1-#8, #11-#22, #25, #28 — *los marcados como `[CORREGIDO ✅]`*).
 - **Pendientes para producción final** (decisión consciente): #9 (PINs demo visibles) y #10 (APIs sin auth). Ver sección 🚨 al final del documento.
 - **Pendientes activos:**
   - Alta: #11 (transacción única `crearOrden` + items — refuerzo, ya hay locks).
   - Media: #23 (nombre personalizado de mesa).
   - Baja: #24 (logs `[v0]`), #26 (initError visible), #27 (commits con `Co-authored-by: Cursor`).
+
+### Mayo 2026 — Tandas 9 / 9.1 (resumen ejecutivo)
+- División por productos: estado persistido en BD (`cuentas_persona` + `items_orden.cuenta_persona_id`). Soporta agregar/quitar personas en caliente y reasignaciones que splittean líneas a nivel BD.
+- Pagos parciales: `crearPago` acepta `item_orden_ids` y `item_partials` para cobrar X de Y unidades de la misma línea; el remanente conserva su `cuenta_persona_id`.
+- "Cobrar Persona N" deshabilitado por redondeo: arreglado (sin auto-relleno de efectivo + tolerancia ½ peso).
+- "Mesa desconocida" en Pagos Recientes: arreglado vía JOIN en `getPagos` (`mesa_id`, `mesa_nombre`).
+- Perro muerto: registro con responsable (quien abrió la mesa) y resolución retroactiva.
+- Permisos especiales (`apertura_mesa`): admin habilita temporalmente a un cajero a abrir mesas.
+- KDS por ítem: botones Preparando/Listo/Problema por unidad + acción bulk.
+- Migraciones idempotentes: bloques `DO $$ EXCEPTION WHEN duplicate_object` para constraints `items_orden_estado_item_check` y `ordenes_estado_check`.
+- Deploy Vercel: `pnpm install --frozen-lockfile` + `packageManager: pnpm@10.0.0`. Build limpio con todas las rutas nuevas.
 
 ### ALTA prioridad — afectan flujo de negocio o exponen datos
 
@@ -530,6 +558,54 @@ Cada uno incluye archivo:línea aproximada, causa y propuesta de fix corta.
     - **7 compras recientes** (sólo si no hay compras previas): factura/boleta por proveedor con líneas que actualizan stock y `costo_unitario` con promedio ponderado, dejando los **márgenes calculados con precios reales**.
     - **12 gastos del último mes**: arriendo $1.2M, luz/agua/internet/gas, 5 sueldos asociados al empleado correspondiente, mantención de freidora asociada al activo, patente municipal.
 
+23. **[NUEVO]** Tanda 9 — Split bill persistido en BD, pagos parciales, perro muerto y permisos especiales (Mayo 2026)
+    - **Motivación:** El cajero podía dividir la cuenta por productos y asignar "Persona 1" / "Persona 2", pero la asignación vivía sólo en memoria de React. Al refrescar o cambiar de dispositivo se perdía. Pedido literal del cliente: *"donde mierda se está guardando persona 1 y persona 2 en el sistema? tiene que ser en la base de datos, no PUEDE NI DEBE DEPENDER DE LOCALSTORAGE"*. Resuelto.
+    - **Modelo de datos** (idempotente desde `ensureCuentasPersonaSchema`, `ensurePerdidasTable`, `ensurePermisosEspecialesTable`, `ensureItemPagoSchema`, `ensureItemEstadoSchema`, `ensureOrdenEstadoSchema`):
+      - `soda_master.cuentas_persona` (`id`, `orden_id` FK con `ON DELETE CASCADE`, `idx` único por orden, `nombre`, `created_at`).
+      - `soda_master.items_orden` extendida con `cuenta_persona_id UUID NULL` (NULL = compartido) + índice.
+      - `soda_master.items_orden` extendida con `pagado BOOLEAN`, `pago_id UUID` para pagos por línea.
+      - `soda_master.perdidas_comanda` (orden, mesa, monto, items afectados, motivo, responsable que abrió la mesa, autorizó, `resuelto`, `resuelto_at`, `pago_id` del cobro retroactivo).
+      - `soda_master.permisos_especiales` (`usuario_id`, `tipo`, `valido_hasta`, `motivo`, otorgado/revocado por).
+      - `items_orden.estado_item` y `ordenes.estado` con CHECK constraints reaplicables idempotentemente vía bloques `DO $$ ... EXCEPTION WHEN duplicate_object` (tolera hot reload y carreras de migración).
+    - **Lógica clave en `db.ts`**:
+      - `crearCuentaPersona({ orden_id, nombre })` calcula el próximo `idx` libre bajo `pg_advisory_xact_lock(hashtext(orden_id))` para que dos cajeros simultáneos no creen "Persona 3" duplicada.
+      - `aplicarAsignacionesCuentas({ orden_id, asignaciones[] })` agrupa por `item_orden_id` y soporta múltiples destinos por línea (ej. 2x Cerveza repartida 1→P1 + 1→P2): la primera asignación se queda con la línea original, las demás se clonan a filas nuevas. Si la suma asignada es menor a la cantidad original, deja un remanente compartido (`cuenta_persona_id=NULL`). Items ya pagados no se reasignan.
+      - `crearPago` acepta `item_orden_ids[]` (líneas completas) y `item_partials[]` (`[{ id, cantidad }]`). Para los parciales splittea la línea: la mitad cobrada queda `pagado=true, pago_id`, la otra mitad se clona como nueva línea no pagada y **hereda el `cuenta_persona_id` del original** para que el resto siga asignado a la misma persona después del pago.
+      - `getPagos` con `LEFT JOIN ordenes + mesas` devuelve `mesa_id` y `mesa_nombre` directamente, así "Pagos Recientes" no muestra "Mesa desconocida" cuando la comanda ya está cerrada.
+      - `registrarPerdida` captura `usuario_id`/`nombre`/`rol` de quien abrió la mesa como **responsable**, calcula el monto perdido (suma de ítems no pagados + IVA), inserta en `perdidas_comanda` y deja la orden en `estado='perdida'` con nota auditada en `ordenes.notas`.
+      - `resolverPerdida` crea un `pagos` nuevo con `referencia` apuntando a la pérdida y marca `resuelto=true`. El estado de la orden permanece `perdida` (queda como histórico del incidente), pero financieramente la pérdida sale de los reportes pendientes.
+      - `crearOrden` ahora excluye `estado='perdida'` del chequeo "ya existe comanda activa", para que tras un perro muerto se pueda abrir una mesa nueva.
+      - `otorgarPermisoEspecial` / `revocarPermisoEspecial` / `tienePermisoEspecial(usuario_id, tipo)` para delegaciones temporales. `crearOrden` verifica que un cajero tenga el permiso `apertura_mesa` vigente antes de abrir una mesa nueva.
+    - **APIs nuevas**:
+      - `GET/POST/PATCH/DELETE /api/cuentas-persona` (listar/crear/renombrar/eliminar personas de una orden).
+      - `POST /api/cuentas-persona/asignaciones` (aplica asignaciones masivas; el server splittea las líneas necesarias).
+      - `GET/POST /api/perdidas`, `POST /api/perdidas/resolver`.
+      - `GET/POST/PATCH /api/permisos-especiales`.
+    - **Frontend** (`components/pagos-page.tsx`, `lib/app-context.tsx`, `lib/types.ts`):
+      - `mapOrdenToComanda` y `getOrdenesParaKDS` ahora traen `cuentas_persona[]` por orden e `cuenta_persona_id` por ítem, así toda la UI ve la misma fuente de verdad.
+      - El borrador local de asignaciones se hidrata desde BD cuando se entra a la mesa y NO se rehidrata mientras el dialog está abierto, para no pisar ediciones por refetchs globales.
+      - Botón **"+ Agregar persona"** dinámico (hasta 12 por mesa) en ambos modos (equitativa y por productos). Botón **"quitar"** sobre cada Persona N sin productos asignados.
+      - Dialog "Asignar productos por persona" guarda con un solo POST batch (`asignarItemsACuentasApi`) y luego `recargarOrdenes()` para hidratar de vuelta.
+      - "Cobrar Persona N" ahora deja modo parcial listo y muestra el monto exacto (`totalDirectoAPagar`) en el botón. **Bugfix**: se eliminó el autorelleno de "Efectivo recibido" que daba 13.748 cuando el botón pedía 13.750 por divergencias de redondeo entre cálculos paralelos; ahora el placeholder muestra el monto exacto y el `disabled` del botón "Confirmar Pago" tolera medio peso de redondeo.
+      - "Pagos Recientes" muestra el nombre real de la mesa (vía JOIN del API) en lugar de "Mesa desconocida" cuando la comanda ya no está activa.
+      - **Perro muerto** (sólo admin): dialog con responsable, items pendientes y motivo obligatorio. Sección "Pérdidas pendientes" en el listado principal con botón "Cobrar" para resolver retroactivamente.
+    - **KDS por ítem** (refactor `kds-page.tsx`):
+      - Cada ítem tiene botones individuales **Preparando / Listo / Problema**. Los marcados `listo` quedan visibles en la card con strikethrough y sin botones de acción; los `entregado` desaparecen.
+      - Acción bulk "Todos los pendientes" para procesar la card completa.
+      - Toast diferenciado por nombre del ítem o conteo.
+    - **Resultado de cierre**:
+      - Las asignaciones persisten al refrescar, entre cajeros y entre dispositivos.
+      - Si llega un café 30 minutos después, se asigna a la persona existente sin perder el contexto anterior.
+      - Pueden agregarse Persona 3, 4, etc. en cualquier momento.
+      - Botón "Confirmar Pago Parcial" deja de quedar deshabilitado por redondeos.
+      - Reportes muestran nombre de mesa real en pagos cerrados.
+
+24. **[NUEVO]** Tanda 9.1 — Fix de deploy en Vercel (Mayo 2026)
+    - `vercel.json` forzaba `npm install` con un repo que sólo tiene `pnpm-lock.yaml`. npm rompía con `Cannot read properties of null (reading 'matches')` al mezclar el árbol pnpm restaurado de caché con su resolver.
+    - Cambiado a `"installCommand": "pnpm install --frozen-lockfile"` + `"packageManager": "pnpm@10.0.0"` en `package.json` para que Vercel use Corepack sin adivinar.
+    - Adicionalmente se completó la tipificación de `db.registrarPerdida` (declaraba retornar `{id, monto_perdido, cantidad_items}` pero ya devolvía también `responsable_id/nombre/rol`), se agregaron `total_a_pagar` y la clave `entregado` faltantes en `lib/print-ticket.ts`, y se incluyeron en `main` las APIs `/api/perdidas`, `/api/perdidas/resolver` y `/api/permisos-especiales` que el módulo de Pagos ya consumía pero no estaban deployadas (devolvían 404 silencioso).
+    - Vercel pasa build limpio con todas las rutas (`/api/cuentas-persona`, `/api/cuentas-persona/asignaciones`, `/api/perdidas`, `/api/perdidas/resolver`, `/api/permisos-especiales`, `/api/activos`, `/api/compras`, `/api/depreciacion`, `/api/empleados`, `/api/gastos`, `/api/ingredientes`, `/api/margenes`, `/api/proveedores`, `/api/recetas`, `/api/seed-demo`, `/api/seed-recetas`).
+
 18. **[NUEVO]** Tanda 5.1 — KDS doble (impresión física como respaldo del KDS digital)
     - **Motor de impresión:** `lib/print-ticket.ts` ahora soporta los tipos `'cocina'` y `'bar'` (sin precios, con cantidades en tamaño grande y notas/especiales/salsas resaltadas) además de los existentes (`'comanda'`, `'boleta'`, `'precuenta'`). Nueva función `buildMultiTicketHtml(tickets, config)` une varios tickets en un solo documento con `page-break-after: always`, de modo que cocina + bar se imprimen en un solo trabajo de impresión. Helper público `splitComandaParaEstaciones(comanda, productos, { nombreNegocio, soloPendientes })` separa los ítems entre cocina y bar reutilizando exactamente la misma regla que usa el KDS digital (`CATEGORIAS_BAR = ['bebidas','cervezas','jugos_bebidas','tragos']`).
     - **Configuración:** nuevo campo `Configuracion.impresora_copias_auto` (default `true`) y switch en Configuración → Impresión: "Preguntar por copias para cocina y bar (KDS doble)". Si se desactiva, "Enviar a cocina" no abre ningún diálogo de impresión.
@@ -703,9 +779,9 @@ Esta sección agrupa las decisiones que están **postergadas a propósito** dura
 ---
 
 ## Version
-- **Version:** 3.8.0-finanzas
+- **Version:** 3.9.0-split-bill
 - **Fecha:** Mayo 2026
-- **Estado:** Sistema Completo 100% Real con BD Neon + 5 tandas de bugs + 3 tandas de funcionalidad (recetas, compras, finanzas)
-- **BD:** Neon PostgreSQL con 7 categorías, 33 productos, inventario por insumos, recetas reales, proveedores, compras, activos, empleados, gastos
-- **Ambiente:** Vercel deployment ready
-- **Última Actualización:** Tandas 6 → 8.1 (Mayo 2026) — Recetas reales por producto con `modo_stock` y descuento real de insumos en `crearItemOrden`; módulo Proveedores + Compras con promedio ponderado en `costo_unitario`; nuevo módulo **Finanzas** (gastos, sueldos, empleados, activos con depreciación lineal automática, márgenes); insumos clasificados por `tipo` (comida/negocio/otro); endpoint `/api/seed-demo` idempotente que pobla todo coherente con los usuarios iniciales (Carlos García, María López, Pedro Martínez, Laura Rodríguez, Ana Soto). Antes de eso (Tanda 5.2) — Notificaciones cross-device (bug #28). Nueva tabla `soda_master.notificaciones` (auto-bootstrap), endpoints `GET/POST /api/notificaciones` y `PATCH /api/notificaciones/[id]`. Cuando cocina marca "problema" o "listo" se persiste una notificación dirigida al mesero dueño de la orden; el cliente hace polling cada 10 s (solo con tab visible) y dispatcha las nuevas. El toast tiene auto-dismiss diferenciado (10 s problema / 6 s listo), botón "Ir a POS" para problemas y persiste el `vista=true` en backend al cerrar para no re-entregar. Reemplaza el "roadmap WebSocket" sin perder el contrato. 24/28 bugs del scan corregidos + funcionalidades de "Precuenta", "KDS doble opt-in" y notificaciones cross-device; los 4 bugs restantes son #9-#10 (postergados a producción final), #11 (refuerzo opcional), #23 (mesas), #24, #26-#27 (cosmética / housekeeping).
+- **Estado:** Sistema Completo 100% Real con BD Neon + 5 tandas de bugs + 4 tandas de funcionalidad (recetas, compras, finanzas, split-bill persistido)
+- **BD:** Neon PostgreSQL con 7 categorías, 33 productos, inventario por insumos, recetas reales, proveedores, compras, activos, empleados, gastos, cuentas por persona, pérdidas, permisos especiales
+- **Ambiente:** Vercel deployment ready (instalación pinneada a pnpm 10 vía Corepack)
+- **Última Actualización:** Tanda 9 / 9.1 (Mayo 2026) — **Split bill persistido en BD**: nuevas tablas `soda_master.cuentas_persona` y columnas `items_orden.cuenta_persona_id`/`pagado`/`pago_id`; APIs `/api/cuentas-persona`, `/api/cuentas-persona/asignaciones`. Soporta múltiples destinos por línea (server splittea las líneas necesarias y conserva `cuenta_persona_id` en el remanente al cobrar parcial). UI permite agregar/quitar personas dinámicamente y persiste el estado al refrescar y entre dispositivos. **Pagos parciales**: `crearPago` acepta `item_orden_ids[]` y `item_partials[]`. **Bugfix botón "Confirmar Pago Parcial"**: eliminado auto-relleno de efectivo que daba discrepancias de redondeo + tolerancia ½ peso. **Bugfix "Mesa desconocida"** en Pagos Recientes vía JOIN en `getPagos`. **Perro muerto**: tabla `perdidas_comanda`, captura del responsable que abrió la mesa, registro de pérdida y resolución retroactiva (`/api/perdidas`, `/api/perdidas/resolver`). **Permisos especiales** (`apertura_mesa`): admin habilita temporalmente a un cajero (`/api/permisos-especiales`). **KDS por ítem**: botones individuales Preparando/Listo/Problema más acción bulk; los `listo` quedan visibles dimmed y los `entregado` desaparecen. Migraciones idempotentes con `DO $$ EXCEPTION WHEN duplicate_object` para constraints. **Deploy fix** en Vercel: `pnpm install --frozen-lockfile` + `packageManager: pnpm@10.0.0`. Antes de eso (Tandas 6 → 8.1) — Recetas reales por producto con `modo_stock` y descuento real de insumos en `crearItemOrden`; módulo Proveedores + Compras con promedio ponderado en `costo_unitario`; módulo **Finanzas** (gastos, sueldos, empleados, activos con depreciación lineal automática, márgenes); insumos clasificados por `tipo` (comida/negocio/otro); endpoint `/api/seed-demo` idempotente. Y antes (Tanda 5.2) — Notificaciones cross-device (bug #28). 24/28 bugs del scan corregidos; los restantes son #9-#10 (postergados a producción final), #11 (refuerzo opcional), #23 (mesas), #24, #26-#27 (cosmética / housekeeping).
