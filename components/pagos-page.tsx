@@ -1182,6 +1182,10 @@ export function PagosPage() {
                   <div className="space-y-3">
                     {pagosRecientes.map(pago => {
                       const comanda = comandas.find(c => c.id === pago.comandaId)
+                      const mesaNombre =
+                        pago.mesa_nombre ||
+                        comanda?.mesaNombre ||
+                        (pago.mesa_id ? `Mesa ${pago.mesa_id}` : 'Mesa desconocida')
                       return (
                         <div
                           key={pago.id}
@@ -1189,7 +1193,7 @@ export function PagosPage() {
                         >
                           <div>
                             <p className="font-medium text-foreground">
-                              {comanda?.mesaNombre || 'Mesa desconocida'}
+                              {mesaNombre}
                             </p>
                             <p className="text-xs text-muted-foreground">
                               {formatDate(pago.fecha)} • {pago.metodo}

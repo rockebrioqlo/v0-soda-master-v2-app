@@ -172,6 +172,8 @@ export interface Pago {
   id: string
   comandaId: string
   orden_id?: string
+  mesa_id?: string | null
+  mesa_nombre?: string | null
   metodo: MetodoPago
   monto: number
   total?: number

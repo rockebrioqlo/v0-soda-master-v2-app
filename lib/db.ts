@@ -65,6 +65,8 @@ function mapPago(row: any): Pago {
     id: row.id,
     comandaId: row.orden_id ?? row.comandaId ?? row.ordenId ?? '',
     orden_id: row.orden_id ?? row.ordenId,
+    mesa_id: row.mesa_id ?? row.mesaId ?? null,
+    mesa_nombre: row.mesa_nombre ?? row.mesaNombre ?? null,
     metodo: row.metodo,
     monto,
     propina,
@@ -1663,20 +1665,29 @@ export const db = {
     let rows: any[]
     if (filtro?.fecha === 'hoy') {
       rows = await sql`
-        SELECT * FROM soda_master.pagos
-        WHERE (created_at AT TIME ZONE 'America/Santiago')::date = (now() AT TIME ZONE 'America/Santiago')::date
-        ORDER BY created_at DESC
+        SELECT p.*, o.mesa_id, m.nombre AS mesa_nombre
+        FROM soda_master.pagos p
+        LEFT JOIN soda_master.ordenes o ON o.id = p.orden_id
+        LEFT JOIN soda_master.mesas m ON m.id = o.mesa_id
+        WHERE (p.created_at AT TIME ZONE 'America/Santiago')::date = (now() AT TIME ZONE 'America/Santiago')::date
+        ORDER BY p.created_at DESC
       `
     } else if (filtro?.fecha) {
       rows = await sql`
-        SELECT * FROM soda_master.pagos
-        WHERE (created_at AT TIME ZONE 'America/Santiago')::date = ${filtro.fecha}::date
-        ORDER BY created_at DESC
+        SELECT p.*, o.mesa_id, m.nombre AS mesa_nombre
+        FROM soda_master.pagos p
+        LEFT JOIN soda_master.ordenes o ON o.id = p.orden_id
+        LEFT JOIN soda_master.mesas m ON m.id = o.mesa_id
+        WHERE (p.created_at AT TIME ZONE 'America/Santiago')::date = ${filtro.fecha}::date
+        ORDER BY p.created_at DESC
       `
     } else {
       rows = await sql`
-        SELECT * FROM soda_master.pagos
-        ORDER BY created_at DESC
+        SELECT p.*, o.mesa_id, m.nombre AS mesa_nombre
+        FROM soda_master.pagos p
+        LEFT JOIN soda_master.ordenes o ON o.id = p.orden_id
+        LEFT JOIN soda_master.mesas m ON m.id = o.mesa_id
+        ORDER BY p.created_at DESC
         LIMIT 200
       `
     }
