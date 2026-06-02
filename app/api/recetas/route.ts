@@ -3,6 +3,13 @@ import { db } from '@/lib/db'
 export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url)
+    // Modo "resumen": devuelve un objeto { producto_id: {base, opcionales,
+    // extras, total} } para mostrar el indicador en la tabla de inventario
+    // sin tener que hacer una request por producto.
+    if (searchParams.get('resumen') === 'true') {
+      const data = await db.getResumenRecetasPorProducto()
+      return Response.json(data)
+    }
     const productoId = searchParams.get('producto_id')
     if (!productoId) {
       return Response.json({ error: 'producto_id requerido' }, { status: 400 })

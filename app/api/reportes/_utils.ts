@@ -1,14 +1,14 @@
-function toIsoDate(value: string | null | undefined, fallback: string): string {
-  if (!value) return fallback
-  if (value === 'hoy') return new Date().toISOString().slice(0, 10)
-  const match = /^(\d{4}-\d{2}-\d{2})/.exec(value)
-  return match ? match[1] : fallback
-}
+import { fechaHoyZonaNegocio, normalizarFechaZonaNegocio } from '@/lib/fechas'
 
 export function parseRango(searchParams: URLSearchParams) {
-  const hoy = new Date().toISOString().slice(0, 10)
-  const desde = toIsoDate(searchParams.get('desde'), hoy)
-  const hasta = toIsoDate(searchParams.get('hasta'), hoy)
+  // "Hoy" se interpreta en la zona horaria del negocio (Chile), porque
+  // todas las consultas de reportes filtran con
+  // `AT TIME ZONE 'America/Santiago'`. Si calculamos "hoy" en UTC, las
+  // ventas hechas de noche aparecen fuera de rango y desaparecen del
+  // Dashboard. Ver `lib/fechas.ts`.
+  const hoy = fechaHoyZonaNegocio()
+  const desde = normalizarFechaZonaNegocio(searchParams.get('desde'), hoy)
+  const hasta = normalizarFechaZonaNegocio(searchParams.get('hasta'), hoy)
   if (desde > hasta) {
     return { desde: hasta, hasta: desde }
   }

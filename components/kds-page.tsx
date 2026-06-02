@@ -7,10 +7,11 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
 import { formatTime, getElapsedTime } from '@/lib/helpers'
-import { Check, ChefHat, Wine, Clock, AlertCircle, Zap, RefreshCw, Printer } from 'lucide-react'
+import { Check, ChefHat, Wine, Clock, AlertCircle, Zap, RefreshCw, Printer, History } from 'lucide-react'
 import { showToast } from '@/components/toast'
 import type { Comanda, ItemComanda } from '@/lib/types'
 import { PrintPreviewDialog } from '@/components/print-preview-dialog'
+import { KDSHistorialDialog } from '@/components/kds-historial-dialog'
 import {
   readPrintConfigFromState,
   splitComandaParaEstaciones,
@@ -24,6 +25,7 @@ export function KDSPage() {
   const [, setTick] = useState(0)
   const [reimprimirTickets, setReimprimirTickets] = useState<TicketData[]>([])
   const [showReimprimirDialog, setShowReimprimirDialog] = useState(false)
+  const [showHistorial, setShowHistorial] = useState(false)
   const printConfig = readPrintConfigFromState(configuracion)
   const nombreNegocio =
     configuracion?.nombre_negocio || configuracion?.nombreRestaurante || 'Soda Master'
@@ -229,15 +231,25 @@ export function KDSPage() {
             'KDS'
           )}
         </h1>
-        <Button
-          onClick={handleRefresh}
-          disabled={isLoading}
-          variant="outline"
-          className="gap-2 border-border min-h-[44px]"
-        >
-          <RefreshCw className={cn('h-4 w-4', isLoading && 'animate-spin')} />
-          <span className="hidden sm:inline">{isLoading ? 'Actualizando...' : 'Refrescar'}</span>
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            onClick={() => setShowHistorial(true)}
+            variant="outline"
+            className="gap-2 border-border min-h-[44px]"
+          >
+            <History className="h-4 w-4" />
+            <span className="hidden sm:inline">Historial</span>
+          </Button>
+          <Button
+            onClick={handleRefresh}
+            disabled={isLoading}
+            variant="outline"
+            className="gap-2 border-border min-h-[44px]"
+          >
+            <RefreshCw className={cn('h-4 w-4', isLoading && 'animate-spin')} />
+            <span className="hidden sm:inline">{isLoading ? 'Actualizando...' : 'Refrescar'}</span>
+          </Button>
+        </div>
       </div>
 
       {/* Role-specific single column OR admin two-column */}
@@ -336,6 +348,12 @@ export function KDSPage() {
         config={printConfig}
         title="Reimprimir ticket de cocina/bar"
         closeLabel="Cancelar"
+      />
+
+      <KDSHistorialDialog
+        open={showHistorial}
+        onOpenChange={setShowHistorial}
+        estacion={isRolCocina ? 'cocina' : isRolBar ? 'bar' : null}
       />
     </div>
   )

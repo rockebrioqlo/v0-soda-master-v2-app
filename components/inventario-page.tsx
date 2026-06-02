@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect, useCallback } from 'react'
+import { useApp } from '@/lib/app-context'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -8,6 +9,7 @@ import { Badge } from '@/components/ui/badge'
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogHeader,
   DialogTitle,
   DialogFooter,
@@ -43,6 +45,7 @@ import {
   Truck,
   ShoppingBag,
   TrendingUp,
+  Trash2,
 } from 'lucide-react'
 import { RecetaEditorDialog } from '@/components/receta-editor-dialog'
 import { ProveedoresTab } from '@/components/proveedores-tab'
@@ -50,6 +53,7 @@ import { ComprasTab } from '@/components/compras-tab'
 import { MargenesTab } from '@/components/margenes-tab'
 import { showToast } from '@/components/toast'
 import { Switch } from '@/components/ui/switch'
+import { Textarea } from '@/components/ui/textarea'
 
 interface InventarioRow {
   id: string
@@ -93,7 +97,31 @@ const MODO_STOCK_LABEL: Record<string, string> = {
   producto_y_receta: 'Producto + receta',
 }
 
+// Tipos de merma soportados; alineados con /api/mermas. Los marcados
+// como ADMIN solo aparecen en el selector si el usuario tiene rol admin.
+const MERMA_TIPOS: Array<{ value: string; label: string; adminOnly?: boolean }> = [
+  { value: 'accidente', label: 'Accidente / rotura' },
+  { value: 'vencido', label: 'Vencido / mal estado' },
+  { value: 'consumo_interno', label: 'Consumo interno' },
+  { value: 'error_preparacion', label: 'Error de preparación' },
+  { value: 'perdida_sin_explicacion', label: 'Pérdida sin explicación', adminOnly: true },
+  { value: 'robo', label: 'Robo', adminOnly: true },
+]
+
+type EliminarTarget = {
+  kind: 'producto' | 'insumo'
+  id: string
+  nombre: string
+  stock_actual: number
+  unidad: string
+}
+
 export function InventarioPage() {
+  const { state } = useApp()
+  const usuarioActual = state.usuarioActual
+  const esAdmin =
+    usuarioActual?.rol === 'admin' || usuarioActual?.rol === 'administrador'
+
   const [mainTab, setMainTab] = useState<
     'productos' | 'insumos' | 'proveedores' | 'compras' | 'margenes'
   >('productos')
@@ -103,8 +131,19 @@ export function InventarioPage() {
   const [loadingInsumos, setLoadingInsumos] = useState(false)
   const [seedingRecetas, setSeedingRecetas] = useState(false)
   const [recetaProducto, setRecetaProducto] = useState<{ id: string; nombre: string } | null>(null)
+  // Resumen { producto_id -> {base, opcionales, extras, total} } para
+  // pintar el conteo de ingredientes directo en la tabla y que el
+  // dueño sepa cuáles productos ya tienen receta configurada.
+  const [resumenRecetas, setResumenRecetas] = useState<
+    Record<string, { base: number; opcionales: number; extras: number; total: number }>
+  >({})
   const [showInsumoDialog, setShowInsumoDialog] = useState(false)
   const [editingInsumo, setEditingInsumo] = useState<InsumoRow | null>(null)
+  const [eliminarTarget, setEliminarTarget] = useState<EliminarTarget | null>(null)
+  const [eliminarMotivo, setEliminarMotivo] = useState<'merma' | 'correccion_admin'>('merma')
+  const [eliminarTipoMerma, setEliminarTipoMerma] = useState<string>('accidente')
+  const [eliminarDescripcion, setEliminarDescripcion] = useState('')
+  const [eliminando, setEliminando] = useState(false)
   const [insumoForm, setInsumoForm] = useState({
     nombre: '',
     categoria: 'insumos',
@@ -133,12 +172,26 @@ export function InventarioPage() {
   const loadInventario = useCallback(async () => {
     setLoading(true)
     try {
-      const res = await fetch('/api/inventario')
-      if (res.ok) {
-        const data = await res.json()
+      // Cargamos en paralelo el inventario y el resumen de recetas. El
+      // resumen es opcional: si falla seguimos mostrando la tabla
+      // normal sin el indicador de ingredientes.
+      const [resInv, resResumen] = await Promise.all([
+        fetch('/api/inventario'),
+        fetch('/api/recetas?resumen=true').catch(() => null),
+      ])
+      if (resInv.ok) {
+        const data = await resInv.json()
         setItems(Array.isArray(data) ? data : [])
       } else {
         showToast('Error al cargar inventario', 'error')
+      }
+      if (resResumen && resResumen.ok) {
+        try {
+          const r = await resResumen.json()
+          if (r && typeof r === 'object') setResumenRecetas(r)
+        } catch {
+          /* ignore */
+        }
       }
     } catch {
       showToast('Error de conexión', 'error')
@@ -305,6 +358,76 @@ export function InventarioPage() {
     return 'text-foreground'
   }
 
+  // ── Eliminar producto / insumo con motivo ──────────────────────────
+  const abrirEliminar = (target: EliminarTarget) => {
+    setEliminarTarget(target)
+    setEliminarMotivo('merma')
+    setEliminarTipoMerma('accidente')
+    setEliminarDescripcion('')
+  }
+
+  const cerrarEliminar = () => {
+    if (eliminando) return
+    setEliminarTarget(null)
+  }
+
+  const handleConfirmarEliminar = async () => {
+    if (!eliminarTarget) return
+    if (!usuarioActual?.id) {
+      showToast('Sesión inválida: inicia sesión nuevamente', 'error')
+      return
+    }
+    if (eliminarMotivo === 'correccion_admin' && !esAdmin) {
+      showToast('Solo el administrador puede hacer correcciones administrativas', 'error')
+      return
+    }
+    if (eliminarMotivo === 'merma' && eliminarDescripcion.trim().length < 3) {
+      showToast('Describe brevemente el motivo de la merma', 'error')
+      return
+    }
+    const url =
+      eliminarTarget.kind === 'producto'
+        ? `/api/productos/${eliminarTarget.id}`
+        : `/api/ingredientes/${eliminarTarget.id}`
+    const payload: Record<string, unknown> = {
+      motivo: eliminarMotivo,
+      registrado_por: usuarioActual.id,
+    }
+    if (eliminarMotivo === 'merma') {
+      payload.motivo_merma = eliminarTipoMerma
+      payload.descripcion = eliminarDescripcion.trim()
+      payload.cantidad = eliminarTarget.stock_actual
+    } else if (eliminarDescripcion.trim()) {
+      payload.descripcion = eliminarDescripcion.trim()
+    }
+    setEliminando(true)
+    try {
+      const res = await fetch(url, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        throw new Error(data?.error || 'No se pudo eliminar')
+      }
+      showToast(
+        eliminarTarget.kind === 'producto' ? 'Producto eliminado' : 'Insumo eliminado',
+        'success',
+      )
+      setEliminarTarget(null)
+      if (eliminarTarget.kind === 'producto') {
+        await loadInventario()
+      } else {
+        await loadInsumos()
+      }
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : 'Error al eliminar', 'error')
+    } finally {
+      setEliminando(false)
+    }
+  }
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -451,10 +574,9 @@ export function InventarioPage() {
                   <TableRow className="border-border">
                     <TableHead className="text-muted-foreground">Producto</TableHead>
                     <TableHead className="text-muted-foreground">Categoría</TableHead>
+                    <TableHead className="text-muted-foreground">Ingredientes</TableHead>
                     <TableHead className="text-muted-foreground">Modo stock</TableHead>
-                    <TableHead className="text-muted-foreground">Unidad</TableHead>
-                    <TableHead className="text-right text-muted-foreground">Stock actual</TableHead>
-                    <TableHead className="text-right text-muted-foreground">Stock mín.</TableHead>
+                    <TableHead className="text-right text-muted-foreground">Stock</TableHead>
                     <TableHead className="text-center text-muted-foreground">Estado</TableHead>
                     <TableHead className="text-right text-muted-foreground">Acciones</TableHead>
                   </TableRow>
@@ -490,14 +612,65 @@ export function InventarioPage() {
                           {item.categoria?.replace('_', ' ')}
                         </Badge>
                       </TableCell>
+                      <TableCell>
+                        {(() => {
+                          const r = resumenRecetas[item.producto_id]
+                          if (!r || r.total === 0) {
+                            return (
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                className="h-7 gap-1 border-amber-500/40 text-xs text-amber-700 hover:bg-amber-500/10"
+                                onClick={() =>
+                                  setRecetaProducto({
+                                    id: item.producto_id,
+                                    nombre: item.producto_nombre,
+                                  })
+                                }
+                              >
+                                <Plus className="h-3 w-3" />
+                                Definir ingredientes
+                              </Button>
+                            )
+                          }
+                          return (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setRecetaProducto({
+                                  id: item.producto_id,
+                                  nombre: item.producto_nombre,
+                                })
+                              }
+                              className="flex items-center gap-1 text-xs hover:underline"
+                              title="Editar ingredientes"
+                            >
+                              <Badge className="bg-emerald-500/15 text-emerald-600">
+                                {r.base} base
+                              </Badge>
+                              {r.opcionales > 0 && (
+                                <Badge className="bg-sky-500/15 text-sky-600">
+                                  {r.opcionales} opc.
+                                </Badge>
+                              )}
+                              {r.extras > 0 && (
+                                <Badge className="bg-amber-500/15 text-amber-700">
+                                  {r.extras} extras
+                                </Badge>
+                              )}
+                            </button>
+                          )
+                        })()}
+                      </TableCell>
                       <TableCell className="text-xs text-muted-foreground">
                         {MODO_STOCK_LABEL[item.modo_stock || 'producto'] || item.modo_stock}
                       </TableCell>
-                      <TableCell className="text-muted-foreground">{item.unidad_medida}</TableCell>
                       <TableCell className={cn('text-right', stockColor(item))}>
                         {item.stock_actual}
+                        <span className="ml-1 text-xs text-muted-foreground">
+                          /{item.stock_minimo} mín
+                        </span>
                       </TableCell>
-                      <TableCell className="text-right text-muted-foreground">{item.stock_minimo}</TableCell>
                       <TableCell className="text-center">
                         {item.stock_actual === 0 ? (
                           <Badge className="bg-red-500 text-white">Sin stock</Badge>
@@ -510,9 +683,10 @@ export function InventarioPage() {
                       <TableCell className="text-right">
                         <div className="flex justify-end gap-1">
                           <Button
-                            variant="ghost"
-                            size="icon"
-                            title="Editar receta"
+                            variant="outline"
+                            size="sm"
+                            className="h-8 gap-1 text-xs"
+                            title="Configurar ingredientes y crear variantes"
                             onClick={() =>
                               setRecetaProducto({
                                 id: item.producto_id,
@@ -520,10 +694,28 @@ export function InventarioPage() {
                               })
                             }
                           >
-                            <BookOpen className="h-4 w-4" />
+                            <BookOpen className="h-3.5 w-3.5" />
+                            <span className="hidden md:inline">Receta</span>
                           </Button>
-                          <Button variant="ghost" size="icon" onClick={() => handleEdit(item)}>
+                          <Button variant="ghost" size="icon" onClick={() => handleEdit(item)} title="Editar stock">
                             <Edit className="h-4 w-4" />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            title="Eliminar producto"
+                            className="text-red-500 hover:bg-red-500/10 hover:text-red-500"
+                            onClick={() =>
+                              abrirEliminar({
+                                kind: 'producto',
+                                id: item.producto_id,
+                                nombre: item.producto_nombre,
+                                stock_actual: Number(item.stock_actual) || 0,
+                                unidad: item.unidad_medida || 'unidad',
+                              })
+                            }
+                          >
+                            <Trash2 className="h-4 w-4" />
                           </Button>
                         </div>
                       </TableCell>
@@ -619,25 +811,45 @@ export function InventarioPage() {
                               {formatCurrency(ing.costo_unitario)}
                             </TableCell>
                             <TableCell className="text-right">
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                onClick={() => {
-                                  setEditingInsumo(ing)
-                                  setInsumoForm({
-                                    nombre: ing.nombre,
-                                    categoria: ing.categoria,
-                                    unidad_medida: ing.unidad_medida,
-                                    stock_actual: String(ing.stock_actual),
-                                    stock_minimo: String(ing.stock_minimo),
-                                    costo_unitario: String(ing.costo_unitario),
-                                    tipo: ing.tipo || 'comida',
-                                  })
-                                  setShowInsumoDialog(true)
-                                }}
-                              >
-                                <Edit className="h-4 w-4" />
-                              </Button>
+                              <div className="flex justify-end gap-1">
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  title="Editar insumo"
+                                  onClick={() => {
+                                    setEditingInsumo(ing)
+                                    setInsumoForm({
+                                      nombre: ing.nombre,
+                                      categoria: ing.categoria,
+                                      unidad_medida: ing.unidad_medida,
+                                      stock_actual: String(ing.stock_actual),
+                                      stock_minimo: String(ing.stock_minimo),
+                                      costo_unitario: String(ing.costo_unitario),
+                                      tipo: ing.tipo || 'comida',
+                                    })
+                                    setShowInsumoDialog(true)
+                                  }}
+                                >
+                                  <Edit className="h-4 w-4" />
+                                </Button>
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  title="Eliminar insumo"
+                                  className="text-red-500 hover:bg-red-500/10 hover:text-red-500"
+                                  onClick={() =>
+                                    abrirEliminar({
+                                      kind: 'insumo',
+                                      id: ing.id,
+                                      nombre: ing.nombre,
+                                      stock_actual: Number(ing.stock_actual) || 0,
+                                      unidad: ing.unidad_medida || 'unidad',
+                                    })
+                                  }
+                                >
+                                  <Trash2 className="h-4 w-4" />
+                                </Button>
+                              </div>
                             </TableCell>
                           </TableRow>
                         ))}
@@ -670,6 +882,7 @@ export function InventarioPage() {
           productoId={recetaProducto.id}
           productoNombre={recetaProducto.nombre}
           onSaved={loadInventario}
+          onClonado={loadInventario}
         />
       )}
 
@@ -834,6 +1047,144 @@ export function InventarioPage() {
               className="bg-amber-500 text-zinc-900 hover:bg-amber-400"
             >
               {saving ? 'Guardando...' : 'Guardar'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Eliminar producto / insumo con motivo */}
+      <Dialog
+        open={!!eliminarTarget}
+        onOpenChange={(o) => {
+          if (!o) cerrarEliminar()
+        }}
+      >
+        <DialogContent className="border-border bg-card">
+          <DialogHeader>
+            <DialogTitle className="text-foreground">
+              Eliminar {eliminarTarget?.kind === 'producto' ? 'producto' : 'insumo'}
+            </DialogTitle>
+            <DialogDescription>
+              {eliminarTarget ? (
+                <>
+                  Vas a dar de baja{' '}
+                  <span className="font-semibold text-foreground">{eliminarTarget.nombre}</span>
+                  . Stock actual: {eliminarTarget.stock_actual} {eliminarTarget.unidad}. El ítem queda
+                  inactivo (no se ve en POS) pero se preserva en el historial.
+                </>
+              ) : null}
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4">
+            <div>
+              <p className="mb-2 text-sm font-medium text-foreground">¿Por qué se elimina?</p>
+              <div className="space-y-2">
+                <label className="flex cursor-pointer items-start gap-3 rounded-md border border-border bg-muted/40 p-3 hover:bg-muted/70">
+                  <input
+                    type="radio"
+                    name="motivo-eliminar"
+                    className="mt-1"
+                    checked={eliminarMotivo === 'merma'}
+                    onChange={() => setEliminarMotivo('merma')}
+                  />
+                  <div className="flex-1">
+                    <p className="text-sm font-medium text-foreground">Merma</p>
+                    <p className="text-xs text-muted-foreground">
+                      Se perdió, se rompió, venció, etc. Queda registrado el motivo y el stock
+                      actual se descuenta como pérdida.
+                    </p>
+                  </div>
+                </label>
+                <label
+                  className={cn(
+                    'flex cursor-pointer items-start gap-3 rounded-md border border-border bg-muted/40 p-3 hover:bg-muted/70',
+                    !esAdmin && 'cursor-not-allowed opacity-50 hover:bg-muted/40',
+                  )}
+                >
+                  <input
+                    type="radio"
+                    name="motivo-eliminar"
+                    className="mt-1"
+                    checked={eliminarMotivo === 'correccion_admin'}
+                    onChange={() => esAdmin && setEliminarMotivo('correccion_admin')}
+                    disabled={!esAdmin}
+                  />
+                  <div className="flex-1">
+                    <p className="text-sm font-medium text-foreground">
+                      Corrección administrativa
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      Estaba mal creado, ya no se vende, etc. No requiere motivo pero queda en
+                      el log de auditoría. {!esAdmin && '(Solo administrador)'}
+                    </p>
+                  </div>
+                </label>
+              </div>
+            </div>
+
+            {eliminarMotivo === 'merma' && (
+              <div className="space-y-3 rounded-md border border-border bg-muted/30 p-3">
+                <div className="space-y-1">
+                  <label className="text-sm font-medium text-foreground">Tipo de merma</label>
+                  <Select value={eliminarTipoMerma} onValueChange={setEliminarTipoMerma}>
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {MERMA_TIPOS.filter((t) => !t.adminOnly || esAdmin).map((t) => (
+                        <SelectItem key={t.value} value={t.value}>
+                          {t.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-1">
+                  <label className="text-sm font-medium text-foreground">
+                    Describe el motivo
+                  </label>
+                  <Textarea
+                    rows={3}
+                    placeholder="Ej: caja se cayó al traerla del proveedor"
+                    value={eliminarDescripcion}
+                    onChange={(e) => setEliminarDescripcion(e.target.value)}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Mínimo 3 caracteres. Queda en el reporte de mermas con tu nombre.
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {eliminarMotivo === 'correccion_admin' && (
+              <div className="space-y-1 rounded-md border border-border bg-muted/30 p-3">
+                <label className="text-sm font-medium text-foreground">
+                  Comentario (opcional)
+                </label>
+                <Textarea
+                  rows={2}
+                  placeholder="Ej: se duplicó al cargar el catálogo"
+                  value={eliminarDescripcion}
+                  onChange={(e) => setEliminarDescripcion(e.target.value)}
+                />
+                <p className="text-xs text-muted-foreground">
+                  Queda en el log de auditoría con tu usuario y la fecha.
+                </p>
+              </div>
+            )}
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={cerrarEliminar} disabled={eliminando}>
+              Cancelar
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={handleConfirmarEliminar}
+              disabled={eliminando}
+            >
+              {eliminando ? 'Eliminando...' : 'Confirmar eliminación'}
             </Button>
           </DialogFooter>
         </DialogContent>

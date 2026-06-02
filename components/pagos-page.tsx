@@ -293,16 +293,29 @@ export function PagosPage() {
   const totalAPagar = total + propinaCalculada
   const montoPorPersona =
     dividirCuenta && numPersonasInt > 0 ? totalAPagar / numPersonasInt : totalAPagar
-  const vuelto = parseFloat(efectivoRecibido) - totalAPagar
+  // Aceptamos números escritos a la chilena ("20.000", "20000", "20 000",
+  // incluso con $). Sólo nos quedamos con los dígitos. Así "20.000" se
+  // interpreta como 20.000 y no como 20 (que es lo que hacía parseFloat).
+  const efectivoRecibidoNum = (() => {
+    const limpio = (efectivoRecibido || '').replace(/[^\d]/g, '')
+    if (!limpio) return 0
+    return Number(limpio)
+  })()
+  const vuelto = efectivoRecibidoNum - totalAPagar
 
-  // Sólo cajero/administrador pueden registrar el pago.
-  const puedeCobrar =
-    !!usuarioActual &&
-    ['cajero', 'administrador', 'admin'].includes(usuarioActual.rol)
+  // Sólo cajero/administrador pueden registrar el pago. También
+  // contemplamos roles adicionales permanentes (ej: un mesero al que
+  // el admin le configuró cajero como rol permanente).
+  const rolesUsuario: string[] = usuarioActual
+    ? [usuarioActual.rol, ...(usuarioActual.roles_adicionales || [])]
+    : []
+  const puedeCobrar = rolesUsuario.some((r) =>
+    ['cajero', 'administrador', 'admin'].includes(r),
+  )
 
   // El registro de "perro muerto" (cliente que se fue sin pagar) es una
   // operación sensible: deja constancia de pérdida monetaria. Sólo el
-  // administrador la autoriza.
+  // administrador la autoriza (los roles adicionales NO suplen admin).
   const esAdmin =
     !!usuarioActual && ['administrador', 'admin'].includes(usuarioActual.rol)
 
@@ -318,7 +331,7 @@ export function PagosPage() {
 
   const ticketDataBoleta = useMemo<TicketData | null>(() => {
     if (!comandaAPagar) return null
-    const efectivoNum = parseFloat(efectivoRecibido)
+    const efectivoNum = efectivoRecibidoNum
     return {
       tipo: 'boleta',
       nombre_negocio:
@@ -850,7 +863,7 @@ export function PagosPage() {
         descuento: descuentoMonto,
         dividido_en: dividirCuenta ? numPersonasInt || 1 : 1,
         vuelto:
-          metodoPago === 'efectivo' && parseFloat(efectivoRecibido) >= totalAPagar ? vuelto : null,
+          metodoPago === 'efectivo' && efectivoRecibidoNum >= totalAPagar ? vuelto : null,
         referencia: null,
         aprobado: true,
       }
@@ -1790,23 +1803,81 @@ export function PagosPage() {
                 {metodoPago === 'efectivo' && (
                   <div className="mt-4 space-y-3">
                     <div>
-                      <label className="mb-2 block text-sm text-muted-foreground">Efectivo recibido</label>
+                      <label className="mb-2 block text-sm text-muted-foreground">
+                        Efectivo recibido
+                      </label>
                       <Input
-                        type="number"
-                        value={efectivoRecibido}
-                        onChange={e => setEfectivoRecibido(e.target.value)}
-                        placeholder={formatCurrency(totalAPagar)}
-                        className="border-border bg-muted"
+                        // No usamos type="number": en Chile la gente escribe
+                        // "20.000" con punto de miles y type="number" lo
+                        // interpreta como 20. Aceptamos texto y nos
+                        // quedamos sólo con los dígitos al calcular.
+                        type="text"
+                        inputMode="numeric"
+                        value={
+                          efectivoRecibido
+                            ? efectivoRecibidoNum.toLocaleString('es-CL')
+                            : ''
+                        }
+                        onChange={(e) => {
+                          const limpio = e.target.value.replace(/[^\d]/g, '')
+                          setEfectivoRecibido(limpio)
+                        }}
+                        placeholder={formatCurrency(totalAPagar).replace('$', '')}
+                        className="border-border bg-muted text-right text-lg font-semibold"
                       />
+                      <div className="mt-2 grid grid-cols-3 gap-2 sm:grid-cols-6">
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          onClick={() =>
+                            setEfectivoRecibido(String(Math.ceil(totalAPagar)))
+                          }
+                          className="text-xs"
+                        >
+                          Exacto
+                        </Button>
+                        {[1000, 2000, 5000, 10000, 20000].map((d) => (
+                          <Button
+                            key={d}
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            onClick={() => {
+                              const actual = efectivoRecibidoNum
+                              setEfectivoRecibido(String(actual + d))
+                            }}
+                            className="text-xs"
+                          >
+                            +{(d / 1000).toLocaleString('es-CL')}k
+                          </Button>
+                        ))}
+                      </div>
+                      {efectivoRecibidoNum > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => setEfectivoRecibido('')}
+                          className="mt-1 text-[11px] text-muted-foreground underline"
+                        >
+                          limpiar
+                        </button>
+                      )}
                     </div>
-                    {parseFloat(efectivoRecibido || '0') >= totalAPagar - 0.5 && (
+                    {efectivoRecibidoNum >= Math.ceil(totalAPagar) && (
                       <div className="rounded-lg bg-green-500/20 p-3 text-center">
                         <p className="text-sm text-muted-foreground">Vuelto</p>
-                        <p className="text-2xl font-bold text-green-500">
+                        <p className="text-3xl font-bold text-green-500">
                           {formatCurrency(Math.max(vuelto, 0))}
                         </p>
                       </div>
                     )}
+                    {efectivoRecibido !== '' &&
+                      efectivoRecibidoNum > 0 &&
+                      efectivoRecibidoNum < Math.ceil(totalAPagar) && (
+                        <div className="rounded-lg bg-amber-500/15 p-3 text-center text-sm text-amber-700">
+                          Falta {formatCurrency(Math.ceil(totalAPagar) - efectivoRecibidoNum)}
+                        </div>
+                      )}
                   </div>
                 )}
               </CardContent>
@@ -1838,10 +1909,12 @@ export function PagosPage() {
               disabled={
                 !puedeCobrar ||
                 itemsAPagar.length === 0 ||
-                // Tolerancia de medio peso para no quedar pegados por
-                // redondeos al imprimir (ej. 13750 vs 13749.5).
+                // En efectivo: el cajero tiene que haber digitado al menos
+                // el total redondeado hacia arriba (no aceptamos pagos en
+                // efectivo con monto menor — eso es perro muerto parcial,
+                // no un pago). El vuelto se calcula automáticamente.
                 (metodoPago === 'efectivo' &&
-                  parseFloat(efectivoRecibido || '0') < totalAPagar - 0.5)
+                  efectivoRecibidoNum < Math.ceil(totalAPagar))
               }
             >
               <Check className="mr-2 h-6 w-6" />

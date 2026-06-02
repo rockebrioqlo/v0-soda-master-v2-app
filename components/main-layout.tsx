@@ -23,6 +23,7 @@ import {
 import { Button } from '@/components/ui/button'
 import { useState } from 'react'
 import { BottomNav } from '@/components/bottom-nav'
+import { RelojAviso } from '@/components/reloj-aviso'
 
 type PageType =
   | 'dashboard'
@@ -33,6 +34,7 @@ type PageType =
   | 'finanzas'
   | 'usuarios'
   | 'pagos'
+  | 'caja'
   | 'mermas'
   | 'reportes'
   | 'configuracion'
@@ -53,6 +55,7 @@ const navItems: NavItem[] = [
   { page: 'finanzas', label: 'Finanzas', icon: <Wallet className="h-5 w-5" />, modulo: 'finanzas' },
   { page: 'usuarios', label: 'Usuarios', icon: <Users className="h-5 w-5" />, modulo: 'usuarios' },
   { page: 'pagos', label: 'Pagos', icon: <CreditCard className="h-5 w-5" />, modulo: 'pagos' },
+  { page: 'caja', label: 'Caja', icon: <Wallet className="h-5 w-5" />, modulo: 'caja' },
   { page: 'mermas', label: 'Mermas', icon: <AlertTriangle className="h-5 w-5" />, modulo: 'mermas' },
   { page: 'reportes', label: 'Reportes', icon: <BarChart3 className="h-5 w-5" />, modulo: 'reportes' },
   { page: 'configuracion', label: 'Config', icon: <Settings className="h-5 w-5" />, modulo: 'configuracion' },
@@ -133,6 +136,9 @@ export function MainLayout({ children }: { children: React.ReactNode }) {
           Modo offline activo
         </div>
       )}
+
+      {/* Aviso si el reloj del cajero está desfasado vs la hora oficial */}
+      <RelojAviso />
 
       {/* Header */}
       <header className="sticky top-0 z-30 flex h-14 items-center justify-between border-b border-border bg-card px-3 md:px-4 lg:px-6">

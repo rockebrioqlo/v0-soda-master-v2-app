@@ -40,6 +40,13 @@ export interface Usuario {
   nombre: string
   email: string
   rol: Rol
+  /**
+   * Roles adicionales permanentes. Sirven para casos como "este cocinero
+   * también atiende como mesero/cajero". A diferencia de los permisos
+   * especiales (que expiran), estos no tienen vencimiento. Se evalúan en
+   * `hasPermission` junto con el rol principal.
+   */
+  roles_adicionales?: Rol[]
   pinHash?: string
   pin_hash?: string
   activo: boolean

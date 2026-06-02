@@ -1,7 +1,19 @@
 import { db } from '@/lib/db'
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
+    // Si pasan ?id=..., devolvemos solo ese usuario. Lo usa el polling
+    // de verificación de sesión para no traer la lista completa cada
+    // minuto y evitar falsos positivos por respuestas inconsistentes.
+    const url = new URL(request.url)
+    const id = url.searchParams.get('id')
+    if (id) {
+      const usuario = await db.getUsuarioById(id)
+      if (!usuario) {
+        return Response.json({ error: 'Usuario no encontrado' }, { status: 404 })
+      }
+      return Response.json(usuario)
+    }
     const usuarios = await db.getUsuarios()
     return Response.json(usuarios)
   } catch (error) {

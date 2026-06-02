@@ -148,12 +148,20 @@ export function POSPage() {
 
   // ─── Permiso especial de apertura para CAJERO ──────────
   // Un cajero NO puede abrir mesas/comandas por defecto. El admin puede
-  // delegarle el permiso `apertura_mesa` por tiempo limitado. Lo
-  // chequeamos al montar el POS y refrescamos cuando cambia el usuario
-  // para mostrar un aviso claro y prevenir que el cajero intente
-  // enviar a cocina sin permiso (el server también lo bloquea, esto es
-  // sólo para mejorar la UX).
-  const esCajero = usuarioActual?.rol === 'cajero'
+  // delegarle el permiso `apertura_mesa` por tiempo limitado o, mejor,
+  // configurarle `mesero` como rol adicional permanente. Lo chequeamos
+  // al montar el POS y refrescamos cuando cambia el usuario para
+  // mostrar un aviso claro y prevenir que el cajero intente enviar a
+  // cocina sin permiso (el server también lo bloquea, esto es sólo
+  // para mejorar la UX).
+  const rolesPos: string[] = usuarioActual
+    ? [usuarioActual.rol, ...(usuarioActual.roles_adicionales || [])]
+    : []
+  // "Cajero puro" => sólo cajero, sin mesero/admin en sus roles
+  // adicionales. Solo en ese caso pedimos permiso especial.
+  const esCajero =
+    usuarioActual?.rol === 'cajero' &&
+    !rolesPos.some((r) => ['mesero', 'admin', 'administrador'].includes(r))
   const [permisoAperturaVigente, setPermisoAperturaVigente] = useState<boolean | null>(null)
   const [permisoAperturaInfo, setPermisoAperturaInfo] = useState<{
     valido_hasta?: string

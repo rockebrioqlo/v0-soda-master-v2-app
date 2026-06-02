@@ -57,6 +57,7 @@ export function UsuariosPage() {
     nombre: '',
     email: '',
     rol: 'mesero' as Rol,
+    rolesAdicionales: [] as Rol[],
     pin: '',
     activo: true
   })
@@ -70,6 +71,7 @@ export function UsuariosPage() {
       nombre: '',
       email: '',
       rol: 'mesero',
+      rolesAdicionales: [],
       pin: '',
       activo: true
     })
@@ -82,6 +84,7 @@ export function UsuariosPage() {
       nombre: usuario.nombre,
       email: usuario.email,
       rol: usuario.rol,
+      rolesAdicionales: (usuario.roles_adicionales || []) as Rol[],
       pin: '',
       activo: usuario.activo
     })
@@ -131,11 +134,31 @@ export function UsuariosPage() {
     }
 
     try {
+      // El backend valida los roles_adicionales, pero filtramos en el
+      // cliente también: si el rol principal pasó a admin, no se
+      // mandan adicionales (no tendría sentido); y nunca incluimos al
+      // propio rol principal.
+      const esAdminRolPrincipal =
+        formData.rol === 'admin' || formData.rol === 'administrador'
+      const rolesAdicLimpios = esAdminRolPrincipal
+        ? []
+        : Array.from(
+            new Set(
+              (formData.rolesAdicionales || []).filter(
+                (r) =>
+                  r !== formData.rol &&
+                  r !== 'admin' &&
+                  r !== 'administrador',
+              ),
+            ),
+          )
+
       if (editingUsuario) {
         const updates: any = {
           nombre: formData.nombre,
           email: formData.email,
           rol: formData.rol,
+          roles_adicionales: rolesAdicLimpios,
           activo: formData.activo,
         }
         if (formData.pin) {
@@ -149,6 +172,7 @@ export function UsuariosPage() {
           nombre: formData.nombre,
           email: formData.email,
           rol: formData.rol,
+          roles_adicionales: rolesAdicLimpios,
           activo: formData.activo,
           pinHash,
         })
@@ -321,9 +345,24 @@ export function UsuariosPage() {
                       </TableCell>
                       <TableCell className="text-muted-foreground">{usuario.email}</TableCell>
                       <TableCell>
-                        <Badge className={cn('text-white', getRolBadgeColor(usuario.rol))}>
-                          {getRolLabel(usuario.rol)}
-                        </Badge>
+                        <div className="flex flex-wrap items-center gap-1">
+                          <Badge className={cn('text-white', getRolBadgeColor(usuario.rol))}>
+                            {getRolLabel(usuario.rol)}
+                          </Badge>
+                          {(usuario.roles_adicionales || []).map((r) => (
+                            <Badge
+                              key={r}
+                              variant="outline"
+                              className={cn(
+                                'border-dashed text-xs',
+                                getRolBadgeColor(r as Rol).replace('bg-', 'border-').replace('-500', '-500/60'),
+                              )}
+                              title="Rol adicional permanente"
+                            >
+                              + {getRolLabel(r as Rol)}
+                            </Badge>
+                          ))}
+                        </div>
                       </TableCell>
                       <TableCell className="text-center">
                         <Button
@@ -464,7 +503,7 @@ export function UsuariosPage() {
                 />
               </div>
               <div className="space-y-2">
-                <label className="text-sm text-muted-foreground">Rol</label>
+                <label className="text-sm text-muted-foreground">Rol principal</label>
                 <Select
                   value={formData.rol}
                   onValueChange={(v) => setFormData({ ...formData, rol: v as Rol })}
@@ -481,6 +520,64 @@ export function UsuariosPage() {
                   </SelectContent>
                 </Select>
               </div>
+
+              {/* Roles adicionales permanentes: sólo aplica si el rol
+                  principal NO es admin (admin ya puede todo) y sólo el
+                  admin puede modificarlos. */}
+              {!(formData.rol === 'administrador' || formData.rol === 'admin') && (
+                <div className="space-y-2 rounded-lg border border-border bg-muted/30 p-3">
+                  <div className="flex items-start justify-between gap-2">
+                    <div>
+                      <p className="text-sm font-medium text-foreground">
+                        Roles adicionales permanentes
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        Multi-rol sin vencimiento. Ej: cocinero que también
+                        atiende como mesero, o mesero que cobra cuando no hay
+                        cajero. Distinto de los permisos especiales temporales.
+                      </p>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    {(['mesero', 'cocina', 'bar', 'cajero'] as Rol[])
+                      .filter((r) => r !== formData.rol)
+                      .map((r) => {
+                        const checked = formData.rolesAdicionales.includes(r)
+                        return (
+                          <label
+                            key={r}
+                            className={cn(
+                              'flex cursor-pointer items-center gap-2 rounded-md border border-border bg-muted/40 p-2 text-sm',
+                              !esAdmin && 'cursor-not-allowed opacity-60',
+                            )}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              disabled={!esAdmin}
+                              onChange={() => {
+                                if (!esAdmin) return
+                                const next = checked
+                                  ? formData.rolesAdicionales.filter((x) => x !== r)
+                                  : [...formData.rolesAdicionales, r]
+                                setFormData({ ...formData, rolesAdicionales: next })
+                              }}
+                            />
+                            <span className="font-medium text-foreground">
+                              {getRolLabel(r)}
+                            </span>
+                          </label>
+                        )
+                      })}
+                  </div>
+                  {!esAdmin && (
+                    <p className="text-xs text-amber-500">
+                      Solo el administrador puede modificar los roles adicionales.
+                    </p>
+                  )}
+                </div>
+              )}
+
               <div className="flex items-center justify-between rounded-lg bg-muted p-4">
                 <span className="text-sm text-foreground">Usuario Activo</span>
                 <Switch

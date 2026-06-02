@@ -12,6 +12,7 @@ import { InventarioPage } from "@/components/inventario-page"
 import { FinanzasPage } from "@/components/finanzas-page"
 import { UsuariosPage } from "@/components/usuarios-page"
 import { PagosPage } from "@/components/pagos-page"
+import { CajaPage } from "@/components/caja-page"
 import { MermasPage } from "@/components/mermas-page"
 import { ReportesPage } from "@/components/reportes-page"
 import { ConfiguracionPage } from "@/components/configuracion-page"
@@ -64,6 +65,8 @@ function AppContent() {
         return <UsuariosPage />
       case "pagos":
         return <PagosPage />
+      case "caja":
+        return <CajaPage />
       case "mermas":
         return <MermasPage />
       case "reportes":

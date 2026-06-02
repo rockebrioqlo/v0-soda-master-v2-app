@@ -14,7 +14,7 @@ import {
 } from './initial-data'
 import { showToast } from '@/components/toast'
 
-type PageType = 'dashboard' | 'mesas' | 'pos' | 'kds' | 'inventario' | 'finanzas' | 'usuarios' | 'pagos' | 'mermas' | 'reportes' | 'configuracion'
+type PageType = 'dashboard' | 'mesas' | 'pos' | 'kds' | 'inventario' | 'finanzas' | 'usuarios' | 'pagos' | 'caja' | 'mermas' | 'reportes' | 'configuracion'
 
 // POS navigation state
 interface POSNavigationState {
@@ -80,15 +80,40 @@ function appReducer(state: AppState, action: AppAction): AppState {
       }
     case 'DELETE_COMANDA':
       return { ...state, comandas: state.comandas.filter(c => c.id !== action.payload) }
-    case 'SET_USUARIOS':
-      return { ...state, usuarios: action.payload }
+    case 'SET_USUARIOS': {
+      // Si el usuario logueado figura en la nueva lista, refrescamos
+      // sus datos (nombre, rol, roles_adicionales, activo). De lo
+      // contrario, los cambios hechos por el admin no se reflejan
+      // hasta cerrar/abrir sesión, y eso es lo que hace que cambiar
+      // el nombre/rol "parezca romper" cosas.
+      const nuevaLista = action.payload
+      const refrescado = state.usuarioActual
+        ? nuevaLista.find((u) => u.id === state.usuarioActual!.id)
+        : null
+      return {
+        ...state,
+        usuarios: nuevaLista,
+        usuarioActual: refrescado
+          ? { ...state.usuarioActual!, ...refrescado }
+          : state.usuarioActual,
+      }
+    }
     case 'ADD_USUARIO':
       return { ...state, usuarios: [...state.usuarios, action.payload] }
-    case 'UPDATE_USUARIO':
-      return { 
-        ...state, 
-        usuarios: state.usuarios.map(u => u.id === action.payload.id ? action.payload : u) 
+    case 'UPDATE_USUARIO': {
+      // Mismo razonamiento: si están editando al usuario que está
+      // logueado, hay que reflejarlo en usuarioActual o pierde los
+      // permisos hasta cerrar sesión.
+      const actualizado = action.payload
+      return {
+        ...state,
+        usuarios: state.usuarios.map((u) => (u.id === actualizado.id ? actualizado : u)),
+        usuarioActual:
+          state.usuarioActual && state.usuarioActual.id === actualizado.id
+            ? { ...state.usuarioActual, ...actualizado }
+            : state.usuarioActual,
       }
+    }
     case 'DELETE_USUARIO':
       return { ...state, usuarios: state.usuarios.filter(u => u.id !== action.payload) }
     case 'ADD_PAGO':
@@ -348,6 +373,7 @@ const permisosModulo: Record<string, Rol[]> = {
   finanzas: ['administrador', 'admin'],
   usuarios: ['administrador', 'admin'],
   pagos: ['administrador', 'admin', 'cajero'],
+  caja: ['administrador', 'admin', 'cajero'],
   mermas: ['administrador', 'admin', 'mesero', 'cocina', 'bar'],
   reportes: ['administrador', 'admin', 'cajero'],
   configuracion: ['administrador', 'admin'],
@@ -542,23 +568,36 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     sessionStorage.removeItem('soda_master_session')
   }, [])
 
+  const usuarioActualId = state.usuarioActual?.id ?? null
   useEffect(() => {
-    if (!state.usuarioActual) return
+    if (!usuarioActualId) return
     let cancelled = false
 
+    // Solo cerramos sesión si la API confirma EXPLÍCITAMENTE que el
+    // usuario fue desactivado. Si la lista llega vacía, incompleta, o
+    // si no se encuentra el id por cualquier motivo (cache stale,
+    // edición concurrente, error parcial), preferimos mantener la
+    // sesión: una desconexión silenciosa era la causa más probable de
+    // "Erick entra y se sale".
     const verifyActiveUser = async () => {
       try {
-        const res = await fetch('/api/usuarios', { cache: 'no-store' })
-        if (!res.ok) return
-        const usuarios = await res.json()
-        if (!Array.isArray(usuarios) || cancelled) return
-        const current = usuarios.find((u: any) => u.id === state.usuarioActual?.id)
-        if (!current || current.activo === false) {
+        const res = await fetch(`/api/usuarios?id=${encodeURIComponent(usuarioActualId)}`, {
+          cache: 'no-store',
+        })
+        if (!res.ok || cancelled) return
+        const data = await res.json()
+        // Tolerar formatos: {usuario}, usuario directo o lista filtrada.
+        const usuario = Array.isArray(data)
+          ? data.find((u: any) => u?.id === usuarioActualId)
+          : data?.usuario || data
+        if (!usuario || usuario.id !== usuarioActualId) return
+        if (usuario.activo === false) {
+          console.warn('[auth] Sesión cerrada: usuario desactivado por admin', { id: usuarioActualId })
           showToast('Tu usuario fue desactivado. Sesión cerrada.', 'error')
           logout()
         }
       } catch {
-        // If the network fails, keep the current session and let API errors surface.
+        // Silencioso: si la red falla, mantenemos la sesión.
       }
     }
 
@@ -569,12 +608,17 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       window.removeEventListener('focus', verifyActiveUser)
       window.clearInterval(interval)
     }
-  }, [state.usuarioActual, logout])
+  }, [usuarioActualId, logout])
 
   const hasPermission = useCallback((modulo: string): boolean => {
     if (!state.usuarioActual) return false
     const allowedRoles = permisosModulo[modulo] || []
-    return allowedRoles.includes(state.usuarioActual.rol)
+    if (allowedRoles.includes(state.usuarioActual.rol)) return true
+    // Roles adicionales permanentes: si están configurados, también
+    // habilitan el módulo. Ej: un cocinero con rol adicional `cajero`
+    // puede entrar a Pagos sin necesidad de permiso especial temporal.
+    const extras = state.usuarioActual.roles_adicionales || []
+    return extras.some((r) => allowedRoles.includes(r as Rol))
   }, [state.usuarioActual])
 
   const navigateTo = useCallback((page: PageType) => {

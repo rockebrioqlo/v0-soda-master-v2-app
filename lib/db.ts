@@ -30,10 +30,16 @@ function mapMesa(row: any): Mesa {
   } as Mesa
 }
 
+const ROLES_VALIDOS = new Set(['admin', 'administrador', 'mesero', 'cocina', 'bar', 'cajero'])
+
 function mapUsuario(row: any): Usuario {
-  const { pin_hash, pinHash, pin, password, ...safeUsuario } = row
+  const { pin_hash, pinHash, pin, password, roles_adicionales, ...safeUsuario } = row
+  const rolesAdicionales: string[] = Array.isArray(roles_adicionales)
+    ? roles_adicionales.filter((r) => typeof r === 'string' && ROLES_VALIDOS.has(r))
+    : []
   return {
     ...safeUsuario,
+    roles_adicionales: rolesAdicionales,
     intentosFallidos: 0,
     bloqueadoHasta: null,
   } as Usuario
@@ -43,6 +49,34 @@ function normalizarRol(rol?: string | null): string | null {
   if (!rol) return null
   if (rol === 'administrador') return 'admin'
   return rol
+}
+
+/**
+ * Limpia y deduplica un array de roles adicionales. Excluye el rol
+ * principal (no tiene sentido tenerlo dos veces) y los valores
+ * inválidos. Si el rol principal es admin/administrador, devolvemos
+ * array vacío: el admin ya puede todo.
+ */
+function normalizarRolesAdicionales(
+  rolPrincipal: string | null | undefined,
+  raw: unknown,
+): string[] {
+  if (!Array.isArray(raw)) return []
+  const principal = normalizarRol(rolPrincipal || '') || ''
+  if (principal === 'admin') return []
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const r of raw) {
+    if (typeof r !== 'string') continue
+    const normalized = normalizarRol(r) || r
+    if (!ROLES_VALIDOS.has(normalized)) continue
+    if (normalized === principal) continue
+    if (normalized === 'admin' || normalized === 'administrador') continue
+    if (seen.has(normalized)) continue
+    seen.add(normalized)
+    out.push(normalized)
+  }
+  return out
 }
 
 const METODOS_PAGO_DB = ['efectivo', 'tarjeta']
@@ -391,6 +425,196 @@ async function ensurePerdidasTable(): Promise<void> {
   _perdidasTableReady = true
 }
 
+// ──── mermas.ingrediente_id y auditoría admin ────────────────────────
+// La tabla `mermas` original sólo soporta producto_id, pero ahora también
+// queremos registrar mermas sobre insumos (ingredientes). Y la tabla
+// `auditoria_admin` da trazabilidad a las correcciones del administrador
+// (eliminar producto/insumo sin que sea merma).
+let _mermasIngSchemaReady = false
+async function ensureMermasIngredienteSchema(): Promise<void> {
+  if (_mermasIngSchemaReady) return
+  const sql = getSql()
+  await sql`
+    ALTER TABLE soda_master.mermas
+      ADD COLUMN IF NOT EXISTS ingrediente_id UUID REFERENCES soda_master.ingredientes(id)
+  `
+  await sql`
+    CREATE INDEX IF NOT EXISTS mermas_ingrediente_idx
+      ON soda_master.mermas (ingrediente_id)
+  `
+  _mermasIngSchemaReady = true
+}
+
+let _auditoriaAdminReady = false
+async function ensureAuditoriaAdminTable(): Promise<void> {
+  if (_auditoriaAdminReady) return
+  const sql = getSql()
+  await sql`
+    CREATE TABLE IF NOT EXISTS soda_master.auditoria_admin (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      usuario_id UUID NULL,
+      usuario_nombre TEXT NULL,
+      usuario_rol TEXT NULL,
+      accion TEXT NOT NULL,
+      entidad TEXT NOT NULL,
+      entidad_id UUID NULL,
+      entidad_nombre TEXT NULL,
+      detalles JSONB NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+  `
+  await sql`
+    CREATE INDEX IF NOT EXISTS auditoria_admin_created_at_idx
+      ON soda_master.auditoria_admin (created_at DESC)
+  `
+  await sql`
+    CREATE INDEX IF NOT EXISTS auditoria_admin_entidad_idx
+      ON soda_master.auditoria_admin (entidad, entidad_id)
+  `
+  _auditoriaAdminReady = true
+}
+
+// ──── Migración timestamp → timestamptz ──────────────────────────────
+// Bug histórico: varias tablas (pagos, ordenes, items_orden, mermas,
+// etc.) tenían `created_at TIMESTAMP` (sin zona). Postgres no sabe
+// que ese valor está en UTC, así que `AT TIME ZONE 'America/Santiago'`
+// hace lo opuesto a lo esperado (lo interpreta COMO Santiago y lo
+// convierte a UTC, en vez de leerlo COMO UTC y mostrarlo en Santiago).
+// Eso provocaba que el dashboard mostrara ventas del día equivocado.
+//
+// La migración convierte estas columnas a `timestamptz` asumiendo que
+// los valores almacenados están en UTC (lo cual es cierto: el servidor
+// Postgres de Neon corre en UTC y `now()`/`CURRENT_TIMESTAMP` devuelven
+// UTC). Es idempotente: el bloque `DO $$ ... $$` chequea el tipo
+// actual antes de emitir el ALTER.
+let _tsTzMigrationReady = false
+async function ensureTimestampTzMigration(): Promise<void> {
+  if (_tsTzMigrationReady) return
+  const sql = getSql()
+  // Lista de columnas que sabemos que históricamente quedaron sin tz.
+  // Si alguna ya es timestamptz, el IF dentro del bloque la deja pasar.
+  await sql`
+    DO $$
+    DECLARE
+      r record;
+      objetivos text[] := ARRAY[
+        'pagos.created_at',
+        'ordenes.created_at',
+        'ordenes.updated_at',
+        'items_orden.created_at',
+        'mermas.created_at',
+        'comandas_no_pagadas.created_at',
+        'descuentos.created_at',
+        'movimientos_inventario.created_at',
+        'inventario.created_at',
+        'inventario.updated_at',
+        'productos.created_at',
+        'productos.updated_at',
+        'usuarios.created_at',
+        'usuarios.updated_at',
+        'mesas.created_at',
+        'mesas.updated_at',
+        'modificadores.created_at',
+        'categorias.created_at',
+        'configuracion.updated_at'
+      ];
+      pieza text;
+      tabla text;
+      columna text;
+      tipo_actual text;
+    BEGIN
+      FOREACH pieza IN ARRAY objetivos LOOP
+        tabla := split_part(pieza, '.', 1);
+        columna := split_part(pieza, '.', 2);
+        SELECT data_type INTO tipo_actual
+          FROM information_schema.columns
+          WHERE table_schema = 'soda_master'
+            AND table_name = tabla
+            AND column_name = columna;
+        IF tipo_actual = 'timestamp without time zone' THEN
+          EXECUTE format(
+            'ALTER TABLE soda_master.%I ALTER COLUMN %I TYPE TIMESTAMPTZ USING (%I AT TIME ZONE ''UTC'')',
+            tabla, columna, columna
+          );
+        END IF;
+      END LOOP;
+    END $$;
+  `
+  _tsTzMigrationReady = true
+}
+
+// ──── usuarios.roles_adicionales ─────────────────────────────────────
+// Roles permanentes adicionales (multi-rol). Cada usuario sigue
+// teniendo un rol principal en `usuarios.rol`, pero puede acumular
+// otros roles aquí (ej: cocinero que también atiende como mesero).
+// Es una extensión a futuro del modelo de permisos: no necesita
+// otorgar un permiso especial con vencimiento; lo queremos para
+// configurar de una vez al usuario.
+let _rolesAdicionalesReady = false
+async function ensureRolesAdicionalesSchema(): Promise<void> {
+  if (_rolesAdicionalesReady) return
+  const sql = getSql()
+  await sql`
+    ALTER TABLE soda_master.usuarios
+      ADD COLUMN IF NOT EXISTS roles_adicionales TEXT[] NOT NULL DEFAULT '{}'::text[]
+  `
+  _rolesAdicionalesReady = true
+}
+
+// ──── Caja chica (apertura, movimientos, cierre/arqueo) ─────────────
+// El cajero abre la caja al iniciar el turno con un fondo inicial.
+// Cada pago en efectivo registra una entrada por el monto cobrado y,
+// si hubo vuelto, una salida por el vuelto entregado. Retiros y
+// depósitos manuales también dejan movimiento. Al cerrar, se compara
+// el efectivo contado vs el esperado (fondo + entradas - salidas) y
+// queda la diferencia (puede ser cuadre, sobrante o faltante).
+let _cajaReady = false
+async function ensureCajaSchema(): Promise<void> {
+  if (_cajaReady) return
+  const sql = getSql()
+  await sql`
+    CREATE TABLE IF NOT EXISTS soda_master.cajas (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      usuario_apertura_id UUID NOT NULL,
+      usuario_apertura_nombre TEXT NOT NULL,
+      fondo_inicial NUMERIC(12,2) NOT NULL DEFAULT 0,
+      abierta_en TIMESTAMPTZ NOT NULL DEFAULT now(),
+      cerrada_en TIMESTAMPTZ NULL,
+      usuario_cierre_id UUID NULL,
+      usuario_cierre_nombre TEXT NULL,
+      efectivo_contado NUMERIC(12,2) NULL,
+      diferencia NUMERIC(12,2) NULL,
+      notas TEXT NULL,
+      estado TEXT NOT NULL DEFAULT 'abierta' CHECK (estado IN ('abierta','cerrada'))
+    )
+  `
+  await sql`
+    CREATE TABLE IF NOT EXISTS soda_master.movimientos_caja (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      caja_id UUID NOT NULL REFERENCES soda_master.cajas(id) ON DELETE CASCADE,
+      tipo TEXT NOT NULL CHECK (tipo IN ('apertura','venta_efectivo','vuelto','retiro','deposito','ajuste','cierre')),
+      monto NUMERIC(12,2) NOT NULL,
+      pago_id UUID NULL,
+      usuario_id UUID NULL,
+      usuario_nombre TEXT NULL,
+      descripcion TEXT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+  `
+  await sql`
+    CREATE INDEX IF NOT EXISTS movimientos_caja_caja_id_idx
+      ON soda_master.movimientos_caja (caja_id, created_at)
+  `
+  // Sólo puede haber UNA caja abierta a la vez (es una caja física).
+  // Si quisiéramos varias cajas físicas habría que cambiar este índice.
+  await sql`
+    CREATE UNIQUE INDEX IF NOT EXISTS cajas_solo_una_abierta
+      ON soda_master.cajas ((estado))
+      WHERE estado = 'abierta'
+  `
+  _cajaReady = true
+}
+
 let _recetasTableReady = false
 
 async function ensureRecetasTables(): Promise<void> {
@@ -457,8 +681,15 @@ async function ensureRecetasTables(): Promise<void> {
       created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     )
   `
-  // Idempotente: añadir compra_id y ampliar tipos válidos si la tabla ya existía
+  // Idempotente: si la tabla ya existía desde el seed original (sólo con
+  // producto_id), faltarán columnas nuevas (ingrediente_id, compra_id,
+  // merma_id, item_orden_id). El CREATE TABLE IF NOT EXISTS no las
+  // agrega — hay que forzarlas con ALTER TABLE ... ADD COLUMN IF NOT EXISTS.
+  await sql`ALTER TABLE soda_master.movimientos_inventario ADD COLUMN IF NOT EXISTS ingrediente_id UUID REFERENCES soda_master.ingredientes(id)`
   await sql`ALTER TABLE soda_master.movimientos_inventario ADD COLUMN IF NOT EXISTS compra_id UUID`
+  await sql`ALTER TABLE soda_master.movimientos_inventario ADD COLUMN IF NOT EXISTS merma_id UUID`
+  await sql`ALTER TABLE soda_master.movimientos_inventario ADD COLUMN IF NOT EXISTS item_orden_id UUID`
+  await sql`ALTER TABLE soda_master.movimientos_inventario ADD COLUMN IF NOT EXISTS orden_id UUID`
   await sql`
     DO $$ BEGIN
       ALTER TABLE soda_master.movimientos_inventario DROP CONSTRAINT movimientos_inventario_tipo_check;
@@ -714,9 +945,12 @@ function parseSeleccionItem(item: {
 export const db = {
   // Usuarios
   async getUsuarios(): Promise<Usuario[]> {
+    await ensureRolesAdicionalesSchema()
     const sql = getSql()
     const result = await sql`
-      SELECT id, email, nombre, rol, activo, created_at, updated_at
+      SELECT id, email, nombre, rol,
+             COALESCE(roles_adicionales, '{}'::text[]) AS roles_adicionales,
+             activo, created_at, updated_at
       FROM soda_master.usuarios
       ORDER BY nombre
     `
@@ -724,9 +958,12 @@ export const db = {
   },
 
   async getUsuarioById(id: string): Promise<Usuario | null> {
+    await ensureRolesAdicionalesSchema()
     const sql = getSql()
     const result = await sql`
-      SELECT id, email, nombre, rol, activo, created_at, updated_at
+      SELECT id, email, nombre, rol,
+             COALESCE(roles_adicionales, '{}'::text[]) AS roles_adicionales,
+             activo, created_at, updated_at
       FROM soda_master.usuarios
       WHERE id = ${id}
     `
@@ -734,13 +971,14 @@ export const db = {
   },
 
   async verificarPIN(email: string, pin: string): Promise<Usuario | null> {
+    await ensureRolesAdicionalesSchema()
     const sql = getSql()
     const result = await sql`SELECT * FROM soda_master.usuarios WHERE email = ${email} AND activo = true`
     if (!result[0]) return null
-    
+
     const usuario = result[0] as any
     const esValido = await bcryptjs.compare(pin, usuario.pin_hash)
-    
+
     return esValido ? mapUsuario(usuario) : null
   },
 
@@ -758,19 +996,36 @@ export const db = {
     } else {
       throw new Error('PIN requerido')
     }
+    await ensureRolesAdicionalesSchema()
     const rol = normalizarRol(usuario.rol)
+    const rolesAdic = normalizarRolesAdicionales(rol, (usuario as any).roles_adicionales)
     const result = await sql`
-      INSERT INTO soda_master.usuarios (email, nombre, pin_hash, rol, activo)
-      VALUES (${usuario.email}, ${usuario.nombre}, ${pinHash}, ${rol}, ${usuario.activo ?? true})
-      RETURNING id, email, nombre, rol, activo, created_at, updated_at
+      INSERT INTO soda_master.usuarios (email, nombre, pin_hash, rol, roles_adicionales, activo)
+      VALUES (
+        ${usuario.email},
+        ${usuario.nombre},
+        ${pinHash},
+        ${rol},
+        ${rolesAdic}::text[],
+        ${usuario.activo ?? true}
+      )
+      RETURNING id, email, nombre, rol,
+                COALESCE(roles_adicionales, '{}'::text[]) AS roles_adicionales,
+                activo, created_at, updated_at
     `
     return mapUsuario(result[0])
   },
 
   async actualizarUsuario(
     id: string,
-    updates: Partial<Usuario> & { pin?: string; pinHash?: string; pin_hash?: string }
+    updates: Partial<Usuario> & {
+      pin?: string
+      pinHash?: string
+      pin_hash?: string
+      roles_adicionales?: unknown
+    }
   ) {
+    await ensureRolesAdicionalesSchema()
     const sql = getSql()
     const rol = normalizarRol(updates.rol)
     let nuevoPinHash: string | null = null
@@ -782,16 +1037,33 @@ export const db = {
     } else if (providedHash) {
       nuevoPinHash = await bcryptjs.hash(providedHash, 10)
     }
+    // Para roles_adicionales necesitamos saber qué rol principal va a
+    // quedar después del update; si no cambia, lo leemos de la fila
+    // actual. Sólo procesamos roles_adicionales si vino en updates.
+    let rolesAdicNormalizados: string[] | null = null
+    if (updates.roles_adicionales !== undefined) {
+      let principal = rol
+      if (!principal) {
+        const filaActual = (await sql`
+          SELECT rol FROM soda_master.usuarios WHERE id = ${id}
+        `) as Array<{ rol: string | null }>
+        principal = filaActual[0]?.rol ?? null
+      }
+      rolesAdicNormalizados = normalizarRolesAdicionales(principal, updates.roles_adicionales)
+    }
     const result = await sql`
-      UPDATE soda_master.usuarios 
+      UPDATE soda_master.usuarios
       SET nombre = COALESCE(${updates.nombre ?? null}, nombre),
           email = COALESCE(${updates.email ?? null}, email),
           rol = COALESCE(${rol}, rol),
+          roles_adicionales = COALESCE(${rolesAdicNormalizados}::text[], roles_adicionales),
           activo = COALESCE(${updates.activo ?? null}, activo),
           pin_hash = COALESCE(${nuevoPinHash}, pin_hash),
           updated_at = CURRENT_TIMESTAMP
       WHERE id = ${id}
-      RETURNING id, email, nombre, rol, activo, created_at, updated_at
+      RETURNING id, email, nombre, rol,
+                COALESCE(roles_adicionales, '{}'::text[]) AS roles_adicionales,
+                activo, created_at, updated_at
     `
     if (!result[0]) return null
     return mapUsuario(result[0])
@@ -937,6 +1209,120 @@ export const db = {
       ORDER BY c.nombre, p.nombre
     `
     return result.map(mapProducto) as Producto[]
+  },
+
+  // Resumen de receta por producto: cuenta cuántos ingredientes base,
+  // opcionales y extras pagados tiene cada producto activo. Lo usa la
+  // tabla de inventario para mostrar el indicador "Burger BBQ — 5 base
+  // · 3 opcionales · 2 extras" en una sola lectura sin hacer N queries.
+  async getResumenRecetasPorProducto(): Promise<
+    Record<string, { base: number; opcionales: number; extras: number; total: number }>
+  > {
+    await ensureRecetasTables()
+    const sql = getSql()
+    const rows = (await sql`
+      SELECT r.producto_id,
+             COUNT(*) FILTER (WHERE NOT ri.opcional AND NOT ri.extra)::int AS base,
+             COUNT(*) FILTER (WHERE ri.opcional AND NOT ri.extra)::int AS opcionales,
+             COUNT(*) FILTER (WHERE ri.extra)::int AS extras,
+             COUNT(*)::int AS total
+      FROM soda_master.recetas r
+      JOIN soda_master.receta_ingredientes ri ON ri.receta_id = r.id
+      WHERE r.activo = true
+      GROUP BY r.producto_id
+    `) as any[]
+    const out: Record<string, { base: number; opcionales: number; extras: number; total: number }> = {}
+    for (const r of rows) {
+      out[String(r.producto_id)] = {
+        base: Number(r.base) || 0,
+        opcionales: Number(r.opcionales) || 0,
+        extras: Number(r.extras) || 0,
+        total: Number(r.total) || 0,
+      }
+    }
+    return out
+  },
+
+  // Duplica un producto creando una "variante" (ej: "Burger Doble" a
+  // partir de "Burger Simple"). Copia categoría, descripción, modo de
+  // stock y todas las líneas de receta (base, opcionales y extras
+  // pagados). El precio nuevo se pasa por parámetro; si no se pasa,
+  // hereda el del original.
+  async clonarProductoConReceta(input: {
+    producto_id: string
+    nombre: string
+    precio?: number
+  }): Promise<{ producto: any; receta_copiada: boolean }> {
+    await ensureRecetasTables()
+    const sql = getSql()
+    const nombreNuevo = (input.nombre || '').trim()
+    if (!nombreNuevo) throw new Error('nombre requerido')
+    const originalRows = (await sql`
+      SELECT id, nombre, descripcion, precio, categoria_id, imagen_url,
+             es_ingrediente_especial, costo_adicional, modo_stock
+      FROM soda_master.productos
+      WHERE id = ${input.producto_id}::uuid AND activo = true
+      LIMIT 1
+    `) as any[]
+    const original = originalRows[0]
+    if (!original) throw new Error('Producto original no encontrado')
+    const precio = input.precio !== undefined && input.precio !== null
+      ? Number(input.precio)
+      : Number(original.precio)
+    if (!Number.isFinite(precio) || precio < 0) {
+      throw new Error('precio inválido')
+    }
+    const insertProd = (await sql`
+      INSERT INTO soda_master.productos
+        (nombre, categoria_id, precio, descripcion, imagen_url,
+         es_ingrediente_especial, costo_adicional, modo_stock, activo)
+      VALUES
+        (${nombreNuevo}, ${original.categoria_id}, ${precio}, ${original.descripcion},
+         ${original.imagen_url}, ${original.es_ingrediente_especial || false},
+         ${original.costo_adicional || 0}, ${original.modo_stock || 'producto'}, true)
+      RETURNING *
+    `) as any[]
+    const nuevoProducto = insertProd[0]
+    // Tabla `inventario` no tiene UNIQUE(producto_id) en este schema,
+    // así que evitamos ON CONFLICT y verificamos manualmente.
+    const yaExiste = (await sql`
+      SELECT 1 FROM soda_master.inventario WHERE producto_id = ${nuevoProducto.id}::uuid LIMIT 1
+    `) as any[]
+    if (yaExiste.length === 0) {
+      await sql`
+        INSERT INTO soda_master.inventario (producto_id, stock_actual, stock_minimo, unidad_medida)
+        VALUES (${nuevoProducto.id}, 100, 10, 'unidad')
+      `
+    }
+    // Copia la receta si la original tenía una. `modo_stock` vive en
+    // la tabla `productos`, no en `recetas` — el clone de producto ya
+    // copia ese campo, así que sólo replicamos las filas de receta.
+    const recetaRows = (await sql`
+      SELECT id FROM soda_master.recetas
+      WHERE producto_id = ${input.producto_id}::uuid AND activo = true
+      LIMIT 1
+    `) as any[]
+    let recetaCopiada = false
+    if (recetaRows[0]) {
+      const nuevaRecetaRows = (await sql`
+        INSERT INTO soda_master.recetas (producto_id, nombre, activo)
+        VALUES (${nuevoProducto.id}::uuid, ${nombreNuevo}, true)
+        RETURNING id
+      `) as any[]
+      const nuevaRecetaId = nuevaRecetaRows[0]?.id
+      if (nuevaRecetaId) {
+        await sql`
+          INSERT INTO soda_master.receta_ingredientes
+            (receta_id, ingrediente_id, cantidad, opcional, extra, costo_adicional, nombre_display)
+          SELECT ${nuevaRecetaId}::uuid, ingrediente_id, cantidad, opcional, extra,
+                 costo_adicional, nombre_display
+          FROM soda_master.receta_ingredientes
+          WHERE receta_id = ${recetaRows[0].id}::uuid
+        `
+        recetaCopiada = true
+      }
+    }
+    return { producto: nuevoProducto, receta_copiada: recetaCopiada }
   },
 
   async getProductosEspeciales(): Promise<Producto[]> {
@@ -1088,20 +1474,31 @@ export const db = {
     const enviado = Boolean((orden as any).enviado_a_cocina)
 
     // Control de acceso por rol: meseros/administradores/admins pueden
-    // abrir mesa sin restricción. Para que un CAJERO pueda hacerlo, el
-    // admin tiene que haberle otorgado el permiso especial
-    // `apertura_mesa` y todavía estar vigente. Esto se valida server-side
-    // para que ninguna vista pueda saltearse la regla.
+    // abrir mesa sin restricción. Para que un CAJERO pueda hacerlo
+    // necesita o bien tener `mesero` como rol adicional permanente, o
+    // bien que el admin le haya otorgado el permiso especial temporal
+    // `apertura_mesa`. Esto se valida server-side para que ninguna
+    // vista pueda saltearse la regla.
     if (orden.usuario_id) {
+      await ensureRolesAdicionalesSchema()
       const usuarios = (await sql`
-        SELECT rol FROM soda_master.usuarios WHERE id = ${orden.usuario_id}
-      `) as Array<{ rol: string | null }>
+        SELECT rol, COALESCE(roles_adicionales, '{}'::text[]) AS roles_adicionales
+        FROM soda_master.usuarios WHERE id = ${orden.usuario_id}
+      `) as Array<{ rol: string | null; roles_adicionales: string[] }>
       const rol = (usuarios[0]?.rol || '').toLowerCase()
-      if (rol === 'cajero') {
+      const adicionales = (usuarios[0]?.roles_adicionales || []).map((r) =>
+        String(r).toLowerCase(),
+      )
+      const tieneRolApertura =
+        ['mesero', 'admin', 'administrador'].includes(rol) ||
+        adicionales.some((r) =>
+          ['mesero', 'admin', 'administrador'].includes(r),
+        )
+      if (rol === 'cajero' && !tieneRolApertura) {
         const permitido = await this.tienePermisoEspecial(orden.usuario_id, 'apertura_mesa')
         if (!permitido) {
           throw new Error(
-            'El cajero no tiene un permiso vigente para abrir mesas. Pedile al administrador que se lo otorgue.',
+            'El cajero no tiene un permiso vigente para abrir mesas. Pedile al administrador que se lo otorgue (o configure rol adicional permanente).',
           )
         }
       }
@@ -1223,6 +1620,120 @@ export const db = {
       ORDER BY o.created_at ASC
     `
     return result as Orden[]
+  },
+
+  // Historial de pedidos para KDS (cocina/bar). Devuelve órdenes con
+  // sus items incluyendo nombre de producto, categoría y mesa, para una
+  // fecha concreta (en zona America/Santiago) o todas si no se pasa
+  // fecha. A diferencia de `getOrdenesParaKDS`, incluye también
+  // órdenes ya pagadas/canceladas/perdidas — es para revisar lo que
+  // pasó, no para preparar.
+  async getHistorialKDS(opts: { fecha?: string; limite?: number } = {}): Promise<any[]> {
+    await ensureItemPagoSchema()
+    await ensureTimestampTzMigration()
+    const sql = getSql()
+    const limite = opts.limite && opts.limite > 0 ? Math.min(opts.limite, 500) : 200
+    const fechaIso =
+      opts.fecha === 'hoy'
+        ? null // marcador para usar now() en zona local
+        : (opts.fecha || null)
+    if (opts.fecha === 'hoy') {
+      return (await sql`
+        SELECT o.id, o.mesa_id, o.estado, o.created_at, o.updated_at,
+               m.numero AS mesa_numero,
+               COALESCE(
+                 json_agg(
+                   json_build_object(
+                     'id', i.id,
+                     'producto_id', i.producto_id,
+                     'producto_nombre', p.nombre,
+                     'categoria', c.nombre,
+                     'cantidad', i.cantidad,
+                     'precio_unitario', i.precio_unitario,
+                     'modificadores', i.modificadores,
+                     'notas_especiales', i.notas_especiales,
+                     'estado_item', i.estado_item,
+                     'pagado', i.pagado,
+                     'item_created_at', i.created_at
+                   ) ORDER BY i.created_at
+                 ) FILTER (WHERE i.id IS NOT NULL),
+                 '[]'::json
+               ) AS items
+        FROM soda_master.ordenes o
+        LEFT JOIN soda_master.items_orden i ON o.id = i.orden_id
+        LEFT JOIN soda_master.productos p ON i.producto_id = p.id
+        LEFT JOIN soda_master.categorias c ON p.categoria_id = c.id
+        LEFT JOIN soda_master.mesas m ON m.id = o.mesa_id
+        WHERE (o.created_at AT TIME ZONE 'America/Santiago')::date
+              = (now() AT TIME ZONE 'America/Santiago')::date
+        GROUP BY o.id, m.numero
+        ORDER BY o.created_at DESC
+        LIMIT ${limite}
+      `) as unknown as any[]
+    }
+    if (fechaIso) {
+      return (await sql`
+        SELECT o.id, o.mesa_id, o.estado, o.created_at, o.updated_at,
+               m.numero AS mesa_numero,
+               COALESCE(
+                 json_agg(
+                   json_build_object(
+                     'id', i.id,
+                     'producto_id', i.producto_id,
+                     'producto_nombre', p.nombre,
+                     'categoria', c.nombre,
+                     'cantidad', i.cantidad,
+                     'precio_unitario', i.precio_unitario,
+                     'modificadores', i.modificadores,
+                     'notas_especiales', i.notas_especiales,
+                     'estado_item', i.estado_item,
+                     'pagado', i.pagado,
+                     'item_created_at', i.created_at
+                   ) ORDER BY i.created_at
+                 ) FILTER (WHERE i.id IS NOT NULL),
+                 '[]'::json
+               ) AS items
+        FROM soda_master.ordenes o
+        LEFT JOIN soda_master.items_orden i ON o.id = i.orden_id
+        LEFT JOIN soda_master.productos p ON i.producto_id = p.id
+        LEFT JOIN soda_master.categorias c ON p.categoria_id = c.id
+        LEFT JOIN soda_master.mesas m ON m.id = o.mesa_id
+        WHERE (o.created_at AT TIME ZONE 'America/Santiago')::date = ${fechaIso}::date
+        GROUP BY o.id, m.numero
+        ORDER BY o.created_at DESC
+        LIMIT ${limite}
+      `) as unknown as any[]
+    }
+    return (await sql`
+      SELECT o.id, o.mesa_id, o.estado, o.created_at, o.updated_at,
+             m.numero AS mesa_numero,
+             COALESCE(
+               json_agg(
+                 json_build_object(
+                   'id', i.id,
+                   'producto_id', i.producto_id,
+                   'producto_nombre', p.nombre,
+                   'categoria', c.nombre,
+                   'cantidad', i.cantidad,
+                   'precio_unitario', i.precio_unitario,
+                   'modificadores', i.modificadores,
+                   'notas_especiales', i.notas_especiales,
+                   'estado_item', i.estado_item,
+                   'pagado', i.pagado,
+                   'item_created_at', i.created_at
+                 ) ORDER BY i.created_at
+               ) FILTER (WHERE i.id IS NOT NULL),
+               '[]'::json
+             ) AS items
+      FROM soda_master.ordenes o
+      LEFT JOIN soda_master.items_orden i ON o.id = i.orden_id
+      LEFT JOIN soda_master.productos p ON i.producto_id = p.id
+      LEFT JOIN soda_master.categorias c ON p.categoria_id = c.id
+      LEFT JOIN soda_master.mesas m ON m.id = o.mesa_id
+      GROUP BY o.id, m.numero
+      ORDER BY o.created_at DESC
+      LIMIT ${limite}
+    `) as unknown as any[]
   },
 
   async getOrdenes(opts: { fecha?: string; limite?: number; orden?: 'asc' | 'desc' } = {}): Promise<Orden[]> {
@@ -1657,15 +2168,53 @@ export const db = {
       `
     }
 
+    // Registro automático en caja chica. Si no hay caja abierta, NO se
+    // bloquea el pago (el negocio puede operar sin caja chica activa),
+    // pero sí dejamos rastro intentando registrarlo y silenciando el
+    // error de "CAJA_NO_ABIERTA".
+    if (metodoNormalizado === 'efectivo') {
+      try {
+        await ensureCajaSchema()
+        const abiertaRows = (await sql`
+          SELECT id FROM soda_master.cajas WHERE estado = 'abierta' LIMIT 1
+        `) as any[]
+        const cajaAbiertaId = abiertaRows[0]?.id
+        if (cajaAbiertaId) {
+          const totalEfectivo = Number(monto) + Number(propina)
+          await sql`
+            INSERT INTO soda_master.movimientos_caja
+              (caja_id, tipo, monto, pago_id, descripcion)
+            VALUES
+              (${cajaAbiertaId}::uuid, 'venta_efectivo', ${totalEfectivo},
+               ${pagoId}::uuid,
+               ${'Cobro orden ' + String(ordenId).slice(0, 8)})
+          `
+          if (vueltoVal && vueltoVal > 0) {
+            await sql`
+              INSERT INTO soda_master.movimientos_caja
+                (caja_id, tipo, monto, pago_id, descripcion)
+              VALUES
+                (${cajaAbiertaId}::uuid, 'vuelto', ${vueltoVal},
+                 ${pagoId}::uuid,
+                 ${'Vuelto entregado'})
+            `
+          }
+        }
+      } catch (e) {
+        console.error('No se pudo registrar movimiento de caja:', e)
+      }
+    }
+
     return pagoCreado
   },
 
   async getPagos(filtro?: { fecha?: string }): Promise<Pago[]> {
+    await ensureTimestampTzMigration()
     const sql = getSql()
     let rows: any[]
     if (filtro?.fecha === 'hoy') {
       rows = await sql`
-        SELECT p.*, o.mesa_id, m.nombre AS mesa_nombre
+        SELECT p.*, o.mesa_id, ('Mesa ' || m.numero) AS mesa_nombre
         FROM soda_master.pagos p
         LEFT JOIN soda_master.ordenes o ON o.id = p.orden_id
         LEFT JOIN soda_master.mesas m ON m.id = o.mesa_id
@@ -1674,7 +2223,7 @@ export const db = {
       `
     } else if (filtro?.fecha) {
       rows = await sql`
-        SELECT p.*, o.mesa_id, m.nombre AS mesa_nombre
+        SELECT p.*, o.mesa_id, ('Mesa ' || m.numero) AS mesa_nombre
         FROM soda_master.pagos p
         LEFT JOIN soda_master.ordenes o ON o.id = p.orden_id
         LEFT JOIN soda_master.mesas m ON m.id = o.mesa_id
@@ -1683,7 +2232,7 @@ export const db = {
       `
     } else {
       rows = await sql`
-        SELECT p.*, o.mesa_id, m.nombre AS mesa_nombre
+        SELECT p.*, o.mesa_id, ('Mesa ' || m.numero) AS mesa_nombre
         FROM soda_master.pagos p
         LEFT JOIN soda_master.ordenes o ON o.id = p.orden_id
         LEFT JOIN soda_master.mesas m ON m.id = o.mesa_id
@@ -2449,6 +2998,7 @@ export const db = {
   async crearMerma(input: {
     tipo: string
     producto_id?: string | null
+    ingrediente_id?: string | null
     cantidad: number
     descripcion?: string | null
     registrado_por: string
@@ -2458,11 +3008,19 @@ export const db = {
       autorizado_por?: string | null
     } | null
   }) {
+    await ensureMermasIngredienteSchema()
     const sql = getSql()
-    if (input.tipo !== 'comanda_no_pagada' && !input.producto_id) {
-      throw new Error('Producto requerido para registrar merma')
+    if (
+      input.tipo !== 'comanda_no_pagada' &&
+      !input.producto_id &&
+      !input.ingrediente_id
+    ) {
+      throw new Error('Producto o insumo requerido para registrar merma')
     }
 
+    // Merma sobre un PRODUCTO: descuenta de la tabla `inventario` (que
+    // representa el stock del producto vendible) en la misma sentencia
+    // para que sea atómico contra el INSERT.
     if (input.producto_id && input.tipo !== 'comanda_no_pagada') {
       const mermaRows = await sql`
         WITH stock_actualizado AS (
@@ -2499,6 +3057,45 @@ export const db = {
       return mermaRows[0] as any
     }
 
+    // Merma sobre un INSUMO (ingrediente): descuenta de
+    // `ingredientes.stock_actual`. Misma idea: descuento + INSERT atómico
+    // condicionado a que haya stock suficiente.
+    if (input.ingrediente_id && input.tipo !== 'comanda_no_pagada') {
+      const mermaRows = await sql`
+        WITH stock_actualizado AS (
+          UPDATE soda_master.ingredientes
+          SET stock_actual = stock_actual - ${input.cantidad},
+              updated_at = CURRENT_TIMESTAMP
+          WHERE id = ${input.ingrediente_id}::uuid
+            AND stock_actual >= ${input.cantidad}
+          RETURNING id
+        )
+        INSERT INTO soda_master.mermas (tipo, ingrediente_id, cantidad, descripcion, registrado_por)
+        SELECT
+          ${input.tipo},
+          ${input.ingrediente_id}::uuid,
+          ${input.cantidad},
+          ${input.descripcion || null},
+          ${input.registrado_por}
+        FROM stock_actualizado
+        RETURNING *
+      `
+      if (!mermaRows[0]) {
+        const stockRows = await sql`
+          SELECT stock_actual
+          FROM soda_master.ingredientes
+          WHERE id = ${input.ingrediente_id}::uuid
+          LIMIT 1
+        `
+        const stockActual = stockRows[0]?.stock_actual
+        if (stockActual === undefined) {
+          throw new Error('Insumo no encontrado')
+        }
+        throw new Error(`Stock insuficiente para registrar merma. Stock actual: ${Number(stockActual)}`)
+      }
+      return mermaRows[0] as any
+    }
+
     const mermaRows = await sql`
       INSERT INTO soda_master.mermas (tipo, producto_id, cantidad, descripcion, registrado_por)
       VALUES (
@@ -2523,6 +3120,277 @@ export const db = {
     return merma
   },
 
+  // ──── Auditoría administrativa ────────────────────────────────────
+  // Cualquier acción "sensible" del admin que NO genera otro registro
+  // (ej.: eliminar un producto/insumo por corrección, NO por merma)
+  // queda acá para tener trazabilidad sin contaminar `mermas` con
+  // eventos que no corresponden a pérdidas reales.
+  async registrarAuditoriaAdmin(input: {
+    usuario_id?: string | null
+    usuario_nombre?: string | null
+    usuario_rol?: string | null
+    accion: string
+    entidad: string
+    entidad_id?: string | null
+    entidad_nombre?: string | null
+    detalles?: any
+  }): Promise<{ id: string }> {
+    await ensureAuditoriaAdminTable()
+    const sql = getSql()
+    const detallesJson =
+      input.detalles !== undefined && input.detalles !== null
+        ? JSON.stringify(input.detalles)
+        : null
+    const rows = (await sql`
+      INSERT INTO soda_master.auditoria_admin
+        (usuario_id, usuario_nombre, usuario_rol, accion,
+         entidad, entidad_id, entidad_nombre, detalles)
+      VALUES (
+        ${input.usuario_id || null},
+        ${input.usuario_nombre || null},
+        ${input.usuario_rol || null},
+        ${input.accion},
+        ${input.entidad},
+        ${input.entidad_id || null},
+        ${input.entidad_nombre || null},
+        ${detallesJson}::jsonb
+      )
+      RETURNING id
+    `) as Array<{ id: string }>
+    return rows[0]
+  },
+
+  async getAuditoriaAdmin(filtro?: {
+    entidad?: string
+    entidad_id?: string
+    limite?: number
+  }): Promise<any[]> {
+    await ensureAuditoriaAdminTable()
+    const sql = getSql()
+    const limite = filtro?.limite && filtro.limite > 0 ? Math.min(filtro.limite, 500) : 200
+    if (filtro?.entidad && filtro?.entidad_id) {
+      return (await sql`
+        SELECT * FROM soda_master.auditoria_admin
+        WHERE entidad = ${filtro.entidad} AND entidad_id = ${filtro.entidad_id}::uuid
+        ORDER BY created_at DESC
+        LIMIT ${limite}
+      `) as any[]
+    }
+    if (filtro?.entidad) {
+      return (await sql`
+        SELECT * FROM soda_master.auditoria_admin
+        WHERE entidad = ${filtro.entidad}
+        ORDER BY created_at DESC
+        LIMIT ${limite}
+      `) as any[]
+    }
+    return (await sql`
+      SELECT * FROM soda_master.auditoria_admin
+      ORDER BY created_at DESC
+      LIMIT ${limite}
+    `) as any[]
+  },
+
+  // ──── Eliminación con motivo (productos / insumos) ────────────────
+  // Soft delete: marca `activo=false` para preservar referencias
+  // históricas (recetas, items_orden, etc.). Si el motivo es 'merma',
+  // primero registra la merma con la cantidad indicada (típicamente el
+  // stock actual) y descuenta. Si es 'correccion_admin', sólo desactiva
+  // + auditoría — sin pedir explicación pero deja log.
+  async eliminarProductoConMotivo(input: {
+    producto_id: string
+    motivo: 'merma' | 'correccion_admin'
+    motivo_merma?: string | null     // tipo dentro de la tabla `mermas` (accidente, vencido, etc.)
+    descripcion?: string | null
+    cantidad?: number | null         // si no se entrega, usa stock_actual
+    registrado_por: string
+    registrado_por_nombre?: string | null
+    registrado_por_rol?: string | null
+  }): Promise<{
+    producto: any
+    merma_id: string | null
+    auditoria_id: string | null
+  }> {
+    const sql = getSql()
+
+    // Asegurar que el producto existe y está activo.
+    const prodRows = (await sql`
+      SELECT id, nombre, activo FROM soda_master.productos
+      WHERE id = ${input.producto_id}::uuid
+      LIMIT 1
+    `) as Array<{ id: string; nombre: string; activo: boolean }>
+    if (!prodRows[0]) throw new Error('Producto no encontrado')
+    if (prodRows[0].activo === false) {
+      throw new Error('El producto ya está dado de baja')
+    }
+    const productoNombre = prodRows[0].nombre
+
+    let mermaId: string | null = null
+    let auditoriaId: string | null = null
+
+    if (input.motivo === 'merma') {
+      const tipoMerma = (input.motivo_merma || '').trim()
+      if (!tipoMerma) {
+        throw new Error('Motivo de merma requerido')
+      }
+      const descripcion = (input.descripcion || '').trim()
+      if (descripcion.length < 3) {
+        throw new Error('Describe brevemente la merma (mínimo 3 caracteres)')
+      }
+      // Cantidad: si no la entregan, descontamos TODO el stock actual.
+      const stockRows = (await sql`
+        SELECT stock_actual FROM soda_master.inventario
+        WHERE producto_id = ${input.producto_id}::uuid LIMIT 1
+      `) as Array<{ stock_actual: number | string }>
+      const stockActual = Number(stockRows[0]?.stock_actual ?? 0)
+      const cantidad =
+        input.cantidad !== undefined && input.cantidad !== null
+          ? Number(input.cantidad)
+          : stockActual
+      if (cantidad > 0 && stockActual > 0) {
+        const merma = await this.crearMerma({
+          tipo: tipoMerma,
+          producto_id: input.producto_id,
+          cantidad: Math.min(cantidad, stockActual),
+          descripcion,
+          registrado_por: input.registrado_por,
+        })
+        mermaId = merma?.id ?? null
+      } else {
+        // Si no había stock, igualmente dejamos constancia de la merma
+        // (cantidad 0) para no perder el contexto del por qué se dio de baja.
+        const merma = await this.crearMerma({
+          tipo: tipoMerma,
+          producto_id: input.producto_id,
+          cantidad: 0,
+          descripcion,
+          registrado_por: input.registrado_por,
+        })
+        mermaId = merma?.id ?? null
+      }
+    } else {
+      // Corrección admin: registramos auditoría.
+      const aud = await this.registrarAuditoriaAdmin({
+        usuario_id: input.registrado_por,
+        usuario_nombre: input.registrado_por_nombre ?? null,
+        usuario_rol: input.registrado_por_rol ?? null,
+        accion: 'eliminar_producto',
+        entidad: 'producto',
+        entidad_id: input.producto_id,
+        entidad_nombre: productoNombre,
+        detalles: {
+          motivo: 'correccion_admin',
+          descripcion: input.descripcion ?? null,
+        },
+      })
+      auditoriaId = aud.id
+    }
+
+    const updated = (await sql`
+      UPDATE soda_master.productos
+      SET activo = FALSE, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ${input.producto_id}::uuid
+      RETURNING id, nombre, activo
+    `) as any[]
+
+    return {
+      producto: updated[0] ?? null,
+      merma_id: mermaId,
+      auditoria_id: auditoriaId,
+    }
+  },
+
+  async eliminarIngredienteConMotivo(input: {
+    ingrediente_id: string
+    motivo: 'merma' | 'correccion_admin'
+    motivo_merma?: string | null
+    descripcion?: string | null
+    cantidad?: number | null
+    registrado_por: string
+    registrado_por_nombre?: string | null
+    registrado_por_rol?: string | null
+  }): Promise<{
+    ingrediente: any
+    merma_id: string | null
+    auditoria_id: string | null
+  }> {
+    const sql = getSql()
+
+    const rows = (await sql`
+      SELECT id, nombre, activo, stock_actual
+      FROM soda_master.ingredientes
+      WHERE id = ${input.ingrediente_id}::uuid
+      LIMIT 1
+    `) as Array<{ id: string; nombre: string; activo: boolean; stock_actual: number | string }>
+    if (!rows[0]) throw new Error('Insumo no encontrado')
+    if (rows[0].activo === false) throw new Error('El insumo ya está dado de baja')
+    const ingredienteNombre = rows[0].nombre
+    const stockActual = Number(rows[0].stock_actual ?? 0)
+
+    let mermaId: string | null = null
+    let auditoriaId: string | null = null
+
+    if (input.motivo === 'merma') {
+      const tipoMerma = (input.motivo_merma || '').trim()
+      if (!tipoMerma) throw new Error('Motivo de merma requerido')
+      const descripcion = (input.descripcion || '').trim()
+      if (descripcion.length < 3) {
+        throw new Error('Describe brevemente la merma (mínimo 3 caracteres)')
+      }
+      const cantidad =
+        input.cantidad !== undefined && input.cantidad !== null
+          ? Number(input.cantidad)
+          : stockActual
+      if (cantidad > 0 && stockActual > 0) {
+        const merma = await this.crearMerma({
+          tipo: tipoMerma,
+          ingrediente_id: input.ingrediente_id,
+          cantidad: Math.min(cantidad, stockActual),
+          descripcion,
+          registrado_por: input.registrado_por,
+        })
+        mermaId = merma?.id ?? null
+      } else {
+        const merma = await this.crearMerma({
+          tipo: tipoMerma,
+          ingrediente_id: input.ingrediente_id,
+          cantidad: 0,
+          descripcion,
+          registrado_por: input.registrado_por,
+        })
+        mermaId = merma?.id ?? null
+      }
+    } else {
+      const aud = await this.registrarAuditoriaAdmin({
+        usuario_id: input.registrado_por,
+        usuario_nombre: input.registrado_por_nombre ?? null,
+        usuario_rol: input.registrado_por_rol ?? null,
+        accion: 'eliminar_insumo',
+        entidad: 'insumo',
+        entidad_id: input.ingrediente_id,
+        entidad_nombre: ingredienteNombre,
+        detalles: {
+          motivo: 'correccion_admin',
+          descripcion: input.descripcion ?? null,
+        },
+      })
+      auditoriaId = aud.id
+    }
+
+    const updated = (await sql`
+      UPDATE soda_master.ingredientes
+      SET activo = FALSE, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ${input.ingrediente_id}::uuid
+      RETURNING id, nombre, activo
+    `) as any[]
+
+    return {
+      ingrediente: updated[0] ?? null,
+      merma_id: mermaId,
+      auditoria_id: auditoriaId,
+    }
+  },
+
   async actualizarMerma(
     id: string,
     updates: { responsable_id?: string | null; consecuencia?: string | null; monto_descuento?: number }
@@ -2540,6 +3408,7 @@ export const db = {
   },
 
   async getResumenMermas(desde: string, hasta: string) {
+    await ensureTimestampTzMigration()
     const sql = getSql()
     const [totales] = await sql`
       SELECT
@@ -2631,6 +3500,7 @@ export const db = {
 
   // Reportes
   async getReporteVentas(desde: string, hasta: string) {
+    await ensureTimestampTzMigration()
     const sql = getSql()
     const rows = await sql`
       SELECT
@@ -2649,6 +3519,7 @@ export const db = {
   },
 
   async getReporteTopProductos(desde: string, hasta: string, limite: number) {
+    await ensureTimestampTzMigration()
     const sql = getSql()
     const rows = await sql`
       SELECT
@@ -2677,6 +3548,7 @@ export const db = {
   },
 
   async getReporteVentasCategoria(desde: string, hasta: string) {
+    await ensureTimestampTzMigration()
     const sql = getSql()
     const rows = await sql`
       SELECT
@@ -2700,6 +3572,7 @@ export const db = {
   },
 
   async getReporteMetodosPago(desde: string, hasta: string) {
+    await ensureTimestampTzMigration()
     const sql = getSql()
     const rows = await sql`
       SELECT
@@ -2719,6 +3592,7 @@ export const db = {
   },
 
   async getReporteVentasSemana() {
+    await ensureTimestampTzMigration()
     const sql = getSql()
     const rows = await sql`
       WITH dias AS (
@@ -3675,6 +4549,205 @@ export const db = {
       RETURNING id
     `
     return (rows as any[]).length > 0
+  },
+
+  // ──── Caja chica ───────────────────────────────────────────────────
+  async getCajaAbierta(): Promise<any | null> {
+    await ensureCajaSchema()
+    const sql = getSql()
+    const rows = (await sql`
+      SELECT * FROM soda_master.cajas
+      WHERE estado = 'abierta'
+      ORDER BY abierta_en DESC
+      LIMIT 1
+    `) as any[]
+    return rows[0] || null
+  },
+
+  async getCajaConResumen(cajaId: string): Promise<any | null> {
+    await ensureCajaSchema()
+    const sql = getSql()
+    const cajaRows = (await sql`
+      SELECT * FROM soda_master.cajas WHERE id = ${cajaId}::uuid
+    `) as any[]
+    const caja = cajaRows[0]
+    if (!caja) return null
+    const movs = (await sql`
+      SELECT * FROM soda_master.movimientos_caja
+      WHERE caja_id = ${cajaId}::uuid
+      ORDER BY created_at ASC
+    `) as any[]
+    const totales = movs.reduce(
+      (acc, m) => {
+        const monto = Number(m.monto) || 0
+        if (m.tipo === 'venta_efectivo' || m.tipo === 'deposito') acc.entradas += monto
+        else if (m.tipo === 'vuelto' || m.tipo === 'retiro') acc.salidas += monto
+        if (m.tipo === 'venta_efectivo') acc.ventasEfectivo += monto
+        if (m.tipo === 'vuelto') acc.vueltoEntregado += monto
+        if (m.tipo === 'retiro') acc.retiros += monto
+        if (m.tipo === 'deposito') acc.depositos += monto
+        return acc
+      },
+      { entradas: 0, salidas: 0, ventasEfectivo: 0, vueltoEntregado: 0, retiros: 0, depositos: 0 },
+    )
+    const fondoInicial = Number(caja.fondo_inicial) || 0
+    const esperado = fondoInicial + totales.entradas - totales.salidas
+    return {
+      caja,
+      movimientos: movs,
+      resumen: {
+        fondo_inicial: fondoInicial,
+        ventas_efectivo: totales.ventasEfectivo,
+        vuelto_entregado: totales.vueltoEntregado,
+        retiros: totales.retiros,
+        depositos: totales.depositos,
+        efectivo_esperado: esperado,
+      },
+    }
+  },
+
+  async abrirCaja(input: {
+    usuario_id: string
+    usuario_nombre: string
+    fondo_inicial: number
+    notas?: string | null
+  }): Promise<any> {
+    await ensureCajaSchema()
+    const sql = getSql()
+    // No permitimos abrir una caja si ya hay una abierta — el índice
+    // único `cajas_solo_una_abierta` lo enforza, pero damos un error
+    // con mensaje claro antes de que choque.
+    const abierta = await this.getCajaAbierta()
+    if (abierta) {
+      const err: any = new Error('Ya hay una caja abierta. Ciérrala antes de abrir otra.')
+      err.code = 'CAJA_YA_ABIERTA'
+      throw err
+    }
+    const fondo = Number(input.fondo_inicial)
+    if (!Number.isFinite(fondo) || fondo < 0) {
+      throw new Error('fondo_inicial inválido')
+    }
+    const inserted = (await sql`
+      INSERT INTO soda_master.cajas
+        (usuario_apertura_id, usuario_apertura_nombre, fondo_inicial, notas, estado)
+      VALUES
+        (${input.usuario_id}::uuid, ${input.usuario_nombre}, ${fondo}, ${input.notas ?? null}, 'abierta')
+      RETURNING *
+    `) as any[]
+    const caja = inserted[0]
+    await sql`
+      INSERT INTO soda_master.movimientos_caja
+        (caja_id, tipo, monto, usuario_id, usuario_nombre, descripcion)
+      VALUES
+        (${caja.id}::uuid, 'apertura', ${fondo}, ${input.usuario_id}::uuid,
+         ${input.usuario_nombre}, ${'Fondo inicial al abrir caja'})
+    `
+    return caja
+  },
+
+  async registrarMovimientoCaja(input: {
+    caja_id?: string
+    tipo: 'venta_efectivo' | 'vuelto' | 'retiro' | 'deposito' | 'ajuste'
+    monto: number
+    pago_id?: string | null
+    usuario_id?: string | null
+    usuario_nombre?: string | null
+    descripcion?: string | null
+  }): Promise<any> {
+    await ensureCajaSchema()
+    const sql = getSql()
+    let cajaId = input.caja_id
+    if (!cajaId) {
+      const abierta = await this.getCajaAbierta()
+      if (!abierta) {
+        const err: any = new Error('No hay caja abierta')
+        err.code = 'CAJA_NO_ABIERTA'
+        throw err
+      }
+      cajaId = abierta.id
+    }
+    const monto = Number(input.monto)
+    if (!Number.isFinite(monto) || monto <= 0) {
+      throw new Error('monto inválido')
+    }
+    const rows = (await sql`
+      INSERT INTO soda_master.movimientos_caja
+        (caja_id, tipo, monto, pago_id, usuario_id, usuario_nombre, descripcion)
+      VALUES
+        (${cajaId}::uuid, ${input.tipo}, ${monto},
+         ${input.pago_id ? `${input.pago_id}` : null}::uuid,
+         ${input.usuario_id ? `${input.usuario_id}` : null}::uuid,
+         ${input.usuario_nombre ?? null},
+         ${input.descripcion ?? null})
+      RETURNING *
+    `) as any[]
+    return rows[0]
+  },
+
+  async cerrarCaja(input: {
+    caja_id: string
+    usuario_id: string
+    usuario_nombre: string
+    efectivo_contado: number
+    notas?: string | null
+  }): Promise<any> {
+    await ensureCajaSchema()
+    const sql = getSql()
+    const cajaRows = (await sql`
+      SELECT * FROM soda_master.cajas WHERE id = ${input.caja_id}::uuid
+    `) as any[]
+    const caja = cajaRows[0]
+    if (!caja) throw new Error('Caja no encontrada')
+    if (caja.estado === 'cerrada') {
+      const err: any = new Error('La caja ya está cerrada')
+      err.code = 'CAJA_YA_CERRADA'
+      throw err
+    }
+    const contado = Number(input.efectivo_contado)
+    if (!Number.isFinite(contado) || contado < 0) {
+      throw new Error('efectivo_contado inválido')
+    }
+    const detalle = await this.getCajaConResumen(input.caja_id)
+    const esperado = detalle?.resumen?.efectivo_esperado ?? 0
+    const diferencia = contado - esperado
+    const rows = (await sql`
+      UPDATE soda_master.cajas
+      SET estado = 'cerrada',
+          cerrada_en = now(),
+          usuario_cierre_id = ${input.usuario_id}::uuid,
+          usuario_cierre_nombre = ${input.usuario_nombre},
+          efectivo_contado = ${contado},
+          diferencia = ${diferencia},
+          notas = COALESCE(${input.notas ?? null}, notas)
+      WHERE id = ${input.caja_id}::uuid AND estado = 'abierta'
+      RETURNING *
+    `) as any[]
+    if (!rows[0]) throw new Error('No se pudo cerrar la caja (posible cierre concurrente)')
+    await sql`
+      INSERT INTO soda_master.movimientos_caja
+        (caja_id, tipo, monto, usuario_id, usuario_nombre, descripcion)
+      VALUES
+        (${input.caja_id}::uuid, 'cierre', ${contado}, ${input.usuario_id}::uuid,
+         ${input.usuario_nombre},
+         ${'Cierre — esperado ' + esperado + ', contado ' + contado + ', diferencia ' + diferencia})
+    `
+    return { caja: rows[0], esperado, diferencia }
+  },
+
+  async getHistorialCajas(limite = 30): Promise<any[]> {
+    await ensureCajaSchema()
+    const sql = getSql()
+    const lim = Math.max(1, Math.min(200, limite))
+    const rows = (await sql`
+      SELECT c.*, (
+        SELECT COUNT(*)::int FROM soda_master.movimientos_caja m
+        WHERE m.caja_id = c.id AND m.tipo = 'venta_efectivo'
+      ) AS pagos_efectivo
+      FROM soda_master.cajas c
+      ORDER BY c.abierta_en DESC
+      LIMIT ${lim}
+    `) as any[]
+    return rows
   },
 }
 
