@@ -65,6 +65,54 @@ function esItemDeBar(it: ItemHist): boolean {
   return BAR_CATS.has(cat) || cat.includes('bebid') || cat.includes('trago')
 }
 
+interface NotasItem {
+  modificadores: string[]
+  especiales: string[]
+  salsa: string
+  notas: string
+  notaEspecial: string
+}
+
+// `notas_especiales` se guarda como JSON ({salsa, notas, notaEspecial,
+// ingredientesEspeciales}) y `modificadores` como array de ingredientes
+// estándar. Esta función los convierte en un resumen legible en vez de
+// mostrar el JSON crudo.
+function parseNotasItem(it: ItemHist): NotasItem {
+  const out: NotasItem = {
+    modificadores: [],
+    especiales: [],
+    salsa: '',
+    notas: '',
+    notaEspecial: '',
+  }
+
+  if (Array.isArray(it.modificadores)) {
+    out.modificadores = it.modificadores.map((m) => String(m)).filter(Boolean)
+  }
+
+  const raw = typeof it.notas_especiales === 'string' ? it.notas_especiales.trim() : ''
+  if (!raw) return out
+
+  if (raw.startsWith('{')) {
+    try {
+      const meta = JSON.parse(raw)
+      if (typeof meta.salsa === 'string') out.salsa = meta.salsa
+      if (typeof meta.notas === 'string') out.notas = meta.notas
+      if (typeof meta.notaEspecial === 'string') out.notaEspecial = meta.notaEspecial
+      if (Array.isArray(meta.ingredientesEspeciales)) {
+        out.especiales = meta.ingredientesEspeciales
+          .map((e: any) => (typeof e === 'string' ? e : e?.nombre))
+          .filter(Boolean)
+      }
+      return out
+    } catch {
+      // No era JSON válido: lo tratamos como nota de texto plano.
+    }
+  }
+  out.notas = raw
+  return out
+}
+
 function fechaHoyChile(): string {
   // YYYY-MM-DD según la zona del negocio.
   try {
@@ -281,11 +329,41 @@ export function KDSHistorialDialog({ open, onOpenChange, estacion }: Props) {
                             ({it.categoria})
                           </span>
                         )}
-                        {it.notas_especiales && (
-                          <p className="text-xs text-amber-600">
-                            Nota: {it.notas_especiales}
-                          </p>
-                        )}
+                        {(() => {
+                          const n = parseNotasItem(it)
+                          const vacio =
+                            n.modificadores.length === 0 &&
+                            n.especiales.length === 0 &&
+                            !n.salsa &&
+                            !n.notas &&
+                            !n.notaEspecial
+                          if (vacio) return null
+                          return (
+                            <div className="mt-0.5 space-y-0.5 text-xs leading-tight">
+                              {n.modificadores.length > 0 && (
+                                <p className="text-muted-foreground">
+                                  + {n.modificadores.join(', ')}
+                                </p>
+                              )}
+                              {n.especiales.length > 0 && (
+                                <p className="text-amber-600">
+                                  ⭐ {n.especiales.join(', ')}
+                                </p>
+                              )}
+                              {n.salsa && (
+                                <p className="text-muted-foreground">Salsa: {n.salsa}</p>
+                              )}
+                              {n.notaEspecial && (
+                                <p className="italic text-amber-600">📝 {n.notaEspecial}</p>
+                              )}
+                              {n.notas && (
+                                <p className="italic text-muted-foreground">
+                                  Nota: {n.notas}
+                                </p>
+                              )}
+                            </div>
+                          )
+                        })()}
                       </div>
                       <Badge
                         className={
