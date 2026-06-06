@@ -25,7 +25,7 @@ import {
 } from '@/components/ui/select'
 import { cn } from '@/lib/utils'
 import { formatCurrency, generateId, getEstadoComandaColor, getEstadoComandaLabel } from '@/lib/helpers'
-import { Plus, Minus, Trash2, Send, Printer, Percent, ChefHat, Wine, Star, ArrowLeft, Beer, GlassWater, ShoppingCart, X, Receipt, Check } from 'lucide-react'
+import { Plus, Minus, Trash2, Send, Printer, Percent, ChefHat, Wine, Star, ArrowLeft, Beer, GlassWater, ShoppingCart, X, Receipt, Check, Pencil } from 'lucide-react'
 import { Switch } from '@/components/ui/switch'
 import { Label } from '@/components/ui/label'
 import { showToast } from '@/components/toast'
@@ -128,6 +128,12 @@ export function POSPage() {
   const [itemNotaEspecial, setItemNotaEspecial] = useState('')
   const [itemEspeciales, setItemEspeciales] = useState<string[]>([])
   const [itemCantidad, setItemCantidad] = useState(1)
+
+  // Edición de un ítem ya agregado a la comanda. Si está seteado, el
+  // diálogo (burger o genérico) trabaja en "modo edición": en vez de
+  // agregar un ítem nuevo, actualiza el existente. Funciona tanto para
+  // ítems locales (aún no enviados) como para ítems ya en cocina/bar.
+  const [editingItemId, setEditingItemId] = useState<string | null>(null)
 
   // Delivery widget
   const [showEntregasDialog, setShowEntregasDialog] = useState(false)
@@ -291,8 +297,11 @@ export function POSPage() {
   }
 
   // ─── Burger dialog ────────────────────────────────────
-  const handleSelectBurger = async (burger: Producto) => {
-    if ((burger.stock ?? 0) <= 0 && burger.modoStock !== 'receta') {
+  // `editItem` opcional: cuando se pasa, el diálogo se abre en modo
+  // edición y precarga la selección guardada del ítem una vez que se
+  // resuelven las opciones de receta.
+  const handleSelectBurger = async (burger: Producto, editItem?: ItemComanda) => {
+    if (!editItem && (burger.stock ?? 0) <= 0 && burger.modoStock !== 'receta') {
       showToast(`${burger.nombre} está agotado`, 'error')
       return
     }
@@ -302,12 +311,16 @@ export function POSPage() {
     setBurgerSalsas([])
     setBurgerEspeciales([])
     setBurgerExtrasReceta([])
-    setBurgerNotaEspecial('')
+    setBurgerNotaEspecial(editItem?.notaEspecial || '')
     setBurgerRecetaBase([])
     setBurgerRecetaExtras([])
-    setBurgerOpcionesQuesos(quesosFallback)
-    setBurgerOpcionesIngredientes(ingredientesEstandarFallback)
-    setBurgerOpcionesSalsas(salsasFallback)
+    let quesosOpts = quesosFallback
+    let ingredientesOpts = ingredientesEstandarFallback
+    let salsasOpts = salsasFallback
+    let extrasLines: RecetaOpcionLinea[] = []
+    setBurgerOpcionesQuesos(quesosOpts)
+    setBurgerOpcionesIngredientes(ingredientesOpts)
+    setBurgerOpcionesSalsas(salsasOpts)
     setShowBurgerDialog(true)
     setBurgerRecetaLoading(true)
     try {
@@ -321,10 +334,14 @@ export function POSPage() {
         const base = Array.isArray(data.base) ? data.base : []
         if (opcionales.length > 0) {
           const split = splitOpcionalesReceta(opcionales)
-          setBurgerOpcionesQuesos(split.quesos.map(opcionLabel))
-          setBurgerOpcionesIngredientes(split.ingredientes.map(opcionLabel))
-          setBurgerOpcionesSalsas(split.salsas.map(opcionLabel))
+          quesosOpts = split.quesos.map(opcionLabel)
+          ingredientesOpts = split.ingredientes.map(opcionLabel)
+          salsasOpts = split.salsas.map(opcionLabel)
+          setBurgerOpcionesQuesos(quesosOpts)
+          setBurgerOpcionesIngredientes(ingredientesOpts)
+          setBurgerOpcionesSalsas(salsasOpts)
         }
+        extrasLines = extras
         setBurgerRecetaBase(base)
         setBurgerRecetaExtras(extras)
       }
@@ -332,6 +349,22 @@ export function POSPage() {
       /* fallback lists already set */
     } finally {
       setBurgerRecetaLoading(false)
+    }
+
+    // Precarga de la selección del ítem que se está editando, ahora que
+    // ya conocemos las opciones reales (receta o fallback).
+    if (editItem) {
+      const estandar = editItem.ingredientesEstandar || []
+      setBurgerQuesos(estandar.filter((x) => quesosOpts.includes(x)))
+      setBurgerIngredientes(estandar.filter((x) => ingredientesOpts.includes(x)))
+      setBurgerSalsas(estandar.filter((x) => salsasOpts.includes(x)))
+      const espIds = (editItem.ingredientesEspeciales || []).map((e) => e.id)
+      setBurgerEspeciales(
+        espIds.filter((id) => ingredientesEspeciales.some((p) => p.id === id)),
+      )
+      setBurgerExtrasReceta(
+        espIds.filter((id) => extrasLines.some((l) => l.ingrediente_id === id)),
+      )
     }
   }
 
@@ -381,7 +414,7 @@ export function POSPage() {
         costoAdicional: Number(esp.costoAdicional) || 0,
       }))
 
-  const handleConfirmBurger = () => {
+  const handleConfirmBurger = async () => {
     if (!selectedBurger || !currentComanda) return
 
     const especialesProducto = especialesSeleccionados(burgerEspeciales)
@@ -396,6 +429,20 @@ export function POSPage() {
     const costoEspeciales = especiales.reduce((sum, esp) => sum + esp.costoAdicional, 0)
 
     const allIngredientes = [...burgerQuesos, ...burgerIngredientes, ...burgerSalsas]
+
+    // Modo edición: actualiza el ítem existente (local o ya en cocina).
+    if (editingItemId) {
+      await applyItemEdit(editingItemId, {
+        ingredientesEstandar: allIngredientes,
+        ingredientesEspeciales: especiales,
+        salsaSeleccionada: '',
+        notas: '',
+        notaEspecial: burgerNotaEspecial,
+        precio: selectedBurger.precio + costoEspeciales,
+      })
+      setShowBurgerDialog(false)
+      return
+    }
 
     const newItem: ItemComanda = {
       id: generateId(),
@@ -438,9 +485,13 @@ export function POSPage() {
     setShowItemDialog(true)
   }
 
-  const handleConfirmItem = () => {
+  const handleConfirmItem = async () => {
     if (!selectedItem || !currentComanda) return
-    if (itemCantidad > (selectedItem.stock ?? 0)) {
+    // El control de stock solo aplica al agregar un ítem nuevo. Al editar
+    // un ítem ya existente (incluso ya enviado) permitimos el cambio para
+    // poder corregir contratiempos sin que un stock momentáneamente bajo
+    // lo bloquee.
+    if (!editingItemId && itemCantidad > (selectedItem.stock ?? 0)) {
       showToast(`Stock disponible: ${selectedItem.stock}`, 'error')
       return
     }
@@ -449,6 +500,20 @@ export function POSPage() {
     const precioBase = variante?.precio || selectedItem.precio
     const especiales = especialesSeleccionados(itemEspeciales)
     const costoEspeciales = especiales.reduce((sum, esp) => sum + esp.costoAdicional, 0)
+
+    // Modo edición: actualiza el ítem existente (local o ya en cocina).
+    if (editingItemId) {
+      await applyItemEdit(editingItemId, {
+        cantidad: itemCantidad,
+        ingredientesEspeciales: especiales,
+        notas: itemNotas,
+        notaEspecial: itemNotaEspecial,
+        precio: precioBase + costoEspeciales,
+        variante: itemVariante || undefined,
+      })
+      setShowItemDialog(false)
+      return
+    }
 
     const newItem: ItemComanda = {
       id: generateId(),
@@ -481,6 +546,85 @@ export function POSPage() {
     }
     dispatch({ type: 'UPDATE_COMANDA', payload: updatedComanda })
     setCurrentComanda(updatedComanda)
+  }
+
+  // ─── Edición de un ítem existente ─────────────────────
+  // Arma el JSON de metadata (salsa/notas/nota especial/especiales) tal
+  // como lo espera la cocina/bar al leer items_orden.notas_especiales.
+  const buildItemMetadata = (item: ItemComanda) =>
+    JSON.stringify({
+      salsa: item.salsaSeleccionada || '',
+      notas: item.notas || '',
+      notaEspecial: item.notaEspecial || '',
+      ingredientesEspeciales: item.ingredientesEspeciales || [],
+    })
+
+  // Aplica cambios a un ítem de la comanda. Si el ítem ya fue enviado a
+  // cocina/bar (id persistido), también persiste el cambio en la base de
+  // datos para que el cocinero vea la corrección. Si es local, solo
+  // actualiza el estado en memoria.
+  const applyItemEdit = async (itemId: string, cambios: Partial<ItemComanda>) => {
+    if (!currentComanda) return
+    const existente = currentComanda.items.find((i) => i.id === itemId)
+    if (!existente) return
+    const actualizado: ItemComanda = { ...existente, ...cambios }
+
+    if (isPersistedId(itemId)) {
+      try {
+        await actualizarItemOrden(itemId, {
+          cantidad: actualizado.cantidad,
+          precio_unitario: actualizado.precio,
+          modificadores: actualizado.ingredientesEstandar || [],
+          notas_especiales: buildItemMetadata(actualizado),
+        })
+      } catch (error) {
+        showToast(
+          error instanceof Error ? error.message : 'No se pudo actualizar el ítem',
+          'error',
+        )
+        return
+      }
+    }
+
+    const updatedComanda: Comanda = {
+      ...currentComanda,
+      items: currentComanda.items.map((i) => (i.id === itemId ? actualizado : i)),
+    }
+    dispatch({ type: 'UPDATE_COMANDA', payload: updatedComanda })
+    setCurrentComanda(updatedComanda)
+    setEditingItemId(null)
+    showToast('Ítem actualizado', 'success')
+  }
+
+  // Abre el diálogo correspondiente en modo edición, precargando la
+  // selección actual del ítem. No se permite editar ítems ya listos o
+  // entregados (no tiene sentido cambiar algo que ya salió a la mesa).
+  const handleEditItem = (item: ItemComanda) => {
+    if (item.estado === 'listo' || item.estado === 'entregado') {
+      showToast('Este ítem ya está listo/entregado y no puede editarse', 'error')
+      return
+    }
+    const producto = productos.find((p) => p.id === item.productoId)
+    if (!producto) {
+      showToast('No se encontró el producto para editar', 'error')
+      return
+    }
+    setEditingItemId(item.id)
+    if (producto.categoria === 'burgers') {
+      handleSelectBurger(producto, item)
+    } else {
+      setSelectedItem(producto)
+      setItemVariante(item.variante || producto.variantes?.[0]?.nombre || '')
+      setItemNotas(item.notas || '')
+      setItemNotaEspecial(item.notaEspecial || '')
+      setItemEspeciales(
+        (item.ingredientesEspeciales || [])
+          .map((e) => e.id)
+          .filter((id) => ingredientesEspeciales.some((p) => p.id === id)),
+      )
+      setItemCantidad(item.cantidad)
+      setShowItemDialog(true)
+    }
   }
 
   const handleUpdateItemQty = (itemId: string, delta: number) => {
@@ -1229,14 +1373,27 @@ export function POSPage() {
                           </p>
                         )}
                       </div>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-6 w-6 shrink-0 text-red-500 hover:text-red-600"
-                        onClick={() => handleRemoveItem(item.id)}
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </Button>
+                      <div className="flex shrink-0 items-center gap-1">
+                        {item.estado !== 'listo' && item.estado !== 'entregado' && (
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-6 w-6 text-muted-foreground hover:text-foreground"
+                            onClick={() => handleEditItem(item)}
+                            title="Editar ítem"
+                          >
+                            <Pencil className="h-3.5 w-3.5" />
+                          </Button>
+                        )}
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-6 w-6 text-red-500 hover:text-red-600"
+                          onClick={() => handleRemoveItem(item.id)}
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </div>
                     </div>
                     <div className="mt-2 flex items-center justify-between">
                       <div className="flex items-center gap-2">
@@ -1456,14 +1613,27 @@ export function POSPage() {
                             </p>
                           )}
                         </div>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-8 w-8 shrink-0 text-red-500 hover:text-red-600"
-                          onClick={() => handleRemoveItem(item.id)}
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </Button>
+                        <div className="flex shrink-0 items-center gap-1">
+                          {item.estado !== 'listo' && item.estado !== 'entregado' && (
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-8 w-8 text-muted-foreground hover:text-foreground"
+                              onClick={() => handleEditItem(item)}
+                              title="Editar ítem"
+                            >
+                              <Pencil className="h-4 w-4" />
+                            </Button>
+                          )}
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8 text-red-500 hover:text-red-600"
+                            onClick={() => handleRemoveItem(item.id)}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </div>
                       </div>
                       <div className="mt-2 flex items-center justify-between">
                         <div className="flex items-center gap-2">
@@ -1600,10 +1770,18 @@ export function POSPage() {
       )}
 
       {/* ── Burger dialog ── */}
-      <Dialog open={showBurgerDialog} onOpenChange={setShowBurgerDialog}>
+      <Dialog
+        open={showBurgerDialog}
+        onOpenChange={(v) => {
+          setShowBurgerDialog(v)
+          if (!v) setEditingItemId(null)
+        }}
+      >
         <DialogContent aria-describedby={undefined} className="max-h-[90vh] overflow-auto border-border bg-card sm:max-w-lg">
           <DialogHeader>
-            <DialogTitle className="text-foreground">Personalizar {selectedBurger?.nombre}</DialogTitle>
+            <DialogTitle className="text-foreground">
+              {editingItemId ? 'Editar' : 'Personalizar'} {selectedBurger?.nombre}
+            </DialogTitle>
           </DialogHeader>
 
           <div className="space-y-5 py-4">
@@ -1793,19 +1971,35 @@ export function POSPage() {
           </div>
 
           <DialogFooter>
-            <Button variant="outline" onClick={() => setShowBurgerDialog(false)}>Cancelar</Button>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setShowBurgerDialog(false)
+                setEditingItemId(null)
+              }}
+            >
+              Cancelar
+            </Button>
             <Button onClick={handleConfirmBurger} className="bg-amber-500 text-zinc-900 hover:bg-amber-400">
-              Confirmar
+              {editingItemId ? 'Guardar cambios' : 'Confirmar'}
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
       {/* ── Generic item dialog ── */}
-      <Dialog open={showItemDialog} onOpenChange={setShowItemDialog}>
+      <Dialog
+        open={showItemDialog}
+        onOpenChange={(v) => {
+          setShowItemDialog(v)
+          if (!v) setEditingItemId(null)
+        }}
+      >
         <DialogContent aria-describedby={undefined} className="border-border bg-card">
           <DialogHeader>
-            <DialogTitle className="text-foreground">Agregar {selectedItem?.nombre}</DialogTitle>
+            <DialogTitle className="text-foreground">
+              {editingItemId ? 'Editar' : 'Agregar'} {selectedItem?.nombre}
+            </DialogTitle>
           </DialogHeader>
           <div className="space-y-4 py-4">
             {selectedItem?.variantes && selectedItem.variantes.length > 0 && (
@@ -1894,9 +2088,17 @@ export function POSPage() {
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setShowItemDialog(false)}>Cancelar</Button>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setShowItemDialog(false)
+                setEditingItemId(null)
+              }}
+            >
+              Cancelar
+            </Button>
             <Button onClick={handleConfirmItem} className="bg-amber-500 text-zinc-900 hover:bg-amber-400">
-              Agregar
+              {editingItemId ? 'Guardar cambios' : 'Agregar'}
             </Button>
           </DialogFooter>
         </DialogContent>

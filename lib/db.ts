@@ -685,11 +685,14 @@ async function ensureRecetasTables(): Promise<void> {
   // producto_id), faltarán columnas nuevas (ingrediente_id, compra_id,
   // merma_id, item_orden_id). El CREATE TABLE IF NOT EXISTS no las
   // agrega — hay que forzarlas con ALTER TABLE ... ADD COLUMN IF NOT EXISTS.
+  await sql`ALTER TABLE soda_master.movimientos_inventario ADD COLUMN IF NOT EXISTS producto_id UUID REFERENCES soda_master.productos(id)`
   await sql`ALTER TABLE soda_master.movimientos_inventario ADD COLUMN IF NOT EXISTS ingrediente_id UUID REFERENCES soda_master.ingredientes(id)`
   await sql`ALTER TABLE soda_master.movimientos_inventario ADD COLUMN IF NOT EXISTS compra_id UUID`
   await sql`ALTER TABLE soda_master.movimientos_inventario ADD COLUMN IF NOT EXISTS merma_id UUID`
   await sql`ALTER TABLE soda_master.movimientos_inventario ADD COLUMN IF NOT EXISTS item_orden_id UUID`
   await sql`ALTER TABLE soda_master.movimientos_inventario ADD COLUMN IF NOT EXISTS orden_id UUID`
+  await sql`ALTER TABLE soda_master.movimientos_inventario ADD COLUMN IF NOT EXISTS notas TEXT`
+  await sql`ALTER TABLE soda_master.movimientos_inventario ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT now()`
   await sql`
     DO $$ BEGIN
       ALTER TABLE soda_master.movimientos_inventario DROP CONSTRAINT movimientos_inventario_tipo_check;
@@ -1954,14 +1957,32 @@ export const db = {
     return result as ItemOrden[]
   },
 
-  async actualizarItemOrden(id: string, updates: Partial<ItemOrden>) {
+  async actualizarItemOrden(
+    id: string,
+    updates: Partial<ItemOrden> & { modificadores?: unknown; precio_unitario?: number },
+  ) {
     await ensureItemEstadoSchema()
     const sql = getSql()
+
+    // `modificadores` es una columna jsonb. La actualizamos por separado
+    // para evitar un desajuste de tipos text/jsonb dentro de COALESCE.
+    // Esto permite corregir/editar los ingredientes de un ítem incluso
+    // cuando ya fue enviado a cocina/bar (contratiempo o cambio del cliente).
+    if (updates.modificadores !== undefined) {
+      const modificadoresJson = JSON.stringify(updates.modificadores ?? [])
+      await sql`
+        UPDATE soda_master.items_orden
+        SET modificadores = ${modificadoresJson}::jsonb
+        WHERE id = ${id}
+      `
+    }
+
     const result = await sql`
       UPDATE soda_master.items_orden 
       SET cantidad = COALESCE(${updates.cantidad}, cantidad),
           estado_item = COALESCE(${updates.estado_item}, estado_item),
-          notas_especiales = COALESCE(${updates.notas_especiales}, notas_especiales)
+          notas_especiales = COALESCE(${updates.notas_especiales}, notas_especiales),
+          precio_unitario = COALESCE(${updates.precio_unitario}, precio_unitario)
       WHERE id = ${id}
       RETURNING *
     `

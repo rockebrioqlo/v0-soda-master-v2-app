@@ -55,6 +55,7 @@ Sistema POS completo para sodas y restaurantes desarrollado con Next.js 16, Reac
 - [x] Cambio de estado de ordenes
 - [x] Indicador visual por prioridad (tiempo)
 - [x] Vista fullscreen para cocina/bar
+- [x] **Historial de pedidos** (cocina/bar): botón "Historial" en el header, dialog con selector de fecha + atajos Hoy/Ayer, conteos del día (órdenes, unidades, entregadas, canceladas) y detalle por orden. Filtra automáticamente por estación según el rol (bar ve solo bebidas/cervezas/tragos/cafés; cocina ve el resto; admin ve todo).
 
 ### 6. Inventario
 - [x] Lista de items de inventario
@@ -67,8 +68,11 @@ Sistema POS completo para sodas y restaurantes desarrollado con Next.js 16, Reac
 - [x] **Recetas reales por producto** con `modo_stock` (`producto`/`receta`/`producto_y_receta`)
 - [x] **Insumos reales** (`soda_master.ingredientes`) con tipo `comida`/`negocio`/`otro`
 - [x] **Pestañas dedicadas**: Productos, Insumos, Proveedores, Compras, Márgenes
-- [x] **Editor de recetas** con cantidades, opcional/extra y costo adicional por línea
+- [x] **Editor de recetas** rediseñado: 3 tabs visuales (Base / Opcionales / Extras pagados) con conteos por categoría, stepper +/- para cantidades, mover ingredientes entre categorías con un click, modo de stock con sugerencia y feedback en vivo del costo extra que paga el cliente
+- [x] **Resumen de ingredientes en la tabla**: columna dedicada con badges (`5 base · 3 opc. · 2 extras`) que abren el editor; productos sin receta muestran botón ámbar "+ Definir ingredientes" para que sea evidente cuáles faltan
+- [x] **Crear variantes** (Burger Simple → Burger Doble → Triple): botón "Crear variante" en el editor que clona el producto con su categoría, modo de stock y receta completa (base + opcionales + extras), pidiendo solo nombre y precio opcional
 - [x] **Generador de recetas base** (POST `/api/seed-recetas`) idempotente
+- [x] **Eliminación con motivo** (admin): botón Trash2 en productos e insumos, dialog que pide tipo (merma con subtipo + descripción, o corrección administrativa) y registra auditoría en `auditoria_admin` / `mermas`
 
 ### 6.1 Proveedores y Compras
 - [x] CRUD completo de proveedores (RUT, contacto, teléfono, email, dirección)
@@ -100,6 +104,7 @@ Sistema POS completo para sodas y restaurantes desarrollado con Next.js 16, Reac
 
 ### 8. Pagos y Caja
 - [x] Metodos de pago: efectivo, tarjeta (Transbank)
+- [x] **Efectivo a la chilena**: input acepta "20.000" / "20000" / "$20.000" (parser que sólo conserva dígitos), formato en vivo con separador de miles, botón "Exacto" y atajos +1k/+2k/+5k/+10k/+20k para sumar billetes, vuelto destacado en verde y mensaje "Falta $X" cuando el monto es insuficiente
 - [x] Pago dividido (equitativa y por productos)
 - [x] **División por productos PERSISTIDA en BD** (`cuentas_persona` + `items_orden.cuenta_persona_id`)
 - [x] **Pago parcial por línea**: cobra X de Y unidades de un mismo `items_orden`; el server splittea la línea en BD
@@ -108,12 +113,19 @@ Sistema POS completo para sodas y restaurantes desarrollado con Next.js 16, Reac
 - [x] Propinas (sugeridas, no obligatorias; ticket marca "Propina sugerida" en precuenta y "Propina (sin IVA)" en boleta)
 - [x] Precuenta para el cliente antes de cobrar, con división por productos opcional (una cuenta por persona en un solo trabajo de impresión)
 - [x] Calculo de cambio (con tolerancia de redondeo de medio peso para evitar quedar pegado por centavos)
-- [x] Apertura y cierre de caja
-- [x] Resumen de caja (Z report)
+- [x] **Caja chica completa** (módulo dedicado en sidebar, ver §8.1)
 - [x] Historial de transacciones (muestra el nombre real de la mesa aunque la comanda ya esté cerrada — JOIN BD)
 - [x] **Perro muerto** (cliente que se fue sin pagar): admin registra pérdida con motivo y responsable (quien abrió la mesa); queda en `perdidas_comanda` y la orden pasa a `estado='perdida'`
 - [x] **Cobro retroactivo de pérdida**: si el cliente vuelve a pagar, el cajero la marca como cobrada y crea el pago vinculado
 - [x] **Permisos especiales** (`apertura_mesa`): admin habilita temporalmente a un cajero para abrir mesas cuando no hay meseros, con vigencia configurable
+
+### 8.1 Caja chica (módulo nuevo)
+- [x] **Apertura con fondo inicial**: cajero/admin registra el dinero físico que deja en caja al iniciar turno. Sólo una caja abierta a la vez (índice único en BD)
+- [x] **Movimientos automáticos**: cada pago en efectivo inserta `venta_efectivo` (monto + propina) y, si hubo vuelto entregado, `vuelto`. Si no hay caja abierta el pago igual se procesa pero queda log de aviso
+- [x] **Retiros, depósitos y ajustes manuales** con motivo
+- [x] **Arqueo y cierre**: el cajero cuenta el efectivo físico, el servidor calcula el esperado (`fondo + ventas - vuelto - retiros + depósitos`) y registra la diferencia (verde si cuadra, ámbar si sobrante, rojo si faltante)
+- [x] **Historial de cajas**: listado de cajas previas con apertura/cierre, autor de cada operación, cantidad de pagos en efectivo y diferencia. Click abre el detalle con todos los movimientos
+- [x] **Hora autoritativa** desde el servidor: la fecha de apertura/cierre se toma del backend (Postgres) para que dos cajeros con relojes desfasados no creen inconsistencias
 
 ### 9. Reportes y Estadisticas
 - [x] Filtro por rango de fechas
@@ -190,6 +202,9 @@ Sistema POS completo para sodas y restaurantes desarrollado con Next.js 16, Reac
 - `ingredientes`, `recetas`, `receta_ingredientes` - Recetas reales por producto
 - `proveedores`, `compras`, `compra_items` - Trazabilidad de compras y costos
 - `activos`, `empleados`, `gastos` - Módulo Finanzas (depreciación, sueldos, gastos)
+- `cajas`, `movimientos_caja` - Caja chica (apertura, ventas en efectivo, vuelto, retiros, depósitos, cierre)
+- `auditoria_admin` - Log de acciones administrativas (eliminación de productos/insumos con motivo)
+- `usuarios.roles_adicionales` - Roles permanentes adicionales (multi-rol: ej. cocinero que también es mesero)
 
 ### Estructura de Archivos
 ```
@@ -252,8 +267,11 @@ Sistema POS completo para sodas y restaurantes desarrollado con Next.js 16, Reac
 | Inventario | X | | | | |
 | Usuarios | X | | | | |
 | Pagos | X | X | | | |
+| Caja | X | X | | | |
 | Reportes | X | X | | | |
 | Configuracion | X | | | | |
+
+> Los roles adicionales permanentes (`usuarios.roles_adicionales`) extienden estos permisos: ej. un usuario con rol principal `cocina` y rol adicional `cajero` accede también a Pagos y Caja sin necesidad de un permiso especial temporal.
 
 ---
 
@@ -419,9 +437,9 @@ Análisis profundo ejecutado el 28/Mayo/2026 después del deploy de las Tandas 9
     - **Causa:** `.sort()` muta el array; en cada render reordena `state.pagos`. Inofensivo en práctica porque Redux/useReducer no se entera, pero rompe el principio de inmutabilidad.
     - **Fix:** `[...pagos].sort(...)`.
 
-45. **[C2] `setEfectivoRecibido` no sanitiza**
-    - **Causa:** Si el cajero escribe `12.500,50` o `12,500.50`, `parseFloat` devuelve `12.5`. No hay máscara numérica chilena. El cajero podría confirmar con tolerancia de ±$0.5 pensando que ingresó $12.500 cuando en realidad ingresó $12.
-    - **Fix:** input máscara o parser que tolere separadores chilenos.
+45. **[C2 — CORREGIDO ✅] `setEfectivoRecibido` no sanitiza**
+    - **Causa original:** Si el cajero escribía `12.500` (punto de miles chileno), `parseFloat` devolvía `12.5` y el botón "Confirmar Pago" quedaba bloqueado pensando que el cliente había pagado $12.
+    - **Solución (Tanda 10):** input pasado a `type="text"` con `inputMode="numeric"`; parser que conserva solo dígitos (`.replace(/[^\d]/g, '')`) → "20.000", "20000", "$20.000" se interpretan todos como **20.000**. Se muestra formateado en vivo con separador chileno. Se reemplazó la tolerancia de medio peso por `efectivoRecibidoNum >= Math.ceil(totalAPagar)` (no acepta pago en efectivo por menos del total). Botones rápidos para sumar billetes habituales (1k/2k/5k/10k/20k) y botón "Exacto".
 
 46. **[C3] Endpoints sin auth (general) — 5 nuevos**
     - **Archivos:** `/api/cuentas-persona`, `/api/cuentas-persona/asignaciones`, `/api/perdidas`, `/api/perdidas/resolver`, `/api/permisos-especiales`.
@@ -755,6 +773,61 @@ Análisis profundo ejecutado el 28/Mayo/2026 después del deploy de las Tandas 9
     - Cambiado a `"installCommand": "pnpm install --frozen-lockfile"` + `"packageManager": "pnpm@10.0.0"` en `package.json` para que Vercel use Corepack sin adivinar.
     - Adicionalmente se completó la tipificación de `db.registrarPerdida` (declaraba retornar `{id, monto_perdido, cantidad_items}` pero ya devolvía también `responsable_id/nombre/rol`), se agregaron `total_a_pagar` y la clave `entregado` faltantes en `lib/print-ticket.ts`, y se incluyeron en `main` las APIs `/api/perdidas`, `/api/perdidas/resolver` y `/api/permisos-especiales` que el módulo de Pagos ya consumía pero no estaban deployadas (devolvían 404 silencioso).
     - Vercel pasa build limpio con todas las rutas (`/api/cuentas-persona`, `/api/cuentas-persona/asignaciones`, `/api/perdidas`, `/api/perdidas/resolver`, `/api/permisos-especiales`, `/api/activos`, `/api/compras`, `/api/depreciacion`, `/api/empleados`, `/api/gastos`, `/api/ingredientes`, `/api/margenes`, `/api/proveedores`, `/api/recetas`, `/api/seed-demo`, `/api/seed-recetas`).
+
+25. **[NUEVO]** Tanda 10 — Caja chica, historial KDS, variantes de receta y endurecimiento de sesión (Junio 2026)
+    - **Motivación:** Pedidos directos del cliente en producción real con caja abierta:
+      1. *"Bug del efectivo: no permite pagar en efectivo, los clientes nunca vienen con el importe exacto"* → al escribir "20.000" el botón quedaba bloqueado pensando que pagaron $20.
+      2. *"Hay que tener caja chica, y que acepte el pago de efectivo dando el vuelto"* → no había módulo de caja física.
+      3. *"Historial del bar y la cocina"* → cocina/bar no podían revisar lo que prepararon en el día o días anteriores.
+      4. *"En inventario algo que permita editar las burguer es decir ya simple, doble o variedades y que ingredientes y cuantos permite"* → la funcionalidad existía pero estaba escondida tras un icono pequeño, sin opción de variantes.
+      5. *"El usuario erick entra y se sale"* → polling demasiado agresivo cerraba sesión por respuestas parciales del API.
+
+    - **1) Efectivo con vuelto** (`components/pagos-page.tsx`):
+      - Input pasó de `type="number"` (que rompía con "20.000" = 20) a `type="text"` con `inputMode="numeric"`. Parser quita todo lo no-dígito (`.replace(/[^\d]/g, '')`), así "20.000", "20000", "$20.000" se leen como `20000`. Muestra el valor formateado en vivo con separador chileno.
+      - **Botones rápidos**: "Exacto" (rellena `Math.ceil(totalAPagar)`) + atajos `+1k`, `+2k`, `+5k`, `+10k`, `+20k` que SUMAN al monto actual (perfecto para "el cliente me pasó 2 billetes de 10k").
+      - **Feedback en vivo**: vuelto destacado en verde grande cuando alcanza; "Falta $X" en ámbar cuando es insuficiente.
+      - Se eliminó la tolerancia de medio peso del `disabled` del botón (`efectivoRecibidoNum < Math.ceil(totalAPagar)`): si no llega al total redondeado hacia arriba, no se confirma. Cualquier auto-relleno previo del input fue eliminado.
+
+    - **2) Caja chica** (módulo nuevo completo):
+      - **Esquema BD** (idempotente desde `ensureCajaSchema()` en `lib/db.ts`):
+        - `soda_master.cajas` con `fondo_inicial`, `abierta_en`, `cerrada_en`, `efectivo_contado`, `diferencia`, `estado` ∈ {`abierta`,`cerrada`} y un **índice único parcial** `cajas_solo_una_abierta ON (estado) WHERE estado = 'abierta'` que enforza una sola caja abierta a la vez.
+        - `soda_master.movimientos_caja` con `tipo` ∈ {`apertura`,`venta_efectivo`,`vuelto`,`retiro`,`deposito`,`ajuste`,`cierre`}, `monto`, `pago_id` opcional, `usuario_id/nombre`, `descripcion`.
+      - **Funciones nuevas en `db.ts`**: `getCajaAbierta`, `getCajaConResumen` (calcula `efectivo_esperado = fondo + entradas - salidas` y agrega totales por tipo), `abrirCaja`, `registrarMovimientoCaja`, `cerrarCaja` (calcula y persiste la diferencia), `getHistorialCajas`.
+      - **Integración con pagos**: `db.crearPago` ahora inserta automáticamente en `movimientos_caja` cuando el método es efectivo y existe una caja abierta — una entrada `venta_efectivo` por `monto + propina` y otra `vuelto` si hubo vuelto entregado. Si no hay caja abierta, el pago no se bloquea (sólo deja log).
+      - **APIs nuevas**: `GET/POST /api/caja` (estado + apertura), `POST /api/caja/movimiento` (retiros/depósitos/ajustes), `POST /api/caja/cerrar` (arqueo), `GET /api/caja/historial`, `GET /api/caja/[id]` (detalle).
+      - **UI nueva** (`components/caja-page.tsx`, modulo `caja` en sidebar, permisos `cajero`/`admin`):
+        - 4 tarjetas con fondo / ventas en efectivo / vuelto entregado / efectivo esperado.
+        - Lista de movimientos del turno con entrada/salida coloreadas y autor.
+        - Dialogs para apertura (con notas), retiro/depósito (con motivo) y cierre (muestra esperado + diferencia en vivo conforme escribe el cajero — verde si cuadra, ámbar si sobrante, rojo si faltante).
+        - Historial de cajas con detalle clickeable que muestra TODOS los movimientos de cajas pasadas.
+      - **Smoke test confirmado**: apertura fondo 50.000 → retiro 5.000 → contado 44.500 → diferencia **-500 faltante** correctamente calculado.
+
+    - **3) Historial de pedidos del bar y la cocina**:
+      - Nueva función `db.getHistorialKDS({ fecha, limite })` que devuelve órdenes con sus items (incluyendo nombre de producto, categoría, mesa, estado, hora) para una fecha en zona `America/Santiago` o todas si no se pasa fecha. A diferencia de `getOrdenesParaKDS`, incluye **pagadas/canceladas/perdidas** — es para revisar lo que pasó, no para preparar.
+      - API: `GET /api/kds/historial?fecha=hoy|YYYY-MM-DD&limite=N`.
+      - UI (`components/kds-historial-dialog.tsx`): botón "Historial" en el header del KDS junto a Refrescar. Dialog con selector de fecha (`type="date"` limitado a hoy), atajos rápidos **Hoy / Ayer / Refrescar**, contadores arriba (órdenes, unidades, entregadas, canceladas), y lista de cada orden con sus items y badges de estado.
+      - **Filtro por estación según rol**: bar ve solo categorías de bebida (cervezas, tragos, vinos, café, etc. — `BAR_CATS` o que contengan "bebid"/"trago"); cocina ve todo lo demás; admin ve todo. Si una orden no tiene items para la estación del rol, no aparece.
+
+    - **4) Editor de receta rediseñado + crear variantes** (`components/receta-editor-dialog.tsx` reescrito):
+      - **3 tabs visuales** con conteos: **Base** (verde, siempre se descuentan), **Opcionales** (azul, sin costo extra), **Extras pagados** (ámbar, con costo adicional). Cada tab tiene su propia explicación y botón "Agregar".
+      - **Cantidad con stepper +/−** y unidad visible en el label ("Cantidad por unidad (g)"). Botones para mover el ingrediente entre Base/Opcional/Extra con un click.
+      - **Modo de stock** con explicación textual y sugerencia: *"Para hamburguesas casi siempre conviene Sólo insumos o Producto + insumos"*.
+      - **Crear variantes** ("Burger Simple" → "Burger Doble" → "Triple"): botón "Crear variante" en el header del editor. Sub-dialog con nombre (autorellenado como `"<Nombre> Doble"`) y precio opcional (si vacío, hereda). Crea un producto independiente con la misma categoría, modo de stock, descripción y **toda la receta copiada** (base + opcionales + extras pagados). Después el usuario solo ajusta cantidades de cada ingrediente.
+      - Nueva función `db.clonarProductoConReceta({ producto_id, nombre, precio? })` + API `POST /api/productos/:id/clonar`. Smoke test: clonar Burger BBQ copia las 21 líneas de su receta (2 base + 19 opcionales) en la variante nueva.
+      - **Mejora del listado en Inventario**: nueva columna "Ingredientes" con badges coloreados (`5 base · 3 opc. · 2 extras`) que abren el editor. Si el producto NO tiene receta, se muestra un botón ámbar **"+ Definir ingredientes"** muy visible. El icono pequeño `BookOpen` antes oculto se convirtió en un botón con texto **"Receta"**. Para no hacer N queries, se agregó `GET /api/recetas?resumen=true` que devuelve `{ producto_id: { base, opcionales, extras, total } }` en una sola consulta usando `COUNT(*) FILTER (WHERE ...)`.
+
+    - **5) Endurecimiento de sesión (caso Erick)**:
+      - **Causa del "entra y se sale"**: el polling cada 60s del verificador `verifyActiveUser` traía la lista COMPLETA de usuarios y forzaba `logout()` si la respuesta llegaba incompleta o no encontraba el id del usuario actual (cache stale, race con un admin editando, error parcial). Erick caía exactamente en este patrón.
+      - **Fix** (`lib/app-context.tsx` + `app/api/usuarios/route.ts`):
+        - El polling ahora consulta `GET /api/usuarios?id=<id>` (puntual, no la lista entera) — endpoint nuevo que devuelve solo ese usuario o 404.
+        - **Solo cierra sesión si la API confirma EXPLÍCITAMENTE `activo === false`**. Si la respuesta no llega bien o el id no coincide, mantiene la sesión.
+        - Log `console.warn('[auth] Sesión cerrada: usuario desactivado por admin', { id })` para diagnóstico futuro.
+        - La dependencia del `useEffect` cambió de `state.usuarioActual` (objeto completo, se reconstruía en cada poll de la lista global) a `state.usuarioActual?.id` (string estable), eliminando el reinicio del `setInterval` cada vez que se refrescaba la referencia.
+
+    - **6) Otras correcciones técnicas en el commit**:
+      - `db.clonarProductoConReceta` también usa `INSERT INTO inventario` sin `ON CONFLICT` porque `inventario` no tiene UNIQUE en `producto_id` en este schema — se verifica primero con SELECT.
+      - `modo_stock` vive en `productos`, no en `recetas` (la primera versión del clone intentó leerlo de la tabla equivocada y devolvía 500).
+      - `npx tsc --noEmit` pasa limpio. Commit `495e4f1` subido a `main` como `rockebrioqlo <Pedro.macortes@gmail.com>` (33 archivos, +4323/-311).
 
 18. **[NUEVO]** Tanda 5.1 — KDS doble (impresión física como respaldo del KDS digital)
     - **Motor de impresión:** `lib/print-ticket.ts` ahora soporta los tipos `'cocina'` y `'bar'` (sin precios, con cantidades en tamaño grande y notas/especiales/salsas resaltadas) además de los existentes (`'comanda'`, `'boleta'`, `'precuenta'`). Nueva función `buildMultiTicketHtml(tickets, config)` une varios tickets en un solo documento con `page-break-after: always`, de modo que cocina + bar se imprimen en un solo trabajo de impresión. Helper público `splitComandaParaEstaciones(comanda, productos, { nombreNegocio, soloPendientes })` separa los ítems entre cocina y bar reutilizando exactamente la misma regla que usa el KDS digital (`CATEGORIAS_BAR = ['bebidas','cervezas','jugos_bebidas','tragos']`).
