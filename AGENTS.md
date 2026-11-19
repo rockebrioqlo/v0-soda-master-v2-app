@@ -44,7 +44,11 @@ Reglas para cualquier agente (Claude Code, v0, Cursor) que trabaje en este repos
 - **No borrar archivos** ni reescribir módulos completos sin avisar y sin confirmación.
 - **Nunca salir de la carpeta del proyecto** (ni para leer, ni para escribir, ni para guardar memoria). Si hace falta, preguntar antes.
 - **Nunca imprimir secretos** (`DATABASE_URL`, tokens) en el chat, en `CHAT_LOG.md` ni en commits.
-- Al cerrar cada sesión: entrada en `CHAT_LOG.md`, actualizar `ESTADO_MODULOS.md` y dejar el prompt de la siguiente sesión.
+- Al cerrar cada sesión: seguir la sección "Cierre de sesión".
+
+## Cierre de sesión
+
+Al terminar una sesión: deja el commit local, actualiza CHAT_LOG.md, ESTADO_MODULOS.md y ROADMAP.md, entrega el reporte final y detente. No generes el prompt de la sesión siguiente hasta que el usuario revise, depure y lo pida explícitamente.
 
 ## Documentos de control
 
