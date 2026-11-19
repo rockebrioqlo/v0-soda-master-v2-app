@@ -68,4 +68,4 @@ Vercel, enlazado a v0 (`vercel.json`: `pnpm install --frozen-lockfile`, `next bu
 | SPA de una ruta con estado global | Heredado; simple para tablets del local, pero sin URLs por módulo |
 | Polling en vez de WebSockets | Vercel serverless no mantiene conexiones; polling ligero fue suficiente (bug #28 del doc heredado) |
 | Migraciones dentro de `lib/db.ts` | Permitió evolucionar el esquema desde v0 sin herramienta de migraciones; a futuro conviene un script versionado |
-| Sesión en `sessionStorage` | Solución temporal de la etapa de pruebas; debe reemplazarse por sesión en servidor (ROADMAP sesión 2) |
+| Sesión en `sessionStorage` | Solución temporal de la etapa de pruebas; debe reemplazarse por sesión en servidor (ROADMAP sesión 3) |

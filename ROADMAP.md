@@ -1,13 +1,15 @@
 # ROADMAP — Sodamaster
 
 Repositorio: `rockebrioqlo/v0-soda-master-v2-app` (se trabaja solo con la cuenta GitHub **rockebrioqlo**).
-Diagnóstico inicial: 19-11-2026 (Fase 1, solo lectura, sin `pnpm install` ni `pnpm build`).
+Diagnóstico inicial: 19-11-2026. Última revisión del ROADMAP: 19-11-2026.
 
 ---
 
 ## 1. Resumen del diagnóstico
 
 Sodamaster es un POS para sodas y restaurantes (mesas, comandas, KDS, pagos, caja, inventario, recetas, finanzas y reportes). A diferencia de la típica maqueta de v0, **el backend es real**: unas 60 rutas de API que leen y escriben en Neon Postgres. Estuvo en producción en Vercel con un cliente de prueba hasta junio de 2026.
+
+Se verificó en el código lo que `ESTADO_DESARROLLO.md` da por hecho: los 18 arreglos revisados existen, pero algunos quedaron a medias y hay afirmaciones falsas (el bloqueo por intentos fallidos y la protección de `DELETE /api/seed`).
 
 El problema principal es la **seguridad**: la API no exige sesión y varias reglas de negocio (montos, permisos por rol) se aplican solo en la pantalla.
 
@@ -33,90 +35,214 @@ El problema principal es la **seguridad**: la API no exige sesión y varias regl
 
 ### Variables de entorno
 
-- Obligatoria: `DATABASE_URL` (Neon).
-- Opcional: `DEBUG_NTP`.
-- Falta `.env.local` en local. `.gitignore` ya excluye `.env*.local`. No hay secretos escritos en el código.
+- Obligatoria: `DATABASE_URL` (Neon). Opcional: `DEBUG_NTP`.
+- `.env.local` creado en la sesión 1 (ignorado por git).
+
+### Decisiones del usuario
+
+- **Meta:** dejar el sistema en estado decente para vender en Chile y preparado para México.
+- **Estándar:** cumplir con el más exigente de cada tema: WCAG 2.1 AA en accesibilidad (sin certificación) y nivel GDPR en datos personales (cubre Ley 21.719 de Chile y LFPDPPP 2025 de México).
+- **Base de datos de pruebas:** se prueba contra la base Neon actual, con datos reales, a propósito. Antes de producción final se vacían los datos (no las tablas). Ver sección 5.
+- **Accesos rápidos del login (PINs demo):** se mantienen durante el desarrollo. Se controlan con una variable de entorno antes de producción final (sección 5).
+- **Prioridad:** los bugs van antes que cualquier mejora nueva. Única excepción pedida: la sesión de inventario con conversión de unidades va justo después de los bugs críticos. Después de los bugs: cumplimiento para vender en Chile, mejoras técnicas, preparación para México y SaaS.
 
 ---
 
 ## 2. Hallazgos
 
-### 🔴 Rompe o expone (antes de vender)
+### 🔴 Rompe o expone
 
 | # | Hallazgo | Dónde |
 |---|---|---|
-| R1 | Ninguna ruta de la API exige sesión; no hay middleware. Cualquiera con la URL puede crear pagos, cambiar configuración, editar usuarios/PINs o borrar datos. Algunas rutas confían en un `usuario_id` enviado por el navegador. | `app/api/**` |
-| R2 | El monto de los pagos lo decide el navegador (bug A1). Un pago de `$1` por una mesa de `$50.000` se acepta. | `lib/db.ts` → `crearPago` |
-| R3 | `PATCH /api/ordenes` acepta cambiar total o estado de una orden sin restricciones (bug A7). | `app/api/ordenes/route.ts` |
-| R4 | Login sin límite de intentos; con PINs de 4 dígitos se prueban todos en segundos. | `app/api/auth/login/route.ts` |
-| R5 | La pantalla de login muestra los PINs de prueba (1234, 2222, 3333, 4444, 5555). | `components/login-form.tsx` |
-| R6 | `/api/seed`, `/api/seed-demo` y `/api/seed-recetas` son públicas en producción. | `app/api/seed*` |
-| R7 | Operaciones de varios pasos sin transacción real: cobro, división de cuenta (A2), crear orden + ítems (#11). Un corte de red o dos cajeros a la vez pueden dejar órdenes a medias o pagos duplicados. | `lib/db.ts`, `components/pos-page.tsx` |
+| R1 | Ninguna ruta de la API exige sesión; no hay middleware. Cualquiera con la URL puede crear pagos, cambiar configuración, editar usuarios/PINs o borrar datos. Algunas rutas confían en un `usuario_id` enviado por el navegador. Incluye los 5 endpoints nuevos de C3. | `app/api/**` |
+| R2 | El monto de los pagos lo decide el navegador (A1). Un pago de `$1` por una mesa de `$50.000` se acepta. | `lib/db.ts` → `crearPago` |
+| R3 | `PATCH /api/ordenes` acepta cambiar total o estado de una orden sin restricciones (A7). | `app/api/ordenes/route.ts` |
+| R4 | **No existe bloqueo por intentos fallidos, ni en el servidor ni en la pantalla.** `ESTADO_DESARROLLO.md` lo marca como hecho ("3 intentos = 5 min bloqueo"), pero `mapUsuario` siempre devuelve `intentosFallidos: 0` y `bloqueadoHasta: null`, el login no cuenta intentos y la BD no guarda nada. Solo queda un aviso de "bloqueado" en `usuarios-page.tsx` que nunca se muestra. Con PINs de 4 dígitos se prueban todos en segundos. | `app/api/auth/login/route.ts`, `lib/db.ts:34-46`, `components/login-form.tsx` |
+| R6 | `/api/seed`, `/api/seed-demo` y `/api/seed-recetas` son públicas. **`DELETE /api/seed` vacía usuarios, mesas, productos, órdenes y pagos sin ninguna protección** (el doc heredado dice "solo desarrollo", pero no hay chequeo de entorno). Una sola petición borra la base. | `app/api/seed/route.ts:134` |
+| R7 | Operaciones de varios pasos sin transacción real: cobro, división de cuenta (A2), crear orden + ítems (#11), descuento de stock por receta (si falta un ingrediente, los anteriores ya se descontaron), crear producto, compras. | `lib/db.ts`, `components/pos-page.tsx` |
+
+> R5 (PINs demo visibles en el login) dejó de ser un hallazgo urgente por decisión del usuario: pasa a la sección 5, "Antes de producción final".
 
 ### 🟡 Frágil
 
 | # | Hallazgo |
 |---|---|
 | F1 | Sin pruebas automáticas ni validación con zod en la API. |
-| F2 | Las tablas base (usuarios, productos, mesas, órdenes, ítems, pagos) no se crean en ningún archivo del repo; solo hay migraciones incrementales en `lib/db.ts`. Una base nueva no se puede levantar desde cero. **Por verificar.** |
-| F3 | El polling del KDS se reinicia en cada cambio y la pantalla parpadea (A4). |
-| F4 | El primer pago muestra "Mesa desconocida" (A5). |
-| F5 | Eliminar una persona de una cuenta dividida borra el historial de lo que ya pagó (A3). |
+| F2 | Las tablas base (usuarios, productos, mesas, órdenes, ítems, pagos) no se crean en ningún archivo del repo; solo hay migraciones incrementales en `lib/db.ts`. **Por verificar.** |
 | F6 | Componentes muy grandes: `pos-page.tsx` (~2.700 líneas), `pagos-page.tsx` (~2.400), `lib/db.ts` (~4.800). |
-| F7 | `ESTADO_DESARROLLO.md` registra 27 bugs pendientes de 51 (7 críticos). |
 
 ### ⚪ Estético
 
-- Logs `[v0]` en el código (bug #24).
-- README genérico de v0; `package.json` se llama `"my-project"`.
-- Pantalla en blanco si falla la conexión a la BD, sin mensaje de error (bug #26).
+- README genérico de v0 (corregido en sesión 1); `package.json` se llama `"my-project"`.
+- `dexie` instalado sin uso; rutas `/api/depreciacion` y `/api/productos/especiales` sin uso desde la app.
+
+### 📋 Cumplimiento (para vender en Chile y preparar México)
+
+| # | Hallazgo |
+|---|---|
+| K1 | Datos personales sin aviso de privacidad, sin forma de exportar, corregir o eliminar los datos de una persona y sin registro de quién los ve. Hay datos sensibles: `empleados` guarda documento, teléfono, email y sueldo; `proveedores` guarda RUT. No se encontró tabla de clientes ni fiados (por confirmar en la sesión 16). |
+| K2 | Accesibilidad sin revisar (teclado, textos alternativos, etiquetas de formularios). |
+| K3 | Sin boleta electrónica: solo se imprimen tickets desde el navegador. El SII exige boleta electrónica por pagos en efectivo y transferencias (el voucher de tarjeta ya vale como boleta). |
+| K4 | Localización fija en Chile: `formatCurrency` y otros 15 usos de `es-CL` en el código. La tasa de IVA ya es configurable (`tasa_impuesto`), pero moneda, formato de fecha e identificador fiscal no. |
 
 ### Fuera de alcance actual: SaaS multi-tenant
 
-El sistema es para **un solo local**: sin tenants, sin planes, amarrado al esquema `soda_master`. Pasarlo a multi-tenant es un cambio de arquitectura grande.
+El sistema es para **un solo local**: sin tenants, sin planes, amarrado al esquema `soda_master`.
 
 ---
 
-## 3. Estado por módulo
+## 3. Bugs pendientes de `ESTADO_DESARROLLO.md`
 
-| Módulo | Estado |
-|---|---|
-| POS, mesas, KDS, comandas | Completo en funciones, sin seguridad |
-| Pagos, cuentas divididas, caja | A medias: A1, A2, A3 y A5 abiertos |
-| Inventario, recetas, mermas, compras, proveedores | Completo, sin probar a fondo |
-| Finanzas, márgenes, activos y depreciación | Completo, sin probar a fondo |
-| Reportes y dashboard | Completo |
-| Usuarios, roles y login | 🔴 Roto en seguridad (solo se valida en pantalla) |
-| Menú público `/menu` | Completo |
-| Tickets | Solo vista previa e impresión del navegador (no ESC/POS) |
+Todos quedan asignados a una sesión (sección 4). C2 ya está corregido. Estado verificado en el código el 19-11-2026.
+
+| Bug | Gravedad | Resumen | Sesión |
+|---|---|---|---|
+| #10 / C3 | 🔴 Crítico | APIs sin autenticación (incluye 5 endpoints nuevos) | 3 |
+| A1 | 🔴 Crítico | `crearPago`: monto del cliente, no atómico | 5 |
+| A5 | 🔴 Crítico | Primer pago muestra "Mesa desconocida" | 5 |
+| A7 | 🔴 Crítico | `PATCH /api/ordenes` acepta cualquier campo | 6 |
+| A6 | 🔴 Crítico | Error de permiso especial se devuelve como 500 genérico | 6 |
+| A2 | 🔴 Crítico | `aplicarAsignacionesCuentas` no atómico ni valida pertenencia | 7 |
+| #11 | 🔴 Crítico | Orden + ítems no transaccional | 8 |
+| A3 | 🔴 Crítico | Eliminar persona borra historial de lo pagado | 9 |
+| A4 | 🔴 Crítico | Polling del KDS se reinicia en cada cambio | 10 |
+| B1 | 🟠 Importante | `crearOrden` puede borrar una orden recién creada por otra request | 8 |
+| B2 | 🟠 Importante | `registrarPerdida` permite doble registro en paralelo | 7 |
+| B3 | 🟠 Importante | `resolverPerdida` no valida el monto | 9 |
+| B7 | 🟠 Importante | Polling agresivo combinado (~1.080 requests/hora por sesión) | 10 |
+| B4 | 🟠 Importante | Prorrateo de descuento con ítems ya pagados | 12 |
+| B5 | 🟠 Importante | KDS: "problema" en 1 ítem marca toda la orden | 13 |
+| B6 | 🟠 Importante | `handleMarkReady` sin manejo de errores | 13 |
+| C4 | 🟡 Menor | POS no explica que falta un permiso especial | 6 |
+| C1 | 🟡 Menor | `pagos.sort()` muta el estado | 14 |
+| C5 | 🟡 Menor | `mapPago` reexporta campos extra (`total`) | 14 |
+| C6 | 🟡 Menor | Falta índice en `items_orden(orden_id, pagado)` | 14 |
+| C7 | 🟡 Menor | `setTimeout` del toast no se cancela al desmontar | 14 |
+| C8 | 🟡 Menor | Botón "quitar persona" visible con ítems recién asignados | 14 |
+| #23 | 🟡 Menor | Crear/editar mesa ignora el nombre personalizado | 15 |
+| #26 | 🟡 Menor | Init silencia errores y muestra app vacía | 15 |
+| B8 / #24 | 🟡 Menor | Log `[v0]` en `pos-page.tsx:810` | 15 |
+| #27 | 🟡 Menor | Commits con `Co-authored-by: Cursor` (decidir y documentar; no reescribir historial) | 15 |
+| #9 | Antes de producción | PINs demo visibles en el login | P1 |
 
 ---
 
 ## 4. Sesiones planificadas
 
-Regla: **1 tarea atómica por sesión**, `pnpm build` antes de cerrar, sin `git push` sin autorización.
+Regla: **1 tarea atómica por sesión**, `pnpm build` antes de cerrar, sin `git push` sin autorización. Las pruebas se hacen contra la base Neon actual (decisión del usuario).
+
+### Hecho
+
+| Sesión | Tarea | Modelo |
+|---|---|---|
+| 1 ✅ | Archivos de control, `.env.example`, `.env.local`, `pnpm install` + `pnpm build`, servidor local | Opus 5.5 |
+
+### Bloque A — Bugs críticos (seguridad, dinero, datos)
 
 | Sesión | Tarea | Modelo sugerido | Resuelve |
 |---|---|---|---|
-| 1 ✅ | Archivos de control restantes (`AGENTS.md`, `README.md`, `ESTADO_MODULOS.md`, `ARQUITECTURA.md`, `CHAT_LOG.md`), `.env.example`, `pnpm install` + `pnpm build` local | Sonnet 5.5 | Base de trabajo |
-| 2 | Login real: cookie firmada (o JWT) + middleware/proxy que exija sesión y rol en cada ruta; cerrar rutas de seed | Opus 5.5 | R1, R6 |
-| 3 | Límite de intentos en login + ocultar PINs demo + forzar cambio de PIN en primer ingreso | Sonnet 5.5 | R4, R5 |
-| 4 | Servidor calcula el monto de los pagos y devuelve la mesa en el pago creado | Sonnet 5.5 | R2, F4 |
-| 5 | Allowlist de campos en `PATCH /api/ordenes` según rol | Sonnet 5.5 | R3 |
-| 6 | Transacciones reales: cobro, división de cuenta y endpoint único orden + ítems | Sonnet 5.5 | R7, A2, #11 |
-| 7 | Script SQL que crea las tablas base desde cero (verificado contra Neon) | Sonnet 5.5 | F2 |
-| 8 | Bugs funcionales: A3, A4, B3–B6 de `ESTADO_DESARROLLO.md` | Sonnet 5.5 | F3, F5 |
-| 9 | Validación con zod en rutas de API + primeras pruebas automáticas | Sonnet 5.5 | F1 |
-| 10 | Limpieza: logs `[v0]`, `dexie` sin uso, nombre del paquete, pantalla de error de BD | Haiku 5.5 | ⚪ |
-| 11 | Dividir componentes gigantes (`pos-page`, `pagos-page`, `lib/db.ts`) | Sonnet 5.5 | F6 |
-| 12 | Diseño multi-tenant (solo si se decide vender como SaaS) | Opus 5.5 | SaaS |
+| 2 | **Urgente:** cerrar las rutas de seed. Eliminar o bloquear `DELETE /api/seed` en producción; `POST /api/seed*` solo con variable de entorno de desarrollo. Ajustar el init de la app, que llama `POST /api/seed` en cada carga. | Sonnet 5.5 | R6 |
+| 3 | Login real: sesión en servidor (cookie firmada o JWT) + middleware/proxy de Next 16 que exija sesión y rol en cada ruta de `app/api/**` según la tabla de permisos. Las rutas toman el usuario de la sesión, no del body. Rechazar usuarios desactivados en el servidor. | Opus 5.5 | R1, #10, C3 |
+| 4 | Rate limiting: bloqueo real por intentos fallidos en el login (contador y `bloqueado_hasta` en `usuarios`, 3 intentos = 5 min, como pedía el doc; conectar el aviso de "bloqueado" que ya existe en `usuarios-page.tsx`) **y límite de peticiones en toda la API**, por IP y por usuario, para frenar avalanchas de tráfico. | Sonnet 5.5 | R4 |
+| 5 | `crearPago`: el servidor calcula el monto a partir de los ítems; propina y descuento validados; todo en una transacción; devolver `mesa_id`/`mesa_nombre` en el pago creado. | Sonnet 5.5 | R2, A1, A5 |
+| 6 | Órdenes: allowlist de campos en `PATCH /api/ordenes` según rol (A7); error de permiso especial como 403 con mensaje real (A6); mensaje accionable en el POS "pídele al admin un permiso temporal" (C4). | Sonnet 5.5 | R3, A7, A6, C4 |
+| 7 | Atomicidad con lock por orden: `aplicarAsignacionesCuentas` (y validar que la persona pertenezca a la orden) y `registrarPerdida` (sin doble registro). | Sonnet 5.5 | R7, A2, B2 |
+| 8 | Endpoint único orden + ítems en una transacción; mover el borrado de órdenes vacías dentro del lock; descuento de stock por receta todo-o-nada. | Sonnet 5.5 | R7, #11, B1 |
+| 9 | Integridad de cobros y pérdidas: no permitir eliminar personas con ítems pagados (A3); validar el monto en `resolverPerdida`, con motivo obligatorio si es menor (B3). | Sonnet 5.5 | A3, B3 |
+| 10 | Polling y efectos: `recargarOrdenes` con ref para que no se reinicie (A4); subir intervalos y agrupar `mesas` + `notificaciones` en un solo endpoint (B7); **revisar todos los `useEffect` e intervalos de la app** (contexto, KDS, notificaciones, usuario activo, reloj del servidor) para encontrar los que se reinician solos o pueden entrar en loop. | Sonnet 5.5 | A4, B7 |
+
+### Sesión pedida: inventario con conversión de unidades
+
+| Sesión | Tarea | Modelo sugerido |
+|---|---|---|
+| 11 | Inventario con unidad de compra y unidad de consumo (detalle abajo). | Sonnet 5.5 |
+
+**Alcance de la sesión 11.** Extender lo que ya existe, no rehacerlo: `ingredientes.unidad_medida`, `ingredientes.stock_actual` y `costo_unitario`, `receta_ingredientes.cantidad`, `compra_items` y `crearCompra` (que ya calcula promedio ponderado).
+
+1. **Insumo con dos unidades:** cada ingrediente tiene una unidad de compra (ej. "paquete 1 kg" de salchichas), una unidad de consumo (ej. "unidad") y un factor por defecto (ej. 20). `unidad_medida` pasa a ser la unidad de consumo; se agregan columnas nuevas para la unidad de compra y el factor.
+2. **Compra con factor corregible:** al registrar una compra, el formulario propone el factor por defecto y permite corregirlo con lo que realmente trajo el paquete (el envase dice 20, pero pueden venir 18 o 22). El factor real se guarda en `compra_items`.
+3. **Stock y costo en unidad de consumo:** `crearCompra` convierte cantidad × factor real a unidad de consumo y calcula el costo unitario por unidad de consumo en el promedio ponderado.
+4. **Recetas en unidad de consumo o en peso/volumen:** `receta_ingredientes.cantidad` descuenta en unidad de consumo (1 salchicha por completo) o en g/ml (150 g de carne), según la unidad de consumo del insumo.
+5. **% de rendimiento opcional por insumo:** para lo que pierde peso al procesarse (carne cruda vs cocida). Si la receta pide 150 g cocidos y el rendimiento es 75%, se descuentan 200 g crudos. Se refleja también en el costo por receta y en márgenes.
+6. **Migración segura de datos existentes:** factor 1 y rendimiento 100% por defecto, para que los insumos actuales sigan funcionando igual.
+7. `crearCompra` hoy lee stock y costo y luego actualiza en pasos separados; dejar esa actualización atómica de paso (R7).
+
+### Bloque B — Bugs importantes
+
+| Sesión | Tarea | Modelo sugerido | Resuelve |
+|---|---|---|---|
+| 12 | Prorrateo de descuento solo sobre ítems vigentes, o persistido por ítem. | Sonnet 5.5 | B4 |
+| 13 | KDS: estado de la orden según el peor estado de sus ítems (problema > en preparación > pendiente > listo); try/catch con reversión y toast en `handleMarkReady`. | Sonnet 5.5 | B5, B6 |
+
+### Bloque C — Bugs menores
+
+| Sesión | Tarea | Modelo sugerido | Resuelve |
+|---|---|---|---|
+| 14 | Lote de menores en pagos, toasts e índices: `[...pagos].sort`, `mapPago` explícito, índice `items_orden(orden_id, pagado)`, limpiar `setTimeout` del toast, botón "quitar persona". | Haiku 5.5 o Sonnet 5.5 | C1, C5, C6, C7, C8 |
+| 15 | Mesas y robustez: guardar el nombre personalizado de mesa y validarlo único (#23); pantalla "Error de conexión con la BD – reintentar" (#26); quitar log `[v0]` (B8/#24); documentar la decisión sobre commits con `Co-authored-by: Cursor` (#27). | Sonnet 5.5 | #23, #26, B8, #24, #27 |
+
+### Bloque D — Cumplimiento para vender en Chile (después de todos los bugs)
+
+Datos personales a nivel GDPR (cubre Ley 21.719 de Chile y LFPDPPP 2025 de México). Las sesiones 17 a 19 dependen del login real (sesión 3) y pueden ajustarse según lo que encuentre la sesión 16.
+
+| Sesión | Tarea | Modelo sugerido | Resuelve |
+|---|---|---|---|
+| 16 | **Inventario de datos personales y plan (solo lectura + documento):** listar qué datos personales guarda el sistema y dónde (usuarios, empleados con documento y sueldo, proveedores persona natural, clientes y fiados si existen), para qué se usan, quién los ve y cuánto tiempo deben conservarse (incluida la obligación tributaria). Dejar el plan detallado de las sesiones 17 a 19. | Sonnet 5.5 | K1 |
+| 17 | Datos sensibles (documento, sueldo) visibles y editables solo por admin, tanto en la API como en la pantalla; **registro de quién ve y modifica datos personales**, extendiendo `auditoria_admin`. | Sonnet 5.5 | K1 |
+| 18 | **Derechos ARCO:** exportar, corregir y eliminar (o anonimizar) los datos de una persona, conservando lo que deba guardarse por obligación tributaria. | Sonnet 5.5 | K1 |
+| 19 | **Aviso de privacidad visible** (México lo exige expresamente) en el login y en `/menu`; **procedimiento escrito para avisar brechas de seguridad en 72 horas** (documento, no código). | Sonnet 5.5 | K1 |
+
+Accesibilidad WCAG 2.1 AA (sin certificación):
+
+| Sesión | Tarea | Modelo sugerido | Resuelve |
+|---|---|---|---|
+| 20 | **Auditoría de accesibilidad (solo lectura):** pantallas que no se pueden usar solo con teclado (Tab, Enter, Esc; ingreso de PIN y de efectivo con teclado físico), elementos clickeables no alcanzables por teclado, imágenes sin texto alternativo (sobre todo `/menu`) y formularios sin etiquetas. Entrega una lista priorizada. | Sonnet 5.5 | K2 |
+| 21 | Corregir lo encontrado en la sesión 20. | Sonnet 5.5 | K2 |
+
+Boleta electrónica:
+
+| Sesión | Tarea | Modelo sugerido | Resuelve |
+|---|---|---|---|
+| 22 | **Sesión de decisión, sin implementar:** comparar (a) integrar un proveedor de DTE por API para emitir boleta electrónica por pagos en efectivo y transferencias, o (b) que el local emita la boleta aparte con el sistema gratuito del SII. Costos, esfuerzo, operación en caja y riesgos. **No se implementa hasta que el usuario decida.** | Opus 5.5 | K3 |
+
+### Bloque E — Mejoras técnicas
+
+| Sesión | Tarea | Modelo sugerido | Resuelve |
+|---|---|---|---|
+| 23 | Script SQL que crea las tablas base desde cero (verificado contra Neon). | Sonnet 5.5 | F2 |
+| 24 | Validación con zod en rutas de API + primeras pruebas automáticas. | Sonnet 5.5 | F1 |
+| 25 | Limpieza: `dexie` sin uso, rutas sin uso, nombre del paquete. | Haiku 5.5 | ⚪ |
+| 26 | Dividir componentes gigantes (`pos-page`, `pagos-page`, `lib/db.ts`). | Sonnet 5.5 | F6 |
+
+### Bloque F — Preparación para México (sin implementar aún)
+
+| Sesión | Tarea | Modelo sugerido | Resuelve |
+|---|---|---|---|
+| 27 | **Localización configurable por local:** moneda (CLP sin decimales / MXN con decimales), formato de fecha, tasa de IVA (ya existe `tasa_impuesto`; revisar valores por país) e identificador fiscal (RUT con Módulo 11 / RFC). Reemplazar los usos fijos de `es-CL` por la configuración del local. | Sonnet 5.5 | K4 |
+| — | **Facturación CFDI (México):** módulo local futuro, fuera de alcance por ahora. Solo queda anotado. | — | — |
+
+### Bloque G — SaaS
+
+| Sesión | Tarea | Modelo sugerido | Resuelve |
+|---|---|---|---|
+| 28 | Diseño multi-tenant (solo si se decide vender como SaaS). Incluir **RLS (Row Level Security) de Postgres como segundo candado** entre locales, además del filtro por local en cada consulta. | Opus 5.5 | SaaS |
 
 ---
 
-## 5. Pendientes del usuario
+## 5. Antes de producción final
+
+Tareas que se dejan a propósito para el final, por decisión del usuario.
+
+| Sesión | Tarea | Modelo sugerido |
+|---|---|---|
+| P1 | **Accesos rápidos del login controlados por variable de entorno:** mostrar los PINs demo solo si `NEXT_PUBLIC_MOSTRAR_ACCESOS_DEMO=true`, para poder apagarlos sin tocar código. Documentarla en `.env.example`. Obligar a cambiar los PINs por defecto (flag `requiere_cambio_pin` en el primer ingreso). | Sonnet 5.5 |
+| P2 | **Vaciar datos antes de salir a producción:** script que borre los datos de prueba (órdenes, pagos, caja, mermas, notificaciones, etc.) **sin borrar las tablas**, y deje lo que el local necesita (configuración, usuarios reales, productos y recetas definitivos, según se decida). Ejecutarlo solo con confirmación explícita del usuario. | Sonnet 5.5 |
+
+---
+
+## 6. Pendientes del usuario
 
 - ~~Entregar `DATABASE_URL` de Neon~~ ✅ (sesión 1, `.env.local` creado).
 - Borrar `variables.txt` y, recomendado, rotar la contraseña de Neon.
-- **Crear una rama de Neon para desarrollo:** hoy el entorno local usa la misma base que producción.
 - Confirmar si el cliente de prueba sigue usando la app en producción (afecta cuándo se cierran las rutas abiertas).
 - Decidir si el objetivo es un POS para un local o un SaaS multi-tenant.

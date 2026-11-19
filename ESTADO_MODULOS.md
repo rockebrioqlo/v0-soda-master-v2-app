@@ -7,7 +7,7 @@ Estados: **completo** · **a medias** · **roto** · **sin probar**.
 
 | Módulo | Archivos principales | Estado | Qué falta | Qué se probó realmente |
 |---|---|---|---|---|
-| Login y sesión | `components/login-form.tsx`, `app/api/auth/*`, `lib/app-context.tsx` | 🔴 roto (seguridad) | Sesión en servidor (cookie firmada/JWT), middleware, límite de intentos, ocultar PINs demo | Revisión de código: el login devuelve el usuario y la sesión vive solo en `sessionStorage` |
+| Login y sesión | `components/login-form.tsx`, `app/api/auth/*`, `lib/app-context.tsx` | 🔴 roto (seguridad) | Sesión en servidor (cookie firmada/JWT) y middleware (ROADMAP sesión 3); bloqueo real por intentos fallidos, que hoy no existe ni en pantalla (sesión 4). Los accesos rápidos con PINs demo se mantienen en desarrollo y se controlan por variable de entorno antes de producción final (sesión P1) | Revisión de código: el login devuelve el usuario y la sesión vive solo en `sessionStorage` |
 | Roles y permisos | `lib/app-context.tsx`, `components/bottom-nav.tsx`, `app/api/permisos-*` | 🔴 roto (seguridad) | Validar rol en cada ruta de API | Revisión de código: el filtro por rol es solo de pantalla |
 | Usuarios | `components/usuarios-page.tsx`, `app/api/usuarios/*` | a medias | Proteger edición de usuarios y PINs | Sin probar |
 | Dashboard | `components/dashboard-page.tsx` | completo | — | Sin probar |

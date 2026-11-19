@@ -18,9 +18,45 @@
   - Las credenciales de prueba del README se tomaron de `/api/seed` (emails `cajero@`, `mesero@`…), que no coinciden con los de `ESTADO_DESARROLLO.md` (`carlos@`, `maria@`…).
 - Hallazgos de esta sesión:
   - Confirmado en local que la API responde sin sesión (R1 del ROADMAP).
-  - **Las variables de Neon son "All Environments": el entorno local usa la misma base que producción.** Cualquier prueba local que escriba datos (órdenes, pagos, seeds) afecta datos reales. Conviene crear una rama de Neon para desarrollo.
+  - Las variables de Neon son "All Environments": el entorno local usa la misma base que producción. Decisión del usuario: se prueba contra esa base con datos reales a propósito; antes de producción final se vacían los datos (no las tablas).
   - En una revisión, la contraseña de Neon de `variables.txt` apareció en la salida de herramientas (no en el chat ni en archivos del repo). Se recomendó rotarla.
   - La app llama `POST /api/seed` en cada carga (no inserta si ya hay productos).
 - Pendiente / siguiente sesión:
-  - Usuario: borrar `variables.txt`; rotar la contraseña de Neon (opcional, recomendado); crear una rama de Neon para desarrollo; autorizar el commit y, si corresponde, el push.
-  - Siguiente sesión (ROADMAP sesión 2, Opus 5.5): login real con sesión en servidor + middleware por rol + cerrar rutas de seed.
+  - Usuario: borrar `variables.txt`; rotar la contraseña de Neon (opcional, recomendado); autorizar el push.
+  - Siguiente sesión: ROADMAP sesión 2 (Sonnet 5.5), cerrar las rutas de seed.
+
+## Verificación de lo declarado por v0 y ajustes al ROADMAP | 19-11-2026 | sesión 1 (continuación)
+- Modelo usado: Opus 5.5
+- Qué se pidió: verificar si lo que `ESTADO_DESARROLLO.md` da por hecho existe en el código; luego ajustar el ROADMAP (solo el ROADMAP, sin código).
+- Qué se hizo (archivos tocados): `ROADMAP.md` (reescrito), `CHAT_LOG.md`.
+  - Los 18 arreglos revisados existen en el código; #2, crear producto y #13 están a medias.
+  - Falso: `DELETE /api/seed` no tiene protección de entorno (borra la base) → R6.
+  - Falso: el bloqueo por intentos fallidos no existe ni en el servidor ni en la pantalla → R4 corregido.
+  - Todos los bugs pendientes (A1–A7, B1–B8, C1, C3–C8, #9–#11, #23, #24, #26, #27) quedaron asignados a sesiones, ordenados por gravedad.
+  - Nueva sesión 11: inventario con unidad de compra/consumo, factor corregible en compras y % de rendimiento.
+- Decisiones tomadas y por qué:
+  - PINs demo: se mantienen en desarrollo; antes de producción final se controlan con `NEXT_PUBLIC_MOSTRAR_ACCESOS_DEMO` (sesión P1).
+  - Se prueba contra la base Neon actual con datos reales; antes de producción se vacían los datos, no las tablas (sesión P2).
+  - La sesión de inventario va después de los bugs críticos y antes de los importantes y menores, como pidió el usuario; el resto de las mejoras va después de todos los bugs.
+  - Cerrar las rutas de seed pasa a ser la sesión 2, separada del login, por ser la más urgente y la más corta.
+- Pendiente / siguiente sesión: ROADMAP sesión 2 (Sonnet 5.5), cerrar las rutas de seed.
+
+## Seguridad, cumplimiento y preparación para México en el ROADMAP | 19-11-2026 | sesión 1 (continuación)
+- Modelo usado: Opus 5.5
+- Qué se pidió: corregir referencias desactualizadas en ARQUITECTURA.md y ESTADO_MODULOS.md; agregar al ROADMAP (sin código) lo necesario para vender en Chile y quedar preparado para México, con el estándar más exigente de cada tema.
+- Qué se hizo (archivos tocados):
+  - `ARQUITECTURA.md`: la sesión en servidor pasa a ser la sesión 3.
+  - `ESTADO_MODULOS.md`: fila de login actualizada (sesión 3, bloqueo inexistente → sesión 4, PINs demo → sesión P1).
+  - `ROADMAP.md`:
+    - Meta y estándar en "Decisiones del usuario" (WCAG 2.1 AA, nivel GDPR).
+    - Nuevos hallazgos de cumplimiento K1–K4 (datos personales, accesibilidad, boleta electrónica, localización fija en `es-CL`).
+    - Sesión 4 amplía el rate limiting a toda la API; sesión 10 incluye revisar todos los `useEffect` e intervalos.
+    - Bloque D (sesiones 16–22): datos personales (inventario y plan, sensibles solo admin + registro de accesos, ARCO, aviso de privacidad + procedimiento de brechas en 72 h), accesibilidad (auditoría en solo lectura + corrección) y decisión sobre boleta electrónica.
+    - Bloque E (23–26): mejoras técnicas, renumeradas. Bloque F (27): localización configurable; CFDI anotado como futuro fuera de alcance. Bloque G (28): multi-tenant con RLS como segundo candado.
+- Decisiones tomadas y por qué:
+  - Todo lo nuevo va después de los bugs, como pidió el usuario; el cumplimiento para vender en Chile va antes de las mejoras técnicas y de México porque es la meta inmediata.
+  - El rate limiting general se unió a la sesión 4 (misma técnica que el bloqueo del login) y la revisión de efectos a la sesión 10 (mismo código que A4 y B7), para no abrir sesiones nuevas.
+  - Las sesiones 17–19 dependen del login real (sesión 3) y pueden ajustarse según el inventario de la sesión 16.
+  - La boleta electrónica queda como sesión de decisión; no se implementa hasta que el usuario elija.
+- Hallazgos de esta sesión: `empleados` guarda documento, teléfono, email y sueldo; `proveedores` guarda RUT; no se encontró tabla de clientes ni fiados; no hay aviso de privacidad; hay 16 usos fijos de `es-CL`.
+- Pendiente / siguiente sesión: ROADMAP sesión 2 (Sonnet 5.5), cerrar las rutas de seed.
