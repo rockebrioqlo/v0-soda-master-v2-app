@@ -26,6 +26,7 @@ Reglas para cualquier agente (Claude Code, v0, Cursor) que trabaje en este repos
 
 ## Reglas técnicas del proyecto
 
+- **Datos de prueba:** los datos en Neon, incluida la base de producción, son datos de prueba sin importancia; se vacían antes de entregar al cliente (ver P2 en `ROADMAP.md`). Aun así, no borrar ni sembrar datos sin que el usuario lo pida.
 - **Base de datos:** Neon Postgres, esquema `soda_master`, SQL directo con `@neondatabase/serverless` (sin ORM). Todo acceso a datos pasa por `lib/db.ts`.
 - El driver HTTP de Neon **no mantiene transacciones entre `await`**. Para operaciones de varios pasos usar `sql.transaction([...])` o un solo statement con CTE. Un `FOR UPDATE` o `pg_advisory_xact_lock` en un `await` separado no protege nada.
 - Las migraciones incrementales viven en las funciones `ensure*Schema()` de `lib/db.ts` y deben ser idempotentes (`IF NOT EXISTS`, bloques `DO $$ ... EXCEPTION WHEN duplicate_object`).
