@@ -28,6 +28,6 @@ Estados: **completo** · **a medias** · **roto** · **sin probar**.
 | Notificaciones | `components/notificaciones-toast.tsx`, `app/api/notificaciones/*` | completo | — | Sin probar (polling cada 10 s, según doc heredado) |
 | Menú público `/menu` | `app/menu/page.tsx` | completo | — | Sin probar |
 | Tickets | `lib/print-ticket.ts`, `components/print-preview-dialog.tsx` | a medias | Impresión real ESC/POS | Sin probar |
-| Seeds | `app/api/seed*`, `lib/seed-*.ts` | 🔴 roto (seguridad) | Cerrar en producción | Revisión de código: rutas públicas |
+| Seeds | `app/api/seed*`, `lib/seed-*.ts`, `lib/seed-guard.ts` | ✅ cerrado (sesión 2, pendiente de merge a `main`) | Primer admin sin PINs demo (P3). La ruta con `PERMITIR_SEED=true` no se ejecutó, para no sembrar la base real | Local (`next start`): `DELETE /api/seed` → 405; `POST /api/seed`, `/seed-demo`, `/seed-recetas` → 403; la app carga con los datos actuales (6 usuarios, 33 productos, 20 mesas) sin pedir `/api/seed`. Candado probado en 7 combinaciones de `PERMITIR_SEED`/`VERCEL_ENV` |
 | Esquema base de BD | `lib/db.ts` (`ensure*Schema`) | a medias | Script que cree las tablas base desde cero | Por verificar contra Neon |
 | Compilación | — | completo | — | `pnpm build` local sin errores; `pnpm dev` carga el login y la API responde con datos de Neon (sesión 1) |

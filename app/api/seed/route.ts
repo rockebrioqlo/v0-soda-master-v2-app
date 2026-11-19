@@ -1,9 +1,13 @@
 import { neon } from '@neondatabase/serverless'
 import bcryptjs from 'bcryptjs'
 import { runSeedRecetasBase } from '@/lib/seed-recetas'
+import { bloquearSeedSiNoPermitido } from '@/lib/seed-guard'
 
 // Checks if DB already has data - if yes, returns status. If no, seeds it.
 export async function POST() {
+  const bloqueo = bloquearSeedSiNoPermitido()
+  if (bloqueo) return bloqueo
+
   try {
     const sql = neon(process.env.DATABASE_URL!)
 
@@ -126,19 +130,6 @@ export async function POST() {
     })
   } catch (error) {
     console.error('[seed] error:', error)
-    return Response.json({ error: String(error) }, { status: 500 })
-  }
-}
-
-// DELETE /api/seed — limpia todo para re-seed (solo desarrollo)
-export async function DELETE() {
-  try {
-    const sql = neon(process.env.DATABASE_URL!)
-    await sql`TRUNCATE soda_master.items_orden, soda_master.pagos, soda_master.ordenes, soda_master.inventario, soda_master.modificadores RESTART IDENTITY CASCADE`
-    await sql`TRUNCATE soda_master.productos, soda_master.categorias RESTART IDENTITY CASCADE`
-    await sql`TRUNCATE soda_master.mesas, soda_master.usuarios RESTART IDENTITY CASCADE`
-    return Response.json({ message: 'BD limpiada. Llama POST /api/seed para reinicializar.' })
-  } catch (error) {
     return Response.json({ error: String(error) }, { status: 500 })
   }
 }

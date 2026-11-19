@@ -58,7 +58,7 @@ El problema principal es la **seguridad**: la API no exige sesión y varias regl
 | R2 | El monto de los pagos lo decide el navegador (A1). Un pago de `$1` por una mesa de `$50.000` se acepta. | `lib/db.ts` → `crearPago` |
 | R3 | `PATCH /api/ordenes` acepta cambiar total o estado de una orden sin restricciones (A7). | `app/api/ordenes/route.ts` |
 | R4 | **No existe bloqueo por intentos fallidos, ni en el servidor ni en la pantalla.** `ESTADO_DESARROLLO.md` lo marca como hecho ("3 intentos = 5 min bloqueo"), pero `mapUsuario` siempre devuelve `intentosFallidos: 0` y `bloqueadoHasta: null`, el login no cuenta intentos y la BD no guarda nada. Solo queda un aviso de "bloqueado" en `usuarios-page.tsx` que nunca se muestra. Con PINs de 4 dígitos se prueban todos en segundos. | `app/api/auth/login/route.ts`, `lib/db.ts:34-46`, `components/login-form.tsx` |
-| R6 | `/api/seed`, `/api/seed-demo` y `/api/seed-recetas` son públicas. **`DELETE /api/seed` vacía usuarios, mesas, productos, órdenes y pagos sin ninguna protección** (el doc heredado dice "solo desarrollo", pero no hay chequeo de entorno). Una sola petición borra la base. | `app/api/seed/route.ts:134` |
+| R6 | `/api/seed`, `/api/seed-demo` y `/api/seed-recetas` son públicas. **`DELETE /api/seed` vacía usuarios, mesas, productos, órdenes y pagos sin ninguna protección** (el doc heredado dice "solo desarrollo", pero no hay chequeo de entorno). Una sola petición borra la base. ✅ **Resuelto en sesión 2:** `DELETE` eliminado; `POST /api/seed*` cerradas con `PERMITIR_SEED` y bloqueadas siempre en Vercel producción; la app ya no siembra al cargar. | `app/api/seed/route.ts`, `lib/seed-guard.ts` |
 | R7 | Operaciones de varios pasos sin transacción real: cobro, división de cuenta (A2), crear orden + ítems (#11), descuento de stock por receta (si falta un ingrediente, los anteriores ya se descontaron), crear producto, compras. | `lib/db.ts`, `components/pos-page.tsx` |
 
 > R5 (PINs demo visibles en el login) dejó de ser un hallazgo urgente por decisión del usuario: pasa a la sección 5, "Antes de producción final".
@@ -136,12 +136,12 @@ Regla: **1 tarea atómica por sesión**, `pnpm build` antes de cerrar, sin `git 
 | Sesión | Tarea | Modelo |
 |---|---|---|
 | 1 ✅ | Archivos de control, `.env.example`, `.env.local`, `pnpm install` + `pnpm build`, servidor local | Opus 5.5 |
+| 2 ✅ | Rutas de seed cerradas: `DELETE /api/seed` eliminado (405), `POST /api/seed*` responden 403 salvo `PERMITIR_SEED=true` y nunca en `VERCEL_ENV=production`; el arranque ya no llama `/api/seed`. | Opus 5.5 |
 
 ### Bloque A — Bugs críticos (seguridad, dinero, datos)
 
 | Sesión | Tarea | Modelo sugerido | Resuelve |
 |---|---|---|---|
-| 2 | **Urgente:** cerrar las rutas de seed. Eliminar o bloquear `DELETE /api/seed` en producción; `POST /api/seed*` solo con variable de entorno de desarrollo. Ajustar el init de la app, que llama `POST /api/seed` en cada carga. | Sonnet 5.5 | R6 |
 | 3 | Login real: sesión en servidor (cookie firmada o JWT) + middleware/proxy de Next 16 que exija sesión y rol en cada ruta de `app/api/**` según la tabla de permisos. Las rutas toman el usuario de la sesión, no del body. Rechazar usuarios desactivados en el servidor. | Opus 5.5 | R1, #10, C3 |
 | 4 | Rate limiting: bloqueo real por intentos fallidos en el login (contador y `bloqueado_hasta` en `usuarios`, 3 intentos = 5 min, como pedía el doc; conectar el aviso de "bloqueado" que ya existe en `usuarios-page.tsx`) **y límite de peticiones en toda la API**, por IP y por usuario, para frenar avalanchas de tráfico. | Sonnet 5.5 | R4 |
 | 5 | `crearPago`: el servidor calcula el monto a partir de los ítems; propina y descuento validados; todo en una transacción; devolver `mesa_id`/`mesa_nombre` en el pago creado. | Sonnet 5.5 | R2, A1, A5 |
@@ -237,6 +237,7 @@ Tareas que se dejan a propósito para el final, por decisión del usuario.
 |---|---|---|
 | P1 | **Accesos rápidos del login controlados por variable de entorno:** mostrar los PINs demo solo si `NEXT_PUBLIC_MOSTRAR_ACCESOS_DEMO=true`, para poder apagarlos sin tocar código. Documentarla en `.env.example`. Obligar a cambiar los PINs por defecto (flag `requiere_cambio_pin` en el primer ingreso). | Sonnet 5.5 |
 | P2 | **Vaciar datos antes de salir a producción:** script que borre los datos de prueba (órdenes, pagos, caja, mermas, notificaciones, etc.) **sin borrar las tablas**, y deje lo que el local necesita (configuración, usuarios reales, productos y recetas definitivos, según se decida). Ejecutarlo solo con confirmación explícita del usuario. | Sonnet 5.5 |
+| P3 | **Primer admin en una base de producción vacía, sin PINs demo:** `POST /api/seed` crea 5 usuarios con PINs conocidos (1234, 2222…), así que no sirve para producción. Crear un camino propio (por ejemplo un script local `pnpm crear-admin` que pida email, nombre y PIN por consola, valide el PIN y lo guarde con bcrypt, y se niegue a correr si ya existe un admin). Los productos, mesas y recetas reales se cargan después desde la app. **Regla:** el seed (y este script) en producción solo se corre desde local contra la base de producción, con `DATABASE_URL` de producción en `.env.local` y `PERMITIR_SEED=true` solo mientras dure; en Vercel producción las rutas de seed están bloqueadas siempre (`VERCEL_ENV=production`) y `PERMITIR_SEED` nunca se configura en Vercel. Anotado en sesión 2; no ejecutado. | Sonnet 5.5 |
 
 ---
 
@@ -244,5 +245,5 @@ Tareas que se dejan a propósito para el final, por decisión del usuario.
 
 - ~~Entregar `DATABASE_URL` de Neon~~ ✅ (sesión 1, `.env.local` creado).
 - Borrar `variables.txt` y, recomendado, rotar la contraseña de Neon.
-- Confirmar si el cliente de prueba sigue usando la app en producción (afecta cuándo se cierran las rutas abiertas).
+- Confirmar si el cliente de prueba sigue usando la app en producción (afecta cuándo se cierran las rutas abiertas). Las rutas de seed quedan cerradas en cuanto se haga merge de la sesión 2 a `main`.
 - Decidir si el objetivo es un POS para un local o un SaaS multi-tenant.

@@ -401,8 +401,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     const initializeDatabase = async () => {
       try {
-        // Initialize seed data
-        await fetch('/api/seed', { method: 'POST' })
+        // Ya no se llama POST /api/seed en cada carga (sesión 2, R6).
+        // Una base vacía se inicializa a mano: ver README, "Base de datos vacía".
 
         // Load usuarios from Neon
         const usuariosRes = await fetch('/api/usuarios')

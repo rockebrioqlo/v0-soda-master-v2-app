@@ -30,7 +30,7 @@ Navegador (tablet/PC del local)
 | `lib/types.ts` | Tipos de dominio |
 | `lib/helpers.ts`, `lib/fechas.ts`, `lib/server-time.ts`, `lib/use-server-clock.ts` | Formato CLP/fechas y reloj sincronizado con el servidor |
 | `lib/print-ticket.ts` | Generación de tickets para imprimir desde el navegador |
-| `lib/seed-*.ts`, `lib/initial-data.ts` | Datos de ejemplo y recetas base |
+| `lib/seed-*.ts`, `lib/initial-data.ts` | Datos de ejemplo y recetas base. `lib/seed-guard.ts` cierra las rutas `/api/seed*`: solo responden con `PERMITIR_SEED=true` y nunca en `VERCEL_ENV=production` |
 | `scripts/*.cjs` | Scripts sueltos de inspección/migración contra Neon (usan `DATABASE_URL`) |
 
 ## Flujo de datos

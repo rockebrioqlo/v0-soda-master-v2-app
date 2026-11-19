@@ -60,3 +60,28 @@
   - La boleta electrónica queda como sesión de decisión; no se implementa hasta que el usuario elija.
 - Hallazgos de esta sesión: `empleados` guarda documento, teléfono, email y sueldo; `proveedores` guarda RUT; no se encontró tabla de clientes ni fiados; no hay aviso de privacidad; hay 16 usos fijos de `es-CL`.
 - Pendiente / siguiente sesión: ROADMAP sesión 2 (Sonnet 5.5), cerrar las rutas de seed.
+
+## Cerrar las rutas de seed (R6) | 19-11-2026 | sesión 2
+- Modelo usado: Opus 5.5
+- Qué se pidió: cerrar `DELETE /api/seed` y las rutas `POST /api/seed`, `/api/seed-demo` y `/api/seed-recetas`, y que la app deje de llamar `/api/seed` en cada carga. Rama `fix/cerrar-seed` desde `docs/sesion-1-control`.
+- Qué se hizo (archivos tocados):
+  - `app/api/seed/route.ts`: eliminado el `DELETE` (ahora 405); `POST` revisa el candado antes de tocar la base.
+  - `app/api/seed-demo/route.ts`, `app/api/seed-recetas/route.ts`: mismo candado.
+  - Nuevo `lib/seed-guard.ts`: 403 salvo `PERMITIR_SEED=true`; con `VERCEL_ENV=production` bloquea siempre.
+  - `lib/app-context.tsx`: el arranque ya no llama `POST /api/seed` (no creaba tablas, solo sembraba si no había productos).
+  - `.env.example` y `README.md`: documentada `PERMITIR_SEED` y cómo inicializar una base de desarrollo vacía.
+  - `ROADMAP.md` (R6 resuelto, sesión 2 ✅, nueva P3), `ESTADO_MODULOS.md` (fila Seeds), `ARQUITECTURA.md`.
+- Pruebas (sin borrar ni sembrar datos):
+  - Local con `next start` en el puerto 3001 (otra sesión ocupaba `next dev` en esta carpeta y Next 16 no permite dos): `POST /api/seed` → 403 (se probó primero porque no inserta si ya hay productos), `DELETE /api/seed` → 405, `POST /api/seed-demo` → 403, `POST /api/seed-recetas` → 403, `GET /api/seed` → 405.
+  - `GET` de usuarios (6), productos (33), mesas (20) y órdenes → 200. En el navegador la app carga el login, todas sus peticiones dan 200 y ninguna va a `/api/seed`. El único 404 es `/_vercel/insights/script.js`, normal fuera de Vercel.
+  - Candado probado aislado (sin base) en 7 combinaciones: sin variable, `false`, `TRUE` → 403; `true` local o preview → permitido; `true` + production → 403.
+  - `pnpm build` OK.
+- Decisiones tomadas y por qué:
+  - `DELETE` eliminado en vez de bloqueado: nadie lo usaba y borraba la base; si no existe, no se puede configurar mal. Para vaciar datos queda la sesión P2.
+  - Segundo candado con `VERCEL_ENV=production` (pedido por el usuario): aunque alguien active `PERMITIR_SEED` en Vercel, producción no siembra.
+  - `seed-recetas` entra en el candado (decisión del usuario): el botón "Generar recetas base" mostrará el error 403 donde la variable no esté activa.
+  - No se probó la rama con `PERMITIR_SEED=true` contra el servidor para no sembrar la base real; se revisó solo leyendo el código.
+- Pendiente / siguiente sesión:
+  - Usuario: probar en local y autorizar el push y el merge a `main` (hasta el merge, producción sigue con las rutas abiertas).
+  - Anotado en ROADMAP P3: primer admin en base de producción vacía sin PINs demo; el seed en producción solo desde local.
+  - Siguiente sesión: ROADMAP sesión 3 (Opus 5.5), login real con sesión en servidor.

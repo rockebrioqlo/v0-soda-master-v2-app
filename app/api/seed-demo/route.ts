@@ -1,6 +1,7 @@
 import { neon } from '@neondatabase/serverless'
 import { db } from '@/lib/db'
 import { runSeedRecetasBase } from '@/lib/seed-recetas'
+import { bloquearSeedSiNoPermitido } from '@/lib/seed-guard'
 
 /**
  * POST /api/seed-demo
@@ -19,6 +20,9 @@ import { runSeedRecetasBase } from '@/lib/seed-recetas'
  *   - Gastos operativos: arriendo, servicios, sueldos del mes
  */
 export async function POST() {
+  const bloqueo = bloquearSeedSiNoPermitido()
+  if (bloqueo) return bloqueo
+
   try {
     const sql = neon(process.env.DATABASE_URL!)
 

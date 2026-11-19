@@ -54,7 +54,15 @@ pnpm dev
 
 Abre http://localhost:3000.
 
-Si la base está vacía, `POST /api/seed` crea usuarios, mesas y productos de ejemplo, y `POST /api/seed-demo` agrega proveedores, compras, activos y gastos de demostración.
+### Base de datos vacía
+
+La app ya no siembra datos sola al cargar. Las rutas de seed están cerradas por defecto (responden 403) y en Vercel producción están bloqueadas siempre. Para inicializar una base de **desarrollo** vacía:
+
+1. Agrega `PERMITIR_SEED=true` a `.env.local` y reinicia `pnpm dev`.
+2. Llama una vez `POST /api/seed` (usuarios, mesas, productos y recetas de ejemplo). Opcional: `POST /api/seed-demo` (proveedores, compras, activos y gastos) o `POST /api/seed-recetas` (insumos y recetas base).
+3. Quita `PERMITIR_SEED` de `.env.local` y reinicia.
+
+`POST /api/seed` no hace nada si ya hay productos. Ya no existe una ruta para vaciar la base.
 
 ## Credenciales de prueba
 
