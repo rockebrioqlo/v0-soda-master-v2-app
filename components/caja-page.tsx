@@ -1,5 +1,6 @@
 'use client'
 
+import { enPausaPorLimite } from '@/lib/pausa-limite'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useApp } from '@/lib/app-context'
 import { formatCurrency } from '@/lib/helpers'
@@ -164,7 +165,9 @@ export function CajaPage() {
     recargar()
     // Refresca cada 20 s para que las ventas en efectivo entren al
     // panel sin tener que recargar la página manualmente.
-    const id = window.setInterval(recargar, 20000)
+    const id = window.setInterval(() => {
+      if (!enPausaPorLimite()) recargar()
+    }, 20000)
     return () => window.clearInterval(id)
   }, [recargar])
 

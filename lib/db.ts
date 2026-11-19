@@ -36,15 +36,16 @@ const HASH_RELLENO = '$2b$10$icawp9UmJE0PBbIsfgs..e2FY0BvOF5MEZLd8QBGd0kj/gDC3Pi
 const ROLES_VALIDOS = new Set(['admin', 'administrador', 'mesero', 'cocina', 'bar', 'cajero'])
 
 function mapUsuario(row: any): Usuario {
-  const { pin_hash, pinHash, pin, password, roles_adicionales, ...safeUsuario } = row
+  const { pin_hash, pinHash, pin, password, roles_adicionales, bloqueado_hasta, fallidos, ...safeUsuario } = row
   const rolesAdicionales: string[] = Array.isArray(roles_adicionales)
     ? roles_adicionales.filter((r) => typeof r === 'string' && ROLES_VALIDOS.has(r))
     : []
   return {
     ...safeUsuario,
     roles_adicionales: rolesAdicionales,
-    intentosFallidos: 0,
-    bloqueadoHasta: null,
+    // Solo getUsuarios trae estos datos (join con intentos_login, sesión 4).
+    intentosFallidos: Number(fallidos) || 0,
+    bloqueadoHasta: bloqueado_hasta ? new Date(bloqueado_hasta).getTime() : null,
   } as Usuario
 }
 
@@ -597,6 +598,15 @@ async function ensureSesionesSchema(): Promise<void> {
       actualizado TIMESTAMPTZ NOT NULL DEFAULT now()
     )
   `
+  // Contador de peticiones por sesión y minuto (sesión 4, lib/limite-api.ts).
+  await sql`
+    CREATE TABLE IF NOT EXISTS soda_master.limite_peticiones (
+      clave TEXT NOT NULL,
+      ventana BIGINT NOT NULL,
+      n INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (clave, ventana)
+    )
+  `
   _sesionesReady = true
 }
 
@@ -999,13 +1009,19 @@ export const db = {
   // Usuarios
   async getUsuarios(): Promise<Usuario[]> {
     await ensureRolesAdicionalesSchema()
+    await ensureSesionesSchema()
     const sql = getSql()
+    // LEFT JOIN con intentos_login: bloqueo vigente y fallos del PIN (sesión 4).
     const result = await sql`
-      SELECT id, email, nombre, rol,
-             COALESCE(roles_adicionales, '{}'::text[]) AS roles_adicionales,
-             activo, created_at, updated_at
-      FROM soda_master.usuarios
-      ORDER BY nombre
+      SELECT u.id, u.email, u.nombre, u.rol,
+             COALESCE(u.roles_adicionales, '{}'::text[]) AS roles_adicionales,
+             u.activo, u.created_at, u.updated_at,
+             CASE WHEN il.bloqueado_hasta > now() THEN il.bloqueado_hasta END AS bloqueado_hasta,
+             COALESCE(il.fallidos, 0) AS fallidos
+      FROM soda_master.usuarios u
+      LEFT JOIN soda_master.intentos_login il
+        ON il.clave = 'u:' || lower(btrim(u.email))
+      ORDER BY u.nombre
     `
     return result.map(mapUsuario)
   },
@@ -1248,6 +1264,34 @@ export const db = {
     `
     const row = rows[0] as any
     return row?.recien_bloqueado && row.bloqueado_hasta ? new Date(row.bloqueado_hasta) : null
+  },
+
+  /**
+   * Cuenta una petición de la clave en la ventana de 60 s actual (un solo
+   * statement atómico). Devuelve cuántas van y cuántos segundos faltan
+   * para que cierre la ventana. Sesión 4, ver lib/limite-api.ts.
+   */
+  async contarPeticion(clave: string): Promise<{ n: number; restanteSeg: number }> {
+    await ensureSesionesSchema()
+    const sql = getSql()
+    const rows = await sql`
+      INSERT INTO soda_master.limite_peticiones AS lp (clave, ventana, n)
+      VALUES (${clave}, floor(extract(epoch from now()) / 60)::bigint, 1)
+      ON CONFLICT (clave, ventana) DO UPDATE SET n = lp.n + 1
+      RETURNING n, (60 - (extract(epoch from now())::bigint % 60))::int AS restante
+    `
+    const row = rows[0] as any
+    return { n: Number(row.n), restanteSeg: Number(row.restante) }
+  },
+
+  /** Borra contadores de más de 1 h (se llama de forma oportunista). */
+  async limpiarContadoresViejos(): Promise<void> {
+    await ensureSesionesSchema()
+    const sql = getSql()
+    await sql`
+      DELETE FROM soda_master.limite_peticiones
+      WHERE ventana < floor(extract(epoch from now()) / 60)::bigint - 60
+    `
   },
 
   /** Reinicia el contador y quita el bloqueo de una clave (login correcto o desbloqueo de admin). */

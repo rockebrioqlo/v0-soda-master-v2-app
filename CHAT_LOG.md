@@ -118,3 +118,33 @@
   - El preview de Vercel tiene Vercel Authentication; por decisión del usuario no se entró a Vercel.
   - Hallazgo: la pantalla de Mesas mostraba "Nueva Mesa" y borrar mesa a todos los roles, pero el servidor ya los limita a admin. Decisión del usuario: solo admin. `components/mesas-page.tsx` oculta esos botones a quien no es admin (rol o rol adicional); editar sigue visible para todos. Probado en el navegador: el mesero no los ve y el admin sí.
   - Pedido del usuario: permisos por usuario con ticks de menús y acciones. Anotado como sesión 29 en `ROADMAP.md` (Opus 5.5), sin implementar.
+
+## Rate limiting y bloqueo visible en Usuarios (R4) | 19-11-2026 | sesión 4
+- Modelo usado: Sonnet 5.5
+- Qué se pidió: límite de peticiones en toda la API, estado de bloqueo por PIN leído de `intentos_login` en Usuarios, botón de desbloqueo solo admin y manejo del 429 en la interfaz. Rama `fix/rate-limiting` creada desde `fix/login-servidor` (todavía no estaba mergeada a `main`).
+- Decisiones del usuario en Fase 1: 240/min por sesión, 1.500/min por IP con sesión, 60/min anónimas, 300/min rutas públicas, 120/min login; fail-open; las anónimas y las de cookie inválida no se cuentan en Neon (el proxy verifica la firma HMAC en memoria y responde 401); el límite por IP y anónimo lo pone el usuario en Vercel WAF; el contador en Neon es solo por sesión, con clave = hash de la cookie con firma verificada, en paralelo con la validación de sesión.
+- Qué se hizo (archivos tocados):
+  - Nuevos: `lib/limite-api.ts`, `lib/pausa-limite.ts`.
+  - `lib/db.ts`: tabla `limite_peticiones` dentro de `ensureSesionesSchema()` (idempotente), `contarPeticion` (un statement atómico), `limpiarContadoresViejos`; `getUsuarios` con LEFT JOIN a `intentos_login`; `mapUsuario` devuelve `intentosFallidos` y `bloqueadoHasta` reales.
+  - `lib/sesion.ts`: `obtenerSesionDeToken` (separado de `obtenerSesion`, que se comporta igual). `proxy.ts`: firma en memoria, sesión y contador en paralelo, 429.
+  - `app/api/usuarios/route.ts`: el estado de bloqueo solo llega al admin.
+  - Cliente: `lib/app-context.tsx` (429 con aviso único y pausa; los sondeos de notificaciones y de sesión la respetan), `components/kds-page.tsx` y `components/caja-page.tsx` (pausa), `components/usuarios-page.tsx` (recarga al abrir y cada 30 s, insignia "Bloqueado hasta HH:MM", botón "Desbloquear").
+  - `README.md` (regla de WAF recomendada), `ROADMAP.md` (sesión 4 ✅, R4 resuelto, P4 para el usuario), `ESTADO_MODULOS.md`, `ARQUITECTURA.md`.
+- Pruebas (Neon real, sin borrar ni sembrar datos del negocio), `next start` en :3002 con login real con los PINs del login (El supremo, Mesero, Ezio):
+  - Uso normal ~40 peticiones/min (órdenes del KDS, mesas, notificaciones, sesión) durante 40 s: sin 429.
+  - Avalancha de 320 peticiones de la sesión de cocina: 240 pasan y 80 dan 429 con `Retry-After` y mensaje; admin y mesero siguen en 200 en ese momento; al cerrar la ventana cocina vuelve a 200.
+  - Anónimo y cookie falsa → 401; en `limite_peticiones` solo hubo claves `s:<sha256>` de las 3 sesiones reales.
+  - Bloqueo: Test (usuario real, sin PIN de la lista) con 3 PIN errados → 429; el admin lo ve bloqueado; mesero y cocina no ven el estado y reciben 403 al desbloquear; el admin desbloquea (por API y con el botón en el navegador; la insignia desaparece y sale un aviso).
+  - Navegador: una avalancha de 300 peticiones desde la página produjo un solo aviso "Muchas peticiones seguidas…" y la sesión siguió abierta.
+  - `pnpm build` OK.
+  - Limpieza: sesiones de prueba cerradas (0 activas), bloqueos y contadores de intentos en 0 (incluido el de la IP local), `limite_peticiones` vaciada (solo tenía filas de la prueba); Test sigue activo.
+- Decisiones tomadas y por qué:
+  - Clave por sesión (hash de la cookie) y no por `usuario_id`: se conoce sin ir a la base, así el contador corre en paralelo con la validación de sesión y no suma latencia. Quien abre dos sesiones tiene dos cupos; el tope por IP del WAF lo cubre.
+  - Fail-open: un fallo de Neon no debe tumbar el POS.
+  - La interfaz no reintenta POST/PATCH tras un 429 para no duplicar cobros ni órdenes; solo pausa los sondeos y avisa.
+  - El estado de bloqueo se filtra en la ruta (solo admin), porque `GET /api/usuarios` lo leen todos los roles.
+- Pendiente / siguiente sesión:
+  - **Usuario:** crear las reglas de Vercel WAF (tabla en `README.md`, "Rate limiting"; P4 en el ROADMAP), mejor primero en modo Log. Cargar `SESION_SECRETO` en Vercel antes del merge (viene de la sesión 3). Revisar y autorizar push y merge.
+  - No se midió la latencia que suma el contador en Vercel; en local corre en paralelo con la sesión.
+  - El bloqueo por IP del login no se muestra ni se desbloquea desde Usuarios.
+  - Siguen anotados de la sesión 3: `ACCESOS_RAPIDOS=false` (P3), emails visibles a todos los roles en `GET /api/usuarios`, `PATCH /api/notificaciones/[id]` sin revisar dueño.

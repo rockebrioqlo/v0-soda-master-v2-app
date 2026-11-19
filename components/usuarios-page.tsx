@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { useApp } from '@/lib/app-context'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -32,7 +32,8 @@ import {
 } from '@/components/ui/table'
 import { cn } from '@/lib/utils'
 import { getRolLabel } from '@/lib/helpers'
-import { Plus, Edit, Trash2, UserCheck, UserX, Shield, KeyRound, Ban } from 'lucide-react'
+import { Plus, Edit, Trash2, UserCheck, UserX, Shield, KeyRound, Ban, LockOpen } from 'lucide-react'
+import { enPausaPorLimite } from '@/lib/pausa-limite'
 import { showToast } from '@/components/toast'
 import { Usuario, Rol, PermisosDescuento } from '@/lib/types'
 import { hash } from 'bcryptjs'
@@ -47,9 +48,43 @@ export function UsuariosPage() {
     getPermisosEspecialesApi,
     otorgarPermisoEspecialApi,
     revocarPermisoEspecialApi,
+    recargarUsuarios,
   } = useApp()
   const { usuarios, permisosDescuento, usuarioActual } = state
   const esAdmin = usuarioActual?.rol === 'admin' || usuarioActual?.rol === 'administrador'
+
+  // Estado de bloqueo por PIN (sesión 4): el admin ve la lista fresca al
+  // abrir la pantalla y cada 30 s mientras está visible.
+  useEffect(() => {
+    if (!esAdmin) return
+    void recargarUsuarios()
+    const id = window.setInterval(() => {
+      if (document.visibilityState === 'visible' && !enPausaPorLimite()) void recargarUsuarios()
+    }, 30_000)
+    return () => window.clearInterval(id)
+  }, [esAdmin, recargarUsuarios])
+
+  const [desbloqueando, setDesbloqueando] = useState<string | null>(null)
+  const handleDesbloquear = async (usuario: Usuario) => {
+    setDesbloqueando(usuario.id)
+    try {
+      const res = await fetch('/api/auth/desbloquear', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ usuario_id: usuario.id }),
+      })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        throw new Error(data?.error || 'No se pudo desbloquear')
+      }
+      await recargarUsuarios()
+      showToast(`${usuario.nombre} desbloqueado`, 'success')
+    } catch (error: any) {
+      showToast(error?.message || 'No se pudo desbloquear', 'error')
+    } finally {
+      setDesbloqueando(null)
+    }
+  }
 
   const [showDialog, setShowDialog] = useState(false)
   const [editingUsuario, setEditingUsuario] = useState<Usuario | null>(null)
@@ -340,7 +375,17 @@ export function UsuariosPage() {
                       <TableCell className="font-medium text-foreground">
                         {usuario.nombre}
                         {usuario.bloqueadoHasta && usuario.bloqueadoHasta > Date.now() && (
-                          <Badge className="ml-2 bg-red-500">Bloqueado</Badge>
+                          <Badge
+                            className="ml-2 bg-red-500 text-white"
+                            title="Demasiados PIN fallidos"
+                          >
+                            Bloqueado hasta{' '}
+                            {new Date(usuario.bloqueadoHasta).toLocaleTimeString('es-CL', {
+                              hour: '2-digit',
+                              minute: '2-digit',
+                              timeZone: 'America/Santiago',
+                            })}
+                          </Badge>
                         )}
                       </TableCell>
                       <TableCell className="text-muted-foreground">{usuario.email}</TableCell>
@@ -384,6 +429,21 @@ export function UsuariosPage() {
                               p. ej. cajero con apertura de mesa). Sólo
                               tiene sentido para roles distintos a
                               admin/administrador. */}
+                          {esAdmin &&
+                            usuario.bloqueadoHasta &&
+                            usuario.bloqueadoHasta > Date.now() && (
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                className="border-red-500/60 text-red-500 hover:text-red-400"
+                                title="Quitar el bloqueo por PIN fallidos"
+                                disabled={desbloqueando === usuario.id}
+                                onClick={() => handleDesbloquear(usuario)}
+                              >
+                                <LockOpen className="mr-1 h-4 w-4" />
+                                Desbloquear
+                              </Button>
+                            )}
                           {esAdmin &&
                             usuario.rol !== 'admin' &&
                             usuario.rol !== 'administrador' && (

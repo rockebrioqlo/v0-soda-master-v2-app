@@ -1,4 +1,5 @@
 import { db } from '@/lib/db'
+import { esAdminSesion, requireSesion } from '@/lib/sesion'
 
 export async function GET(request: Request) {
   try {
@@ -15,6 +16,14 @@ export async function GET(request: Request) {
       return Response.json(usuario)
     }
     const usuarios = await db.getUsuarios()
+    // El estado de bloqueo por PIN solo lo ve el admin (sesión 4).
+    const s = await requireSesion(request)
+    if (!s.ok) return s.respuesta
+    if (!esAdminSesion(s.usuario)) {
+      return Response.json(
+        usuarios.map((u) => ({ ...u, intentosFallidos: 0, bloqueadoHasta: null })),
+      )
+    }
     return Response.json(usuarios)
   } catch (error) {
     console.error('Get usuarios error:', error)

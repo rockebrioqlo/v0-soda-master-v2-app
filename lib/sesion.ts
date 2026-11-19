@@ -103,6 +103,11 @@ export function cookieBorrada(): string {
 export async function obtenerSesion(request: Request): Promise<UsuarioSesion | null> {
   const token = tokenDeCookie(leerCookie(request, COOKIE_SESION))
   if (!token) return null
+  return obtenerSesionDeToken(token)
+}
+
+/** Igual que obtenerSesion, con un token cuya firma ya se verificó. */
+export async function obtenerSesionDeToken(token: string): Promise<UsuarioSesion | null> {
   const fila = await db.getSesionActiva(hashToken(token))
   if (!fila) return null
   return { ...fila, roles: rolesEfectivos(fila.rol, fila.roles_adicionales) }

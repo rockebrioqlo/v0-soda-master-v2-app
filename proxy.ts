@@ -3,9 +3,13 @@
  *
  * Para cada petición a /api/**:
  *   1. Si la ruta es pública según lib/permisos-api.ts, pasa.
- *   2. Si no hay cookie de sesión válida (firma + sesión vigente en la base
- *      + usuario activo) → 401.
- *   3. Si el rol no tiene permiso para esa ruta y método → 403.
+ *   2. Si la cookie no existe o su firma HMAC no es válida (se revisa en
+ *      memoria, sin tocar la base) → 401. Estas peticiones tampoco se cuentan:
+ *      su límite por IP lo hace la regla de Vercel WAF (README).
+ *   3. Con firma válida, en paralelo: validar la sesión en la base (vigente
+ *      + usuario activo) y contar la petición de esa sesión (240/min, sesión 4).
+ *      Sobre el límite → 429 con Retry-After. Sin sesión vigente → 401.
+ *   4. Si el rol no tiene permiso para esa ruta y método → 403.
  *
  * Las rutas que necesitan saber quién hace la acción vuelven a validar con
  * requireSesion() (lib/sesion.ts): la guía de Next 16 recomienda no dejar
@@ -13,7 +17,8 @@
  */
 import { NextResponse, type NextRequest } from 'next/server'
 import { accesoParaRuta, tieneAlgunRol } from '@/lib/permisos-api'
-import { obtenerSesion } from '@/lib/sesion'
+import { COOKIE_SESION, hashToken, leerCookie, obtenerSesionDeToken, tokenDeCookie } from '@/lib/sesion'
+import { contarYLimitar } from '@/lib/limite-api'
 
 export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl
@@ -22,13 +27,24 @@ export async function proxy(request: NextRequest) {
 
   if (acceso === 'publico') return NextResponse.next()
 
+  const token = tokenDeCookie(leerCookie(request, COOKIE_SESION))
+  if (!token) {
+    return NextResponse.json({ error: 'Sesión requerida' }, { status: 401 })
+  }
+
   let usuario
+  let limite: Response | null
   try {
-    usuario = await obtenerSesion(request)
+    ;[usuario, limite] = await Promise.all([
+      obtenerSesionDeToken(token),
+      contarYLimitar(hashToken(token)),
+    ])
   } catch (error) {
     console.error('[proxy] error validando sesión:', error)
     return NextResponse.json({ error: 'Error en servidor' }, { status: 500 })
   }
+
+  if (limite) return limite
 
   if (!usuario) {
     return NextResponse.json({ error: 'Sesión requerida' }, { status: 401 })

@@ -78,6 +78,22 @@ El login necesita `SESION_SECRETO` en `.env.local` (ver `.env.example`). Tras 3 
 | Pedro Martínez | cocina@soda.cl | 4444 | cocina |
 | Laura Rodríguez | bar@soda.cl | 5555 | bar |
 
+### Rate limiting (sesión 4)
+
+La API tiene dos capas:
+
+1. **Por sesión, en la aplicación** (`proxy.ts` + `lib/limite-api.ts`): 240 peticiones por minuto por sesión, contadas en Neon (tabla `limite_peticiones`, un solo statement atómico, en paralelo con la validación de sesión). Se responde `429` con `Retry-After`. Si la base falla al contar, la petición pasa (fail-open). Las peticiones sin cookie o con la firma HMAC inválida **no se cuentan en Neon**: el proxy responde 401 en memoria.
+2. **Por IP y anónimas, en Vercel WAF (a configurar a mano en el dashboard):** Vercel → proyecto → Firewall → Custom Rules → Rate limiting. Reglas recomendadas (todas las tablets del local salen por la misma IP, por eso los topes por IP son holgados):
+
+| Regla WAF | Rutas | Clave | Límite (ventana fija 60 s) | Acción |
+|---|---|---|---|---|
+| IP, sin sesión o cookie inválida | `/api/*` sin la cookie `sm_sesion` (salvo las públicas de abajo) | IP | **60/min** | Denegar (429), 60 s |
+| IP, con sesión | `/api/*` | IP | **1.500/min** | Denegar (429), 60 s |
+| IP, rutas públicas | `/api/menu-publico`, `/api/hora` | IP | **300/min** | Denegar (429), 60 s |
+| IP, login | `/api/auth/login`, `/api/auth/verificar-pin` | IP | **120/min** | Denegar (429), 60 s |
+
+Una regla por fila, con las más específicas primero. Conviene probarlas antes en modo "Log" y pasar a "Deny" cuando se confirme que no cortan el uso normal (10 tablets ≈ 150–250 peticiones por minuto).
+
 ## Documentación
 
 - [AGENTS.md](AGENTS.md): reglas para agentes y desarrolladores

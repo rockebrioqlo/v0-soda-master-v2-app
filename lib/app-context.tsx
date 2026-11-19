@@ -13,6 +13,7 @@ import {
   initialConfiguracion,
 } from './initial-data'
 import { showToast } from '@/components/toast'
+import { enPausaPorLimite, registrarLimite, segundosDePausa } from '@/lib/pausa-limite'
 
 type PageType = 'dashboard' | 'mesas' | 'pos' | 'kds' | 'inventario' | 'finanzas' | 'usuarios' | 'pagos' | 'caja' | 'mermas' | 'reportes' | 'configuracion'
 
@@ -587,6 +588,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     // (sesión revocada, vencida o usuario desactivado) se vuelve al login.
     // Errores de red no cierran la sesión.
     const verifyActiveUser = async () => {
+      if (enPausaPorLimite()) return
       try {
         const res = await fetch('/api/auth/sesion', { cache: 'no-store' })
         if (cancelled) return
@@ -631,6 +633,22 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           sesionActivaRef.current = false
           showToast('Tu sesión expiró. Vuelve a ingresar.', 'error')
           logoutRef.current()
+        }
+      }
+      // 429 del límite general de la API (sesión 4): aviso único y se
+      // pausan los sondeos hasta que pase el Retry-After. No se reintentan
+      // escrituras solas. El 429 del login (/api/auth/) tiene su propio mensaje.
+      if (res.status === 429) {
+        const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+        let ruta = url
+        try {
+          ruta = new URL(url, window.location.origin).pathname
+        } catch {}
+        if (ruta.startsWith('/api/') && !ruta.startsWith('/api/auth/')) {
+          const seg = Number(res.headers.get('Retry-After'))
+          if (registrarLimite(seg)) {
+            showToast(`Muchas peticiones seguidas. Espera ${segundosDePausa()} s e intenta de nuevo.`, 'error')
+          }
         }
       }
       return res
@@ -1294,7 +1312,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     const knownIds = new Set<string>()
 
     const fetchNotificaciones = async () => {
-      if (cancelled || running) return
+      if (cancelled || running || enPausaPorLimite()) return
       if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return
       running = true
       try {

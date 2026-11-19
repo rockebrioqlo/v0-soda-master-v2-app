@@ -1,5 +1,6 @@
 'use client'
 
+import { enPausaPorLimite } from '@/lib/pausa-limite'
 import { useEffect, useState } from 'react'
 import { useApp } from '@/lib/app-context'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -44,7 +45,7 @@ export function KDSPage() {
     let running = false
 
     const refresh = async () => {
-      if (cancelled || running || document.visibilityState !== 'visible') return
+      if (cancelled || running || enPausaPorLimite() || document.visibilityState !== 'visible') return
       running = true
       try {
         await recargarOrdenes()
