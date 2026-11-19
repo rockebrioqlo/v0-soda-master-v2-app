@@ -1,4 +1,5 @@
 import { db } from '@/lib/db'
+import { requireSesion } from '@/lib/sesion'
 
 // GET /api/caja — estado de la caja abierta (si hay) + resumen con
 // totales (fondo, ventas en efectivo, vuelto entregado, retiros,
@@ -19,20 +20,19 @@ export async function GET() {
 }
 
 // POST /api/caja — abre una nueva caja con un fondo inicial.
-// Cuerpo: { usuario_id, usuario_nombre, fondo_inicial, notas? }
+// Cuerpo: { fondo_inicial, notas? }. El usuario sale de la sesión.
 export async function POST(request: Request) {
   try {
+    const s = await requireSesion(request, ['admin', 'cajero'])
+    if (!s.ok) return s.respuesta
     const body = await request.json()
-    if (!body?.usuario_id || !body?.usuario_nombre) {
-      return Response.json({ error: 'usuario_id y usuario_nombre requeridos' }, { status: 400 })
-    }
     const fondo = Number(body.fondo_inicial)
     if (!Number.isFinite(fondo) || fondo < 0) {
       return Response.json({ error: 'fondo_inicial inválido' }, { status: 400 })
     }
     const caja = await db.abrirCaja({
-      usuario_id: body.usuario_id,
-      usuario_nombre: body.usuario_nombre,
+      usuario_id: s.usuario.id,
+      usuario_nombre: s.usuario.nombre,
       fondo_inicial: fondo,
       notas: body.notas ?? null,
     })

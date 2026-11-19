@@ -1,4 +1,5 @@
 import { db } from '@/lib/db'
+import { requireSesion } from '@/lib/sesion'
 
 /**
  * Pérdidas ("perros muertos"): clientes que consumieron pero se fueron
@@ -25,6 +26,8 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   try {
+    const s = await requireSesion(request, ['admin', 'cajero'])
+    if (!s.ok) return s.respuesta
     const body = await request.json()
     const ordenId = body?.orden_id || body?.ordenId
     if (!ordenId || typeof ordenId !== 'string') {
@@ -37,17 +40,10 @@ export async function POST(request: Request) {
         { status: 400 },
       )
     }
-    // El control de autorización por rol se hace además en el cliente,
-    // pero validamos acá que vengan los datos del autorizador.
-    const autorizadoPor = body?.autorizado_por || body?.autorizadoPor || null
-    const autorizadoPorNombre =
-      body?.autorizado_por_nombre || body?.autorizadoPorNombre || null
-    if (!autorizadoPor || !autorizadoPorNombre) {
-      return Response.json(
-        { error: 'autorizado_por y autorizado_por_nombre requeridos' },
-        { status: 400 },
-      )
-    }
+    // Quien autoriza la pérdida es el admin/cajero de la sesión
+    // (antes llegaba en el body y se podía falsear).
+    const autorizadoPor = s.usuario.id
+    const autorizadoPorNombre = s.usuario.nombre
 
     const tasaImpuesto = Number(body?.tasa_impuesto ?? 0)
     const impuestoHabilitado = body?.impuesto_habilitado !== false

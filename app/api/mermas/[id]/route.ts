@@ -1,10 +1,7 @@
 import { db } from '@/lib/db'
+import { requireSesion } from '@/lib/sesion'
 
 const CONSECUENCIAS = new Set<string>(['descuento_liquidacion', 'solo_registro', 'amonestacion'])
-
-function esAdmin(rol?: string | null) {
-  return rol === 'admin' || rol === 'administrador'
-}
 
 export async function PATCH(
   request: Request,
@@ -14,17 +11,9 @@ export async function PATCH(
     const { id } = await params
     const body = await request.json()
 
-    const usuarioId = String(body.usuario_id || '')
-    if (!usuarioId) {
-      return Response.json({ error: 'usuario_id requerido' }, { status: 400 })
-    }
-    const usuario = await db.getUsuarioById(usuarioId)
-    if (!usuario || !esAdmin(usuario.rol)) {
-      return Response.json(
-        { error: 'Solo el administrador puede modificar mermas' },
-        { status: 403 }
-      )
-    }
+    // Solo admin, según la sesión (ya no se acepta `usuario_id` del body).
+    const s = await requireSesion(request, ['admin'])
+    if (!s.ok) return s.respuesta
 
     const updates: { responsable_id?: string | null; consecuencia?: string | null; monto_descuento?: number } = {}
     if (body.responsable_id !== undefined) {

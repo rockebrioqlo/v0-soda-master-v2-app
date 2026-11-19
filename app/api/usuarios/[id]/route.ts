@@ -32,6 +32,10 @@ export async function PATCH(
     if (!usuario) {
       return Response.json({ error: 'Usuario no encontrado' }, { status: 404 })
     }
+    // Desactivar a alguien cierra todas sus sesiones al instante.
+    if (usuario.activo === false) {
+      await db.revocarSesionesUsuario(usuario.id)
+    }
     return Response.json(usuario)
   } catch (error) {
     console.error('Update usuario error:', error)

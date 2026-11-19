@@ -1,13 +1,16 @@
 import { db } from '@/lib/db'
+import { requireSesion } from '@/lib/sesion'
 
 // POST /api/caja/movimiento — registra un retiro, depósito o ajuste
 // manual en la caja abierta. Los movimientos automáticos de venta y
 // vuelto los inserta directamente `db.crearPago`.
 //
 // Cuerpo: { tipo: 'retiro'|'deposito'|'ajuste', monto, descripcion?,
-//           usuario_id?, usuario_nombre? }
+//           }. El usuario sale de la sesión.
 export async function POST(request: Request) {
   try {
+    const s = await requireSesion(request, ['admin', 'cajero'])
+    if (!s.ok) return s.respuesta
     const body = await request.json()
     const tiposPermitidos = new Set(['retiro', 'deposito', 'ajuste'])
     if (!tiposPermitidos.has(body?.tipo)) {
@@ -24,8 +27,8 @@ export async function POST(request: Request) {
       tipo: body.tipo,
       monto,
       descripcion: body.descripcion ?? null,
-      usuario_id: body.usuario_id ?? null,
-      usuario_nombre: body.usuario_nombre ?? null,
+      usuario_id: s.usuario.id,
+      usuario_nombre: s.usuario.nombre,
     })
     return Response.json(mov, { status: 201 })
   } catch (error: any) {

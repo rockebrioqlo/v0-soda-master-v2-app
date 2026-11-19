@@ -1,4 +1,6 @@
 import { db } from '@/lib/db'
+import { esAdminSesion, requireSesion } from '@/lib/sesion'
+import { verificarAutorizacionAdmin } from '@/lib/autorizacion-admin'
 
 const TIPOS = [
   'accidente',
@@ -12,10 +14,6 @@ const TIPOS = [
 
 const TIPOS_ADMIN_ONLY = new Set<string>(['robo', 'perdida_sin_explicacion'])
 const MOTIVOS_CNP = new Set<string>(['cliente_se_fue', 'error_mesero', 'cortesia'])
-
-function esAdmin(rol?: string | null) {
-  return rol === 'admin' || rol === 'administrador'
-}
 
 export async function GET(request: Request) {
   try {
@@ -37,6 +35,10 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   try {
+    // Quien registra es el usuario de la sesión, no `registrado_por` del body.
+    const s = await requireSesion(request, ['admin', 'mesero', 'cocina', 'bar'])
+    if (!s.ok) return s.respuesta
+    const usuario = s.usuario
     const body = await request.json()
     const tipo = String(body.tipo || '')
     if (!TIPOS.includes(tipo as any)) {
@@ -46,16 +48,8 @@ export async function POST(request: Request) {
     if (!Number.isFinite(cantidad) || cantidad <= 0) {
       return Response.json({ error: 'Cantidad inválida' }, { status: 400 })
     }
-    const registradoPor = String(body.registrado_por || '')
-    if (!registradoPor) {
-      return Response.json({ error: 'registrado_por requerido' }, { status: 400 })
-    }
-
-    const usuario = await db.getUsuarioById(registradoPor)
-    if (!usuario) {
-      return Response.json({ error: 'Usuario no encontrado' }, { status: 401 })
-    }
-    if (TIPOS_ADMIN_ONLY.has(tipo) && !esAdmin(usuario.rol)) {
+    const registradoPor = usuario.id
+    if (TIPOS_ADMIN_ONLY.has(tipo) && !esAdminSesion(usuario)) {
       return Response.json(
         { error: 'Solo el administrador puede registrar este tipo de merma' },
         { status: 403 }
@@ -73,10 +67,25 @@ export async function POST(request: Request) {
       if (!cnp.orden_id) {
         return Response.json({ error: 'orden_id requerido' }, { status: 400 })
       }
+      // La cortesía exige la autorización firmada del admin (verificar-pin).
+      // Si quien registra ya es admin, se autoriza a sí mismo.
+      let autorizadoPor: string | null = null
+      if (cnp.autorizacion) {
+        const admin = await verificarAutorizacionAdmin(cnp.autorizacion)
+        if (!admin) {
+          return Response.json({ error: 'Autorización del administrador inválida o vencida' }, { status: 403 })
+        }
+        autorizadoPor = admin.id
+      } else if (esAdminSesion(usuario)) {
+        autorizadoPor = usuario.id
+      }
+      if (motivo === 'cortesia' && !autorizadoPor) {
+        return Response.json({ error: 'La cortesía requiere autorización del administrador' }, { status: 403 })
+      }
       comandaNoPagada = {
         orden_id: String(cnp.orden_id),
         motivo,
-        autorizado_por: cnp.autorizado_por ? String(cnp.autorizado_por) : null,
+        autorizado_por: autorizadoPor,
       }
     }
 

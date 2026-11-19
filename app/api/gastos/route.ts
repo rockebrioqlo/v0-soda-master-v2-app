@@ -1,4 +1,5 @@
 import { db } from '@/lib/db'
+import { requireSesion } from '@/lib/sesion'
 
 export async function GET(request: Request) {
   try {
@@ -21,6 +22,8 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   try {
+    const s = await requireSesion(request, ['admin'])
+    if (!s.ok) return s.respuesta
     const body = await request.json()
     const monto = Number(body.monto)
     if (!Number.isFinite(monto) || monto <= 0) {
@@ -37,7 +40,7 @@ export async function POST(request: Request) {
       proveedor_id: body.proveedor_id || null,
       empleado_id: body.empleado_id || null,
       activo_id: body.activo_id || null,
-      usuario_id: body.usuario_id || null,
+      usuario_id: s.usuario.id, // de la sesión, no del body
       notas: body.notas,
     })
     return Response.json(row, { status: 201 })

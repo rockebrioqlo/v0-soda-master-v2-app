@@ -1,4 +1,5 @@
 import { db } from '@/lib/db'
+import { esAdminSesion, requireSesion } from '@/lib/sesion'
 
 /**
  * Permisos delegados temporalmente (ej: admin → cajero, apertura de mesa).
@@ -8,8 +9,13 @@ import { db } from '@/lib/db'
  */
 export async function GET(request: Request) {
   try {
+    const s = await requireSesion(request)
+    if (!s.ok) return s.respuesta
     const { searchParams } = new URL(request.url)
-    const usuarioId = searchParams.get('usuario_id') || undefined
+    // Un usuario que no es admin solo ve sus propios permisos.
+    const usuarioId = esAdminSesion(s.usuario)
+      ? searchParams.get('usuario_id') || undefined
+      : s.usuario.id
     const tipo = searchParams.get('tipo') || undefined
     const soloVigentes = searchParams.get('solo_vigentes') === 'true'
     const rows = await db.getPermisosEspeciales({
@@ -26,13 +32,16 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   try {
+    // Quien otorga es el admin de la sesión, no `otorgado_por` del body.
+    const s = await requireSesion(request, ['admin'])
+    if (!s.ok) return s.respuesta
     const body = await request.json()
     const usuarioId = body?.usuario_id
     const tipo = (body?.tipo || '').toString().trim()
     const validoHasta = body?.valido_hasta
     const motivo = body?.motivo ?? null
-    const otorgadoPor = body?.otorgado_por
-    const otorgadoPorNombre = body?.otorgado_por_nombre
+    const otorgadoPor = s.usuario.id
+    const otorgadoPorNombre = s.usuario.nombre
 
     if (!usuarioId) {
       return Response.json({ error: 'usuario_id requerido' }, { status: 400 })
@@ -43,13 +52,6 @@ export async function POST(request: Request) {
     if (!validoHasta) {
       return Response.json({ error: 'valido_hasta requerido' }, { status: 400 })
     }
-    if (!otorgadoPor || !otorgadoPorNombre) {
-      return Response.json(
-        { error: 'otorgado_por y otorgado_por_nombre requeridos' },
-        { status: 400 },
-      )
-    }
-
     const row = await db.otorgarPermisoEspecial({
       usuario_id: usuarioId,
       tipo,
@@ -67,15 +69,15 @@ export async function POST(request: Request) {
 
 export async function PATCH(request: Request) {
   try {
+    // Quien revoca es el admin de la sesión.
+    const s = await requireSesion(request, ['admin'])
+    if (!s.ok) return s.respuesta
     const body = await request.json()
     const id = body?.id
-    const revocadoPor = body?.revocado_por
-    const revocadoPorNombre = body?.revocado_por_nombre
-    if (!id || !revocadoPor || !revocadoPorNombre) {
-      return Response.json(
-        { error: 'id, revocado_por y revocado_por_nombre requeridos' },
-        { status: 400 },
-      )
+    const revocadoPor = s.usuario.id
+    const revocadoPorNombre = s.usuario.nombre
+    if (!id) {
+      return Response.json({ error: 'id requerido' }, { status: 400 })
     }
     const row = await db.revocarPermisoEspecial({
       id,

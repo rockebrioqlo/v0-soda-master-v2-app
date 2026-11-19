@@ -1,4 +1,5 @@
 import { db } from '@/lib/db'
+import { requireSesion } from '@/lib/sesion'
 
 export async function GET(request: Request) {
   try {
@@ -40,8 +41,12 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   try {
+    const s = await requireSesion(request, ['admin', 'mesero', 'cajero'])
+    if (!s.ok) return s.respuesta
     const orden = await request.json()
-    const newOrden = await db.crearOrden(orden)
+    // Quien abre la comanda es el usuario de la sesión: crearOrden usa este
+    // id para decidir si un cajero puede abrir mesa (apertura_mesa).
+    const newOrden = await db.crearOrden({ ...orden, usuario_id: s.usuario.id })
     return Response.json(newOrden)
   } catch (error) {
     console.error('Create orden error:', error)

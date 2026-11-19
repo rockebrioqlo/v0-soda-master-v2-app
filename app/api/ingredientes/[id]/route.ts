@@ -1,4 +1,5 @@
 import { db } from '@/lib/db'
+import { esAdminSesion, requireSesion } from '@/lib/sesion'
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
@@ -12,9 +13,6 @@ const TIPOS_MERMA = new Set([
 ])
 const TIPOS_MERMA_ADMIN_ONLY = new Set(['robo', 'perdida_sin_explicacion'])
 
-function esAdmin(rol?: string | null) {
-  return rol === 'admin' || rol === 'administrador'
-}
 
 export async function DELETE(request: Request, context: { params: Promise<{ id: string }> }) {
   try {
@@ -30,15 +28,12 @@ export async function DELETE(request: Request, context: { params: Promise<{ id: 
         { status: 400 }
       )
     }
-    const registradoPor = String(body.registrado_por || '')
-    if (!registradoPor) {
-      return Response.json({ error: 'registrado_por requerido' }, { status: 400 })
-    }
-    const usuario = await db.getUsuarioById(registradoPor)
-    if (!usuario) {
-      return Response.json({ error: 'Usuario no encontrado' }, { status: 401 })
-    }
-    if (motivo === 'correccion_admin' && !esAdmin(usuario.rol)) {
+    // Quien registra es el usuario de la sesión, no `registrado_por` del body.
+    const s = await requireSesion(request)
+    if (!s.ok) return s.respuesta
+    const usuario = s.usuario
+    const registradoPor = usuario.id
+    if (motivo === 'correccion_admin' && !esAdminSesion(usuario)) {
       return Response.json(
         { error: 'Solo el administrador puede hacer correcciones administrativas' },
         { status: 403 }
@@ -50,7 +45,7 @@ export async function DELETE(request: Request, context: { params: Promise<{ id: 
       if (!TIPOS_MERMA.has(motivoMerma)) {
         return Response.json({ error: 'Tipo de merma inválido' }, { status: 400 })
       }
-      if (TIPOS_MERMA_ADMIN_ONLY.has(motivoMerma) && !esAdmin(usuario.rol)) {
+      if (TIPOS_MERMA_ADMIN_ONLY.has(motivoMerma) && !esAdminSesion(usuario)) {
         return Response.json(
           { error: 'Solo el administrador puede registrar este tipo de merma' },
           { status: 403 }

@@ -124,6 +124,8 @@ export function MermasPage() {
   const [authPin, setAuthPin] = useState('')
   const [authLoading, setAuthLoading] = useState(false)
   const [autorizadoPor, setAutorizadoPor] = useState<string | null>(null)
+  // Token firmado de 5 min que entrega verificar-pin cuando el PIN es de un admin.
+  const [autorizacionToken, setAutorizacionToken] = useState<string | null>(null)
 
   const [assignOpen, setAssignOpen] = useState(false)
   const [assignMerma, setAssignMerma] = useState<MermaRow | null>(null)
@@ -195,7 +197,7 @@ export function MermasPage() {
     setDescripcion('')
     setOrdenId('')
     setMotivoCnp('cliente_se_fue')
-    setAutorizadoPor(null)
+    setAutorizadoPor(null); setAutorizacionToken(null)
   }
 
   const handleRegistrar = async () => {
@@ -233,7 +235,7 @@ export function MermasPage() {
         body.comanda_no_pagada = {
           orden_id: ordenId,
           motivo: motivoCnp,
-          autorizado_por: autorizadoPor,
+          autorizacion: autorizacionToken,
         }
       }
       const res = await fetch('/api/mermas', {
@@ -267,11 +269,14 @@ export function MermasPage() {
         body: JSON.stringify({ email: adminEmail, pin: authPin }),
       })
       const data = await res.json().catch(() => null)
-      if (res.ok && data?.valido) {
+      if (res.ok && data?.valido && data?.autorizacion) {
         setAutorizadoPor(data.usuario.id)
+        setAutorizacionToken(data.autorizacion)
         setAuthOpen(false)
         setAuthPin('')
         showToast('Autorización aprobada — registra la cortesía', 'success')
+      } else if (res.status === 429 && data?.error) {
+        showToast(String(data.error), 'error')
       } else {
         showToast('PIN incorrecto', 'error')
       }
@@ -363,7 +368,7 @@ export function MermasPage() {
           <div className="grid gap-4 md:grid-cols-2">
             <div className="space-y-2">
               <Label>Tipo</Label>
-              <Select value={tipo} onValueChange={(v) => { setTipo(v as TipoMerma); setAutorizadoPor(null) }}>
+              <Select value={tipo} onValueChange={(v) => { setTipo(v as TipoMerma); setAutorizadoPor(null); setAutorizacionToken(null) }}>
                 <SelectTrigger>
                   <SelectValue />
                 </SelectTrigger>
@@ -440,7 +445,7 @@ export function MermasPage() {
                     value={motivoCnp}
                     onValueChange={(v) => {
                       setMotivoCnp(v as typeof motivoCnp)
-                      setAutorizadoPor(null)
+                      setAutorizadoPor(null); setAutorizacionToken(null)
                     }}
                   >
                     <SelectTrigger>

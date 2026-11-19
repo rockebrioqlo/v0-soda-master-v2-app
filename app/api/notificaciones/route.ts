@@ -1,4 +1,5 @@
 import { db } from '@/lib/db'
+import { requireSesion } from '@/lib/sesion'
 
 const TIPOS = ['problema', 'listo', 'nueva_orden'] as const
 
@@ -11,16 +12,13 @@ const TIPOS = ['problema', 'listo', 'nueva_orden'] as const
  */
 export async function GET(request: Request) {
   try {
+    // Solo las notificaciones del usuario de la sesión y de su rol; los
+    // parámetros usuario_id y rol de la URL ya no se usan.
+    const s = await requireSesion(request)
+    if (!s.ok) return s.respuesta
     const { searchParams } = new URL(request.url)
-    const usuario_id = searchParams.get('usuario_id')
-    const rol = searchParams.get('rol')
-
-    if (!usuario_id && !rol) {
-      return Response.json(
-        { error: 'Se requiere usuario_id o rol' },
-        { status: 400 },
-      )
-    }
+    const usuario_id = s.usuario.id
+    const rol = s.usuario.rol
 
     const solo_pendientes_raw = searchParams.get('solo_pendientes')
     const solo_pendientes = solo_pendientes_raw === null

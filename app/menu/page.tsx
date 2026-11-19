@@ -58,18 +58,14 @@ export default function MenuPage() {
     let cancelado = false
     ;(async () => {
       try {
-        const [resProd, resConf] = await Promise.all([
-          fetch('/api/productos', { cache: 'no-store' }),
-          fetch('/api/configuracion', { cache: 'no-store' }).catch(() => null),
-        ])
-        if (!resProd.ok) throw new Error('No se pudo cargar el menú')
-        const data: Producto[] = await resProd.json()
-        if (!cancelado) setProductos(data)
-        if (resConf && resConf.ok) {
-          const conf = await resConf.json()
-          if (!cancelado && conf?.nombre_negocio) {
-            setNombreNegocio(String(conf.nombre_negocio))
-          }
+        // Endpoint público de solo lectura: /api/productos y
+        // /api/configuracion exigen sesión desde la sesión 3.
+        const res = await fetch('/api/menu-publico', { cache: 'no-store' })
+        if (!res.ok) throw new Error('No se pudo cargar el menú')
+        const data: { nombre_negocio: string | null; productos: Producto[] } = await res.json()
+        if (!cancelado) setProductos(data.productos)
+        if (!cancelado && data.nombre_negocio) {
+          setNombreNegocio(String(data.nombre_negocio))
         }
       } catch (e: any) {
         if (!cancelado) setError(e?.message || 'Error al cargar el menú')

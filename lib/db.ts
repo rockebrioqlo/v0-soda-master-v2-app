@@ -30,6 +30,9 @@ function mapMesa(row: any): Mesa {
   } as Mesa
 }
 
+// Hash bcrypt de un valor aleatorio descartado; solo se usa para igualar tiempos en verificarPIN.
+const HASH_RELLENO = '$2b$10$icawp9UmJE0PBbIsfgs..e2FY0BvOF5MEZLd8QBGd0kj/gDC3PiJC'
+
 const ROLES_VALIDOS = new Set(['admin', 'administrador', 'mesero', 'cocina', 'bar', 'cajero'])
 
 function mapUsuario(row: any): Usuario {
@@ -561,6 +564,53 @@ async function ensureRolesAdicionalesSchema(): Promise<void> {
   _rolesAdicionalesReady = true
 }
 
+// ──── Sesiones en servidor e intentos de login (sesión 3) ───────────
+// `sesiones`: una fila por login. Solo se guarda el hash SHA-256 del
+// token (el token vive en la cookie httpOnly). No se guarda IP ni
+// navegador para no sumar datos personales.
+// `intentos_login`: contador de PIN fallidos por clave (`u:<email>` o
+// `ip:<ip>`), con bloqueo temporal. Ver lib/intentos-login.ts.
+let _sesionesReady = false
+async function ensureSesionesSchema(): Promise<void> {
+  if (_sesionesReady) return
+  const sql = getSql()
+  await sql`
+    CREATE TABLE IF NOT EXISTS soda_master.sesiones (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      token_hash TEXT NOT NULL UNIQUE,
+      usuario_id UUID NOT NULL REFERENCES soda_master.usuarios(id) ON DELETE CASCADE,
+      creada TIMESTAMPTZ NOT NULL DEFAULT now(),
+      expira TIMESTAMPTZ NOT NULL,
+      revocada_at TIMESTAMPTZ NULL
+    )
+  `
+  await sql`
+    CREATE INDEX IF NOT EXISTS sesiones_usuario_idx
+      ON soda_master.sesiones (usuario_id)
+  `
+  await sql`
+    CREATE TABLE IF NOT EXISTS soda_master.intentos_login (
+      clave TEXT PRIMARY KEY,
+      fallidos INTEGER NOT NULL DEFAULT 0,
+      bloqueos INTEGER NOT NULL DEFAULT 0,
+      bloqueado_hasta TIMESTAMPTZ NULL,
+      actualizado TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+  `
+  _sesionesReady = true
+}
+
+export interface ReglaIntentos {
+  /** Fallos dentro de la ventana que disparan el bloqueo. */
+  umbral: number
+  /** Ventana (segundos): fallos más antiguos que esto no cuentan. */
+  ventanaSeg: number
+  /** Duración del primer bloqueo (segundos). */
+  bloqueoBaseSeg: number
+  /** Tope del bloqueo (segundos). Si es igual a la base, no escala. */
+  bloqueoMaxSeg: number
+}
+
 // ──── Caja chica (apertura, movimientos, cierre/arqueo) ─────────────
 // El cajero abre la caja al iniciar el turno con un fondo inicial.
 // Cada pago en efectivo registra una entrada por el monto cobrado y,
@@ -977,7 +1027,12 @@ export const db = {
     await ensureRolesAdicionalesSchema()
     const sql = getSql()
     const result = await sql`SELECT * FROM soda_master.usuarios WHERE email = ${email} AND activo = true`
-    if (!result[0]) return null
+    if (!result[0]) {
+      // Comparación de relleno: que un email inexistente tarde lo mismo
+      // que un PIN errado y la respuesta no revele qué cuentas existen.
+      await bcryptjs.compare(pin, HASH_RELLENO)
+      return null
+    }
 
     const usuario = result[0] as any
     const esValido = await bcryptjs.compare(pin, usuario.pin_hash)
@@ -1080,6 +1135,132 @@ export const db = {
       RETURNING id
     `
     return result.length > 0
+  },
+
+  // Sesiones en servidor (sesión 3). Ver lib/sesion.ts.
+  async crearSesion(usuarioId: string, tokenHash: string, expira: Date): Promise<void> {
+    await ensureSesionesSchema()
+    const sql = getSql()
+    await sql`
+      INSERT INTO soda_master.sesiones (token_hash, usuario_id, expira)
+      VALUES (${tokenHash}, ${usuarioId}::uuid, ${expira.toISOString()}::timestamptz)
+    `
+  },
+
+  /** Sesión no revocada ni expirada de un usuario activo, con datos frescos del usuario. */
+  async getSesionActiva(tokenHash: string): Promise<(Usuario & { sesion_id: string }) | null> {
+    await ensureSesionesSchema()
+    await ensureRolesAdicionalesSchema()
+    const sql = getSql()
+    const rows = await sql`
+      SELECT s.id AS sesion_id,
+             u.id, u.email, u.nombre, u.rol,
+             COALESCE(u.roles_adicionales, '{}'::text[]) AS roles_adicionales,
+             u.activo, u.created_at, u.updated_at
+      FROM soda_master.sesiones s
+      JOIN soda_master.usuarios u ON u.id = s.usuario_id
+      WHERE s.token_hash = ${tokenHash}
+        AND s.revocada_at IS NULL
+        AND s.expira > now()
+        AND u.activo = true
+      LIMIT 1
+    `
+    if (!rows[0]) return null
+    const row = rows[0] as any
+    return { ...mapUsuario(row), sesion_id: String(row.sesion_id) }
+  },
+
+  async revocarSesion(tokenHash: string): Promise<void> {
+    await ensureSesionesSchema()
+    const sql = getSql()
+    await sql`
+      UPDATE soda_master.sesiones SET revocada_at = now()
+      WHERE token_hash = ${tokenHash} AND revocada_at IS NULL
+    `
+  },
+
+  async revocarSesionesUsuario(usuarioId: string): Promise<number> {
+    await ensureSesionesSchema()
+    const sql = getSql()
+    const rows = await sql`
+      UPDATE soda_master.sesiones SET revocada_at = now()
+      WHERE usuario_id = ${usuarioId}::uuid AND revocada_at IS NULL
+      RETURNING id
+    `
+    return rows.length
+  },
+
+  // Intentos de login (sesión 3). Ver lib/intentos-login.ts.
+  /** Bloqueo vigente más largo entre las claves dadas, o null. */
+  async getBloqueoVigente(claves: string[]): Promise<Date | null> {
+    await ensureSesionesSchema()
+    const sql = getSql()
+    const rows = await sql`
+      SELECT MAX(bloqueado_hasta) AS hasta
+      FROM soda_master.intentos_login
+      WHERE clave = ANY(${claves}::text[]) AND bloqueado_hasta > now()
+    `
+    const hasta = (rows[0] as any)?.hasta
+    return hasta ? new Date(hasta) : null
+  },
+
+  /**
+   * Suma un fallo en un solo statement (atómico por fila). Si llega al
+   * umbral, bloquea por base * 2^bloqueos (hasta el tope) y reinicia el
+   * contador. Los bloqueos previos se olvidan tras 24 h sin fallos.
+   * Devuelve el fin del bloqueo si esta llamada lo activó.
+   */
+  async registrarIntentoFallido(clave: string, regla: ReglaIntentos): Promise<Date | null> {
+    await ensureSesionesSchema()
+    const sql = getSql()
+    const rows = await sql`
+      INSERT INTO soda_master.intentos_login AS il (clave, fallidos, bloqueos, bloqueado_hasta, actualizado)
+      VALUES (
+        ${clave},
+        CASE WHEN 1 >= ${regla.umbral}::int THEN 0 ELSE 1 END,
+        CASE WHEN 1 >= ${regla.umbral}::int THEN 1 ELSE 0 END,
+        CASE WHEN 1 >= ${regla.umbral}::int
+             THEN now() + make_interval(secs => ${regla.bloqueoBaseSeg}::int) ELSE NULL END,
+        now()
+      )
+      ON CONFLICT (clave) DO UPDATE SET
+        bloqueado_hasta = CASE
+          WHEN (CASE WHEN il.actualizado < now() - make_interval(secs => ${regla.ventanaSeg}::int)
+                     THEN 0 ELSE il.fallidos END) + 1 >= ${regla.umbral}::int
+          THEN now() + make_interval(secs => LEAST(
+                 ${regla.bloqueoBaseSeg}::float8 * power(2, CASE WHEN il.actualizado < now() - interval '24 hours'
+                                                              THEN 0 ELSE il.bloqueos END),
+                 ${regla.bloqueoMaxSeg}::float8))
+          ELSE il.bloqueado_hasta END,
+        bloqueos = CASE
+          WHEN (CASE WHEN il.actualizado < now() - make_interval(secs => ${regla.ventanaSeg}::int)
+                     THEN 0 ELSE il.fallidos END) + 1 >= ${regla.umbral}::int
+          THEN (CASE WHEN il.actualizado < now() - interval '24 hours' THEN 0 ELSE il.bloqueos END) + 1
+          ELSE (CASE WHEN il.actualizado < now() - interval '24 hours' THEN 0 ELSE il.bloqueos END) END,
+        fallidos = CASE
+          WHEN (CASE WHEN il.actualizado < now() - make_interval(secs => ${regla.ventanaSeg}::int)
+                     THEN 0 ELSE il.fallidos END) + 1 >= ${regla.umbral}::int
+          THEN 0
+          ELSE (CASE WHEN il.actualizado < now() - make_interval(secs => ${regla.ventanaSeg}::int)
+                     THEN 0 ELSE il.fallidos END) + 1 END,
+        actualizado = now()
+      RETURNING bloqueado_hasta, (bloqueado_hasta > now() AND fallidos = 0) AS recien_bloqueado
+    `
+    const row = rows[0] as any
+    return row?.recien_bloqueado && row.bloqueado_hasta ? new Date(row.bloqueado_hasta) : null
+  },
+
+  /** Reinicia el contador y quita el bloqueo de una clave (login correcto o desbloqueo de admin). */
+  async limpiarIntentos(clave: string): Promise<boolean> {
+    await ensureSesionesSchema()
+    const sql = getSql()
+    const rows = await sql`
+      UPDATE soda_master.intentos_login
+      SET fallidos = 0, bloqueos = 0, bloqueado_hasta = NULL, actualizado = now()
+      WHERE clave = ${clave}
+      RETURNING clave
+    `
+    return rows.length > 0
   },
 
   // Mesas

@@ -1,4 +1,5 @@
 import { db } from '@/lib/db'
+import { requireSesion } from '@/lib/sesion'
 
 export async function GET(request: Request) {
   try {
@@ -18,6 +19,8 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   try {
+    const s = await requireSesion(request, ['admin'])
+    if (!s.ok) return s.respuesta
     const body = await request.json()
     if (!Array.isArray(body?.items) || body.items.length === 0) {
       return Response.json({ error: 'items requeridos' }, { status: 400 })
@@ -31,7 +34,7 @@ export async function POST(request: Request) {
       fecha: body.fecha ? String(body.fecha) : null,
       impuesto: Number(body.impuesto) || 0,
       notas: body.notas ? String(body.notas) : null,
-      usuario_id: body.usuario_id || null,
+      usuario_id: s.usuario.id, // de la sesión, no del body
       items: body.items.map((it: any) => ({
         ingrediente_id: String(it.ingrediente_id),
         cantidad: Number(it.cantidad),

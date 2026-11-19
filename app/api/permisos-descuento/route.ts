@@ -1,8 +1,5 @@
 import { db } from '@/lib/db'
-
-function esAdmin(rol?: string | null) {
-  return rol === 'admin' || rol === 'administrador'
-}
+import { requireSesion } from '@/lib/sesion'
 
 export async function GET() {
   try {
@@ -16,18 +13,10 @@ export async function GET() {
 
 export async function PATCH(request: Request) {
   try {
+    // Solo admin, según la sesión (ya no se acepta `usuario_id` del body).
+    const s = await requireSesion(request, ['admin'])
+    if (!s.ok) return s.respuesta
     const body = await request.json()
-    const usuarioId = String(body.usuario_id || '')
-    if (!usuarioId) {
-      return Response.json({ error: 'usuario_id requerido' }, { status: 400 })
-    }
-    const usuario = await db.getUsuarioById(usuarioId)
-    if (!usuario || !esAdmin(usuario.rol)) {
-      return Response.json(
-        { error: 'Solo el administrador puede modificar permisos' },
-        { status: 403 }
-      )
-    }
     const items = Array.isArray(body.permisos) ? body.permisos : null
     if (!items || items.length === 0) {
       return Response.json({ error: 'permisos requerido' }, { status: 400 })

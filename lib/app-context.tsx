@@ -1,6 +1,6 @@
 'use client'
 
-import React, { createContext, useContext, useReducer, useEffect, useState, useCallback } from 'react'
+import React, { createContext, useContext, useReducer, useEffect, useState, useCallback, useRef } from 'react'
 
 import { 
   AppState, 
@@ -265,7 +265,7 @@ interface AppContextType {
     tipo: string
     valor: number
     motivo: string
-    autorizado_por?: string | null
+    autorizacion?: string | null
   }) => Promise<any | null>
   crearNotificacionApi: (payload: {
     tipo: 'problema' | 'listo' | 'nueva_orden'
@@ -397,9 +397,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [currentPage, setCurrentPage] = useState<PageType>('dashboard')
   const [posNavigation, setPosNavigation] = useState<POSNavigationState>({ mesaId: null, comandaId: null })
 
-  // Initialize database and users from Neon
-  useEffect(() => {
-    const initializeDatabase = async () => {
+  // Carga los datos de la app desde Neon. Desde la sesión 3 la API exige
+  // sesión, así que se llama después de restaurar la sesión (cookie) o de
+  // un login correcto, nunca antes.
+  const cargarDatosApp = useCallback(async () => {
       try {
         // Ya no se llama POST /api/seed en cada carga (sesión 2, R6).
         // Una base vacía se inicializa a mano: ver README, "Base de datos vacía".
@@ -475,22 +476,29 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           }
         } catch {}
 
-        // Restore session if exists
-        const savedSession = sessionStorage.getItem('soda_master_session')
-        if (savedSession) {
+      } catch (error) {
+        console.error('Error cargando datos:', error)
+      }
+  }, [])
+
+  // Al cargar: la sesión vive en una cookie httpOnly del servidor
+  // (sesión 3). sessionStorage solo recuerda la página abierta.
+  useEffect(() => {
+    const initializeDatabase = async () => {
+      try {
+        const res = await fetch('/api/auth/sesion', { cache: 'no-store' })
+        if (res.ok) {
+          const user = await res.json()
+          dispatch({ type: 'SET_USUARIO', payload: user })
+          let paginaGuardada: PageType | null = null
           try {
-            const sessionData = JSON.parse(savedSession)
-            const usuariosRes = await fetch('/api/usuarios')
-            const usuarios = await usuariosRes.json()
-            const user = usuarios.find((u: any) => u.id === sessionData.userId)
-            if (user && user.activo) {
-              const userRole: unknown = user.rol
-              dispatch({ type: 'SET_USUARIO', payload: user })
-              setCurrentPage(sessionData.currentPage || (isRol(userRole) ? defaultPageByRole[userRole] : 'dashboard'))
-            }
+            paginaGuardada = JSON.parse(sessionStorage.getItem('soda_master_session') || 'null')?.currentPage ?? null
           } catch {
-            sessionStorage.removeItem('soda_master_session')
+            paginaGuardada = null
           }
+          const userRole: unknown = user.rol
+          setCurrentPage(paginaGuardada || (isRol(userRole) ? defaultPageByRole[userRole] : 'dashboard'))
+          await cargarDatosApp()
         }
       } catch (error) {
         console.error('Database initialization error:', error)
@@ -500,7 +508,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     }
 
     initializeDatabase()
-  }, [])
+  }, [cargarDatosApp])
 
   // Online/offline detection
   useEffect(() => {
@@ -519,10 +527,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   // Save session when page changes
   useEffect(() => {
     if (state.usuarioActual) {
-      sessionStorage.setItem('soda_master_session', JSON.stringify({
-        userId: state.usuarioActual.id,
-        currentPage
-      }))
+      sessionStorage.setItem('soda_master_session', JSON.stringify({ currentPage }))
     }
   }, [currentPage, state.usuarioActual])
 
@@ -535,9 +540,15 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       })
 
       if (!response.ok) {
+        const data = await response.json().catch(() => null)
+        // 429 = bloqueo temporal por PIN fallidos (el mensaje dice cuánto falta).
+        if (response.status === 429 && data?.error) {
+          return { success: false, message: String(data.error) }
+        }
         return { success: false, message: 'Credenciales inválidas' }
       }
 
+      // El servidor dejó la cookie de sesión httpOnly; acá solo llega el usuario.
       const usuario = await response.json()
       dispatch({ type: 'UPDATE_USUARIO', payload: { ...usuario, intentosFallidos: 0, bloqueadoHasta: null } })
       dispatch({ type: 'SET_USUARIO', payload: usuario })
@@ -548,20 +559,19 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       const defaultPage = isRol(usuarioRole) ? defaultPageByRole[usuarioRole] : 'dashboard'
       setCurrentPage(defaultPage)
       
-      // Save session to sessionStorage
-      sessionStorage.setItem('soda_master_session', JSON.stringify({ 
-        userId: usuario.id,
-        currentPage: defaultPage
-      }))
-      
+      sessionStorage.setItem('soda_master_session', JSON.stringify({ currentPage: defaultPage }))
+      await cargarDatosApp()
+
       return { success: true, message: 'Inicio de sesión exitoso' }
     } catch (error) {
       console.error('Login error:', error)
       return { success: false, message: 'Error en servidor' }
     }
-  }, [])
+  }, [cargarDatosApp])
 
   const logout = useCallback(() => {
+    // Revoca la sesión en el servidor y borra la cookie.
+    void fetch('/api/auth/logout', { method: 'POST' }).catch(() => {})
     dispatch({ type: 'RESET_SESSION_DATA' })
     setPosNavigation({ mesaId: null, comandaId: null })
     setCurrentPage('dashboard')
@@ -573,27 +583,16 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     if (!usuarioActualId) return
     let cancelled = false
 
-    // Solo cerramos sesión si la API confirma EXPLÍCITAMENTE que el
-    // usuario fue desactivado. Si la lista llega vacía, incompleta, o
-    // si no se encuentra el id por cualquier motivo (cache stale,
-    // edición concurrente, error parcial), preferimos mantener la
-    // sesión: una desconexión silenciosa era la causa más probable de
-    // "Erick entra y se sale".
+    // La sesión vive en el servidor: si /api/auth/sesion responde 401
+    // (sesión revocada, vencida o usuario desactivado) se vuelve al login.
+    // Errores de red no cierran la sesión.
     const verifyActiveUser = async () => {
       try {
-        const res = await fetch(`/api/usuarios?id=${encodeURIComponent(usuarioActualId)}`, {
-          cache: 'no-store',
-        })
-        if (!res.ok || cancelled) return
-        const data = await res.json()
-        // Tolerar formatos: {usuario}, usuario directo o lista filtrada.
-        const usuario = Array.isArray(data)
-          ? data.find((u: any) => u?.id === usuarioActualId)
-          : data?.usuario || data
-        if (!usuario || usuario.id !== usuarioActualId) return
-        if (usuario.activo === false) {
-          console.warn('[auth] Sesión cerrada: usuario desactivado por admin', { id: usuarioActualId })
-          showToast('Tu usuario fue desactivado. Sesión cerrada.', 'error')
+        const res = await fetch('/api/auth/sesion', { cache: 'no-store' })
+        if (cancelled) return
+        if (res.status === 401) {
+          console.warn('[auth] Sesión cerrada por el servidor', { id: usuarioActualId })
+          showToast('Tu sesión se cerró. Vuelve a ingresar.', 'error')
           logout()
         }
       } catch {
@@ -609,6 +608,38 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       window.clearInterval(interval)
     }
   }, [usuarioActualId, logout])
+
+  // Si cualquier llamada a la API responde 401 (sesión vencida o
+  // revocada), se vuelve al login una sola vez.
+  const sesionActivaRef = useRef(false)
+  const logoutRef = useRef(logout)
+  useEffect(() => {
+    sesionActivaRef.current = !!usuarioActualId
+    logoutRef.current = logout
+  }, [usuarioActualId, logout])
+  useEffect(() => {
+    const fetchOriginal = window.fetch
+    const fetchConSesion: typeof window.fetch = async (input, init) => {
+      const res = await fetchOriginal(input, init)
+      if (res.status === 401 && sesionActivaRef.current) {
+        const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+        let ruta = url
+        try {
+          ruta = new URL(url, window.location.origin).pathname
+        } catch {}
+        if (ruta.startsWith('/api/') && !ruta.startsWith('/api/auth/')) {
+          sesionActivaRef.current = false
+          showToast('Tu sesión expiró. Vuelve a ingresar.', 'error')
+          logoutRef.current()
+        }
+      }
+      return res
+    }
+    window.fetch = fetchConSesion
+    return () => {
+      window.fetch = fetchOriginal
+    }
+  }, [])
 
   const hasPermission = useCallback((modulo: string): boolean => {
     if (!state.usuarioActual) return false
@@ -1177,14 +1208,16 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   )
 
   const crearDescuentoApi = useCallback(
-    async (payload: { orden_id: string; tipo: string; valor: number; motivo: string; autorizado_por?: string | null }) => {
+    async (payload: { orden_id: string; tipo: string; valor: number; motivo: string; autorizacion?: string | null }) => {
       const usuarioId = state.usuarioActual?.id
       if (!usuarioId) return null
       try {
+        // El servidor toma a quien aplica desde la sesión; `autorizacion` es
+        // el token firmado de 5 min que entrega verificar-pin al admin.
         const res = await fetch('/api/descuentos', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ...payload, aplicado_por: usuarioId }),
+          body: JSON.stringify(payload),
         })
         const data = await res.json().catch(() => null)
         if (!res.ok) {
@@ -1265,9 +1298,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return
       running = true
       try {
+        // El servidor filtra por el usuario y rol de la sesión.
         const params = new URLSearchParams()
-        params.set('usuario_id', usuario.id)
-        if (usuario.rol) params.set('rol', usuario.rol)
         params.set('solo_pendientes', 'true')
         const res = await fetch(`/api/notificaciones?${params.toString()}`, {
           cache: 'no-store',

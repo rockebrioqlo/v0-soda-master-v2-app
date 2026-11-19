@@ -926,7 +926,8 @@ export function POSPage() {
     valor: number,
     tipo: TipoDescuento,
     motivo: string,
-    autorizadoPorId?: string | null
+    autorizadoPorId?: string | null,
+    autorizacion?: string | null
   ) => {
     if (!currentComanda || !usuarioActual) return
     const result = await crearDescuentoApi({
@@ -934,7 +935,9 @@ export function POSPage() {
       tipo,
       valor,
       motivo,
-      autorizado_por: autorizadoPorId || null,
+      // Token firmado de 5 min que entrega verificar-pin al admin; el
+      // servidor ya no acepta el id del autorizador.
+      autorizacion: autorizacion || null,
     })
     if (!result) return
     const updatedComanda: Comanda = {
@@ -990,7 +993,11 @@ export function POSPage() {
         body: JSON.stringify({ email: admin.email, pin: authPin }),
       })
       const data = await res.json().catch(() => null)
-      if (!res.ok || !data?.valido || (data.usuario.rol !== 'admin' && data.usuario.rol !== 'administrador')) {
+      if (!res.ok || !data?.valido || !data?.autorizacion) {
+        if (res.status === 429 && data?.error) {
+          showToast(String(data.error), 'error')
+          return
+        }
         showToast('PIN incorrecto', 'error')
         return
       }
@@ -998,7 +1005,8 @@ export function POSPage() {
         valorNumDescuento,
         descuentoTipo,
         descuentoMotivo.trim() || 'Autorizado por administrador',
-        data.usuario.id
+        data.usuario.id,
+        data.autorizacion
       )
     } catch {
       showToast('Error de conexión', 'error')

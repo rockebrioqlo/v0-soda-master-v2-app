@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useApp } from '@/lib/app-context'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -9,7 +9,23 @@ import { Delete, Loader2 } from 'lucide-react'
 import { showToast } from '@/components/toast'
 
 export function LoginForm() {
-  const { login, state, isInitialized } = useApp()
+  const { login, isInitialized } = useApp()
+  // Accesos rápidos: solo nombre y email, desde un endpoint público que se
+  // apaga con ACCESOS_RAPIDOS=false. Solo rellenan el email; el PIN pasa
+  // por el mismo login del servidor.
+  const [accesosRapidos, setAccesosRapidos] = useState<Array<{ nombre: string; email: string }>>([])
+  useEffect(() => {
+    let cancelado = false
+    fetch('/api/auth/accesos-rapidos', { cache: 'no-store' })
+      .then((r) => (r.ok ? r.json() : []))
+      .then((lista) => {
+        if (!cancelado && Array.isArray(lista)) setAccesosRapidos(lista)
+      })
+      .catch(() => {})
+    return () => {
+      cancelado = true
+    }
+  }, [])
   const [email, setEmail] = useState('')
   const [pin, setPin] = useState('')
   const [loading, setLoading] = useState(false)
@@ -180,12 +196,13 @@ export function LoginForm() {
           </form>
 
           {/* Quick access for demo */}
+          {accesosRapidos.length > 0 && (
           <div className="mt-6 border-t border-border pt-4">
             <p className="mb-3 text-center text-xs text-zinc-500">Acceso rapido (demo)</p>
             <div className="flex flex-wrap justify-center gap-2">
-              {state.usuarios.slice(0, 5).map((user) => (
+              {accesosRapidos.map((user) => (
                 <Button
-                  key={user.id}
+                  key={user.email}
                   type="button"
                   variant="ghost"
                   size="sm"
@@ -200,6 +217,7 @@ export function LoginForm() {
               PINs: Admin=1234, Carlos=2222, Maria=3333, Pedro=4444, Laura=5555
             </p>
           </div>
+          )}
         </CardContent>
       </Card>
     </div>
