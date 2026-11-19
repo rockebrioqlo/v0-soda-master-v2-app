@@ -16,7 +16,7 @@ Estados: **completo** · **a medias** · **roto** · **sin probar**.
 | POS / comandas | `components/pos-page.tsx`, `app/api/ordenes/*`, `app/api/items-orden` | a medias | Orden + ítems en una transacción (#11); allowlist en PATCH de órdenes (A7) | Sin probar |
 | KDS (cocina/bar) | `components/kds-page.tsx`, `components/kds-historial-dialog.tsx`, `app/api/kds/*` | a medias | Polling que se reinicia (A4); B5–B6 | Sin probar |
 | Pagos y cuentas divididas | `components/pagos-page.tsx`, `app/api/pagos`, `app/api/cuentas-persona/*` | a medias | Monto calculado en servidor (A1), atomicidad (A2), historial al eliminar persona (A3), "Mesa desconocida" (A5) | Sin probar |
-| Caja chica | `components/caja-page.tsx`, `app/api/caja/*` | completo | — | Sin probar |
+| Caja chica | `components/caja-page.tsx`, `app/api/caja/*` | a medias | **Efectivo esperado mal calculado en pagos con vuelto** (recibe $10.000 por una cuenta de $7.200: la caja registra +$7.200 y resta el vuelto $2.800, esperado $24.400 en vez de $27.200, sobrante falso de $2.800 al cerrar); se arregla en la sesión 5 (`crearPago`). Sin cuadrar en pagos mixtos o parciales | Producción 19-11-2026, admin: abrir caja con $20.000, venta de $7.200 con descuento del 10 %, cobro en efectivo con $10.000 y cierre; el cierre y el historial funcionan, el arqueo sale con el error indicado |
 | Pérdidas ("perro muerto") | `app/api/perdidas/*` | a medias | Validar monto en `resolverPerdida` (B3); lock en `registrarPerdida` (B2) | Sin probar |
 | Descuentos | `app/api/descuentos`, `app/api/permisos-descuento` | a medias | Prorrateo en pagos parciales encadenados (B4) | Sin probar |
 | Inventario | `components/inventario-page.tsx`, `app/api/inventario/*` | completo | — | Sin probar |
