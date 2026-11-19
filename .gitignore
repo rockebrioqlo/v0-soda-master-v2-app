@@ -15,3 +15,6 @@ node_modules
 tsconfig.tsbuildinfo
 .DS_Store
 .vercel
+
+# Credenciales temporales
+variables.txt
