@@ -66,7 +66,9 @@ La app ya no siembra datos sola al cargar. Las rutas de seed están cerradas por
 
 ## Credenciales de prueba
 
-Sembradas por `/api/seed` (solo para desarrollo; deben cambiarse antes de producción):
+Sembradas por `/api/seed` en una base de desarrollo vacía (solo para desarrollo; deben cambiarse antes de producción). La base Neon actual tiene otros usuarios con otros PINs.
+
+El login necesita `SESION_SECRETO` en `.env.local` (ver `.env.example`). Tras 3 PIN errados el usuario queda bloqueado 5 minutos; un admin lo desbloquea con `POST /api/auth/desbloquear`.
 
 | Usuario | Email | PIN | Rol |
 |---|---|---|---|

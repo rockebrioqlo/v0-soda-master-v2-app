@@ -26,7 +26,10 @@ Navegador (tablet/PC del local)
 | `components/*-tab.tsx` | Pestañas de Inventario y Finanzas (proveedores, compras, márgenes, activos, empleados, gastos) |
 | `components/ui/` | shadcn/ui |
 | `lib/db.ts` | Única capa de datos: objeto `db` con todas las consultas + migraciones `ensure*Schema()` |
-| `lib/app-context.tsx` | Estado global (reducer), llamadas a la API, sesión en `sessionStorage`, polling de órdenes/notificaciones |
+| `lib/app-context.tsx` | Estado global (reducer), llamadas a la API, polling de órdenes/notificaciones; restaura la sesión con `GET /api/auth/sesion` |
+| `proxy.ts` | Proxy de Next 16 (antes middleware): exige sesión y rol en `/api/**` |
+| `lib/sesion.ts`, `lib/permisos-api.ts` | Sesión en servidor (cookie firmada + tabla `sesiones`) y tabla de permisos por ruta |
+| `lib/intentos-login.ts`, `lib/autorizacion-admin.ts` | Límite de PIN fallidos y token firmado de autorización de admin |
 | `lib/types.ts` | Tipos de dominio |
 | `lib/helpers.ts`, `lib/fechas.ts`, `lib/server-time.ts`, `lib/use-server-clock.ts` | Formato CLP/fechas y reloj sincronizado con el servidor |
 | `lib/print-ticket.ts` | Generación de tickets para imprimir desde el navegador |
@@ -35,15 +38,23 @@ Navegador (tablet/PC del local)
 
 ## Flujo de datos
 
-1. Al cargar, `AppProvider` restaura la sesión desde `sessionStorage` (`soda_master_session`) y pide los datos iniciales a la API.
+1. Al cargar, `AppProvider` pregunta `GET /api/auth/sesion` (la cookie httpOnly viaja sola). Si hay sesión, pide los datos iniciales a la API; si no, muestra el login. `sessionStorage` solo recuerda la página abierta.
 2. Cada acción (abrir mesa, agregar ítem, cobrar) llama a una ruta de `app/api/**`, que delega en `db.*` y devuelve JSON; el contexto actualiza el estado con `dispatch`.
 3. La sincronización entre dispositivos es por **polling**: órdenes/KDS cada ~7 s y notificaciones cada ~10 s mientras la pestaña está visible.
 
 ## Autenticación
 
-- Login con email + PIN (`/api/auth/login` → `db.verificarPIN`, bcrypt).
-- La respuesta es el usuario; el cliente lo guarda en `sessionStorage`. **No hay cookie, token ni sesión en el servidor.**
-- Los permisos por rol (`admin`, `cajero`, `mesero`, `cocina`, `bar` + `roles_adicionales` + `permisos_especiales` temporales) se aplican en la interfaz. Las rutas de API no verifican quién llama.
+Desde la sesión 3 la sesión vive en el servidor:
+
+- **Login** (`POST /api/auth/login`): email + PIN (`db.verificarPIN`, bcrypt; rechaza usuarios con `activo = false`). Crea una fila en `soda_master.sesiones` con el hash SHA-256 de un token aleatorio y deja la cookie `sm_sesion` = `<token>.<HMAC>` (`HttpOnly`, `SameSite=Lax`, `Secure` en producción, 12 h). El HMAC usa `SESION_SECRETO`; sin esa variable el login falla cerrado.
+- **Proxy** (`proxy.ts`, matcher `/api/:path*`, corre en Node): ruta pública → pasa; si no, valida firma + sesión vigente en la base + usuario activo (401) y el rol contra `lib/permisos-api.ts` (403). Lo que no está en la tabla queda solo admin.
+- **Rutas**: las que necesitan saber quién actúa (caja, compras, gastos, descuentos, mermas, ajustes de stock, permisos, pérdidas, notificaciones, abrir orden, desbloquear) llaman `requireSesion()`, que vuelve a validar por su cuenta (la guía de Next 16 pide no dejar toda la autorización en el proxy) y toman el usuario de ahí, nunca del body.
+- **Roles efectivos** = rol principal + `roles_adicionales` (`administrador` = `admin`). El permiso temporal `apertura_mesa` sigue en `db.crearOrden`, con el usuario de la sesión.
+- **Autorización de admin en otro dispositivo**: `POST /api/auth/verificar-pin` (exige sesión) entrega, si el PIN es de un admin, un token firmado de 5 min. Descuentos sobre el límite y cortesías lo exigen; un `autorizado_por` con un id ya no sirve.
+- **Intentos fallidos** (`lib/intentos-login.ts`, tabla `intentos_login`): por usuario 3 fallos → 5 min, duplicándose hasta 1 h; por IP 20 fallos en 15 min → 15 min. La IP sale de `x-forwarded-for` (en Vercel la pone la plataforma; si se aloja en otro lado detrás de un proxy propio, hay que asegurarse de que ese header no lo controle el cliente). Un admin desbloquea con `POST /api/auth/desbloquear`.
+- **Logout** (`POST /api/auth/logout`) revoca la fila y borra la cookie. Desactivar un usuario revoca todas sus sesiones.
+- **Públicas**: `auth/login`, `auth/logout`, `auth/sesion`, `auth/accesos-rapidos` (nombre y email; se apaga con `ACCESOS_RAPIDOS=false`), `menu-publico` (campos mínimos del menú QR), `hora` y `seed` (cerrada por `PERMITIR_SEED`).
+- En el navegador, cualquier 401 de `/api/**` vuelve al login (envoltorio de `fetch` en `AppProvider`).
 
 ## Base de datos
 
@@ -68,4 +79,4 @@ Vercel, enlazado a v0 (`vercel.json`: `pnpm install --frozen-lockfile`, `next bu
 | SPA de una ruta con estado global | Heredado; simple para tablets del local, pero sin URLs por módulo |
 | Polling en vez de WebSockets | Vercel serverless no mantiene conexiones; polling ligero fue suficiente (bug #28 del doc heredado) |
 | Migraciones dentro de `lib/db.ts` | Permitió evolucionar el esquema desde v0 sin herramienta de migraciones; a futuro conviene un script versionado |
-| Sesión en `sessionStorage` | Solución temporal de la etapa de pruebas; debe reemplazarse por sesión en servidor (ROADMAP sesión 3) |
+| Sesión en la base + cookie firmada (no JWT) | Un JWT no se puede invalidar al hacer logout o desactivar a alguien, y igual habría que ir a la base para saber si el usuario sigue activo. Firma con `node:crypto`, sin dependencias nuevas (sesión 3) |

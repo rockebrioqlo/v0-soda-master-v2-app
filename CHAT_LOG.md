@@ -85,3 +85,31 @@
   - Usuario: probar en local y autorizar el push y el merge a `main` (hasta el merge, producción sigue con las rutas abiertas).
   - Anotado en ROADMAP P3: primer admin en base de producción vacía sin PINs demo; el seed en producción solo desde local.
   - Siguiente sesión: ROADMAP sesión 3 (Opus 5.5), login real con sesión en servidor.
+
+## Login real con sesión en servidor (R1, #10, C3) | 19-11-2026 | sesión 3
+- Modelo usado: Opus 5.5
+- Qué se pidió: sesión en servidor al hacer login, proxy de Next 16 que exija sesión y rol en `app/api/**`, rutas que tomen el usuario de la sesión y no del body, rechazar usuarios desactivados, límite de PIN fallidos, logout que invalide la cookie, `SESION_SECRETO` en `.env.example`. Decisiones del usuario en Fase 1: autorización firmada de admin de 5 min, 12 h de sesión, bloqueo que se duplica hasta 1 h, GET público para el menú QR, endpoint de desbloqueo solo admin, accesos rápidos visibles (anotar `ACCESOS_RAPIDOS=false` en P3). Rama `fix/login-servidor` desde `main`.
+- Qué se hizo (archivos tocados):
+  - Nuevos: `proxy.ts`, `lib/sesion.ts`, `lib/permisos-api.ts`, `lib/intentos-login.ts`, `lib/autorizacion-admin.ts`, `app/api/auth/{logout,sesion,accesos-rapidos,desbloquear}/route.ts`, `app/api/menu-publico/route.ts`.
+  - `lib/db.ts`: `ensureSesionesSchema()` (tablas `sesiones` e `intentos_login`, idempotente), funciones de sesión e intentos (el contador es un solo `INSERT … ON CONFLICT`, atómico), `verificarPIN` con comparación de relleno para emails inexistentes.
+  - `app/api/auth/login` y `verificar-pin`: zod, límite de intentos, cookie de sesión / token de autorización de admin.
+  - Usuario desde la sesión: `caja`, `caja/cerrar`, `caja/movimiento`, `compras`, `gastos`, `descuentos`, `mermas`, `mermas/[id]`, `productos/[id]`, `ingredientes/[id]`, `permisos-descuento`, `permisos-especiales`, `perdidas`, `notificaciones`, `ordenes` POST. `usuarios/[id]`: desactivar revoca sesiones.
+  - Cliente: `lib/app-context.tsx` (sesión con `GET /api/auth/sesion`, datos después del login, logout al servidor, 401 → login), `components/login-form.tsx` (accesos rápidos desde el endpoint público), `components/pos-page.tsx` y `components/mermas-page.tsx` (envían `autorizacion`), `app/menu/page.tsx` (usa `/api/menu-publico`).
+  - `.env.example` (`SESION_SECRETO`, `ACCESOS_RAPIDOS`), `.env.local` (secreto local generado, no se imprimió), `README.md`, `ARQUITECTURA.md`, `ESTADO_MODULOS.md`, `ROADMAP.md`. Commit aparte con el cambio de `AGENTS.md` del usuario.
+- Pruebas (base Neon real, sin borrar ni sembrar):
+  - Los PINs de demo (1234, 2222…) no corresponden a los 6 usuarios reales, y sin los PINs no se probó un login correcto con PIN. Para probar roles se crearon sesiones directo en la tabla nueva `sesiones` (firmadas con el secreto local), revocadas al terminar.
+  - 62 casos OK contra `next start` en el puerto 3001: sin sesión → 401; rol sin permiso → 403; rol correcto → 200; `usuario_id` de admin en el body → 403; autorización vencida, alterada o de un no-admin → 403, y una válida pasa el control; usuario desactivado → 401 y sesiones revocadas; PIN errado ×3 → 429 (5 min, segundo bloqueo 10 min); 20 fallos por IP → 429; desbloqueo por admin; logout revoca.
+  - Usuario desactivado para la prueba: **Test** (mesero), reactivado al terminar (verificado `activo = true`).
+  - Navegador: login sin sesión solo pide `auth/sesion` y `auth/accesos-rapidos`; con sesión restaurada carga mesas como "Test (Mesero)"; Salir revoca y vuelve al login; menú QR carga con `/api/menu-publico`.
+  - Quedaron filas de prueba en las tablas nuevas: 7 sesiones (todas revocadas) y 27 contadores en `intentos_login` (emails `…sesion3@invalido.test`, IPs de documentación `203.0.113.x`, y el de Test), todos en 0 y sin bloqueo. No se tocó ninguna tabla del negocio, salvo desactivar y reactivar a Test.
+  - `pnpm build` OK (Next reconoce el Proxy).
+- Decisiones tomadas y por qué:
+  - Sesión en la base con cookie firmada, no JWT: permite revocar al hacer logout o desactivar; firma con `node:crypto` (el proxy de Next 16 corre en Node), sin dependencias nuevas.
+  - Doble control: el proxy filtra todo `/api/**` y las rutas sensibles revalidan con `requireSesion()`, como pide la guía de Next 16. Lo que no está en la tabla queda solo admin.
+  - El permiso por rol usa rol principal + `roles_adicionales`; la regla de descuentos (`permisos_descuento` por rol principal) no se cambió.
+  - `/api/seed` sigue pública (cerrada por `PERMITIR_SEED`) para poder inicializar una base sin usuarios.
+  - Los campos viejos del body (`usuario_id`, `registrado_por`, `otorgado_por`…) que aún mandan algunas pantallas se ignoran en el servidor; limpiarlos en el cliente queda como tarea menor.
+- Pendiente / siguiente sesión:
+  - **Usuario: cargar `SESION_SECRETO` en Vercel (Production y Preview) antes del merge**, con un valor nuevo distinto del local. Sin él, producción queda sin login.
+  - Usuario: probar en local el login con un PIN real (incluido un descuento con autorización de admin) y autorizar push y merge.
+  - Pendientes anotados: aviso de bloqueo y botón de desbloqueo en Usuarios + límite general de la API (sesión 4); `ACCESOS_RAPIDOS=false` antes de producción con el cliente (P3); `GET /api/usuarios` devuelve emails a todos los roles (revisar en el bloque D, datos personales); `PATCH /api/notificaciones/[id]` no revisa que la notificación sea del usuario.
