@@ -11,7 +11,7 @@ Estados: **completo** · **a medias** · **roto** · **sin probar**.
 | Roles y permisos | `lib/app-context.tsx`, `components/bottom-nav.tsx`, `app/api/permisos-*` | 🔴 roto (seguridad) | Validar rol en cada ruta de API | Revisión de código: el filtro por rol es solo de pantalla |
 | Usuarios | `components/usuarios-page.tsx`, `app/api/usuarios/*` | a medias | Proteger edición de usuarios y PINs | Sin probar |
 | Dashboard | `components/dashboard-page.tsx` | completo | — | Sin probar |
-| Mesas | `components/mesas-page.tsx`, `app/api/mesas/*` | completo | Nombre personalizado de mesa (#23) | Sin probar |
+| Mesas | `components/mesas-page.tsx`, `app/api/mesas/*` | completo | Nombre personalizado de mesa (#23). Permisos por usuario para crear/borrar mesas (sesión 29) | Sesión 3: crear y borrar mesas solo admin (servidor 403 a otros roles; botones ocultos a no-admin). Navegador: el mesero no ve "Nueva Mesa" ni borrar; el admin sí |
 | POS / comandas | `components/pos-page.tsx`, `app/api/ordenes/*`, `app/api/items-orden` | a medias | Orden + ítems en una transacción (#11); allowlist en PATCH de órdenes (A7) | Sin probar |
 | KDS (cocina/bar) | `components/kds-page.tsx`, `components/kds-historial-dialog.tsx`, `app/api/kds/*` | a medias | Polling que se reinicia (A4); B5–B6 | Sin probar |
 | Pagos y cuentas divididas | `components/pagos-page.tsx`, `app/api/pagos`, `app/api/cuentas-persona/*` | a medias | Monto calculado en servidor (A1), atomicidad (A2), historial al eliminar persona (A3), "Mesa desconocida" (A5) | Sin probar |

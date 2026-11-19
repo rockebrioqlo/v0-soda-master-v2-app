@@ -167,6 +167,23 @@ Regla: **1 tarea atómica por sesión**, `pnpm build` antes de cerrar, sin `git 
 6. **Migración segura de datos existentes:** factor 1 y rendimiento 100% por defecto, para que los insumos actuales sigan funcionando igual.
 7. `crearCompra` hoy lee stock y costo y luego actualiza en pasos separados; dejar esa actualización atómica de paso (R7).
 
+### Sesión pedida: permisos por usuario con selector de menús y funciones
+
+| Sesión | Tarea | Modelo sugerido |
+|---|---|---|
+| 29 | Permisos por usuario: el admin marca con ticks qué menús ve y qué acciones operativas puede hacer cada persona (detalle abajo). Pedida por el usuario en la sesión 3; el orden respecto de los bugs lo decide el usuario. | Opus 5.5 |
+
+**Alcance de la sesión 29.** Hoy los menús se ocultan por rol (`permisosModulo` en `lib/app-context.tsx`), más `roles_adicionales` y `permisos_especiales` temporales, y el servidor revisa por rol con la tabla de `lib/permisos-api.ts` (sesión 3). No hay selector por persona.
+
+1. **Solo el admin crea cuentas y edita permisos** (crear usuarios ya es solo admin desde la sesión 3).
+2. **Catálogo de permisos:** menús (Inicio, Mesas, POS, KDS, Pagos, Caja, Mermas, Reportes, Inventario, Finanzas, Usuarios, Configuración) y acciones operativas (crear/borrar mesas, cobrar, aplicar descuentos, autorizar descuentos, anular ítems o comandas, registrar mermas, abrir/cerrar caja, ver costos…). Definir la lista final con el usuario en la Fase 1.
+3. **Por usuario:** columna o tabla de permisos (ej. `usuarios.permisos TEXT[]` o `usuario_permisos`), con migración idempotente que cargue a cada usuario actual lo que hoy le da su rol, para que nadie pierda acceso.
+4. **Pantalla de Usuarios:** selector con ticks agrupados (menús / acciones), con botón "restablecer según rol".
+5. **Interfaz:** el menú lateral, la navegación y los botones dentro de cada pantalla muestran solo lo marcado (ej. "Nueva Mesa" y borrar mesa; en la sesión 3 quedaron visibles solo para admin como solución provisoria).
+6. **Servidor:** `proxy.ts` y `requireSesion()` revisan el permiso de la acción (la tabla de `lib/permisos-api.ts` pasa de "ruta → roles" a "ruta → permiso"); los permisos se leen frescos de la base en cada petición, igual que el rol hoy.
+7. **Decisión pendiente para la Fase 1:** qué pasa con `roles_adicionales` y `permisos_especiales` temporales (por ejemplo `apertura_mesa`): reemplazarlos por los ticks, o mantener los temporales como permiso con vencimiento encima de los ticks.
+8. Probar con más de un caso: usuario sin un menú no lo ve ni puede llamar su API (403); usuario al que se le agrega un permiso lo obtiene sin volver a ingresar; admin no puede quitarse a sí mismo el permiso de Usuarios.
+
 ### Bloque B — Bugs importantes
 
 | Sesión | Tarea | Modelo sugerido | Resuelve |

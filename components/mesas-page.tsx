@@ -38,7 +38,9 @@ export function MesasPage() {
   const { mesas, comandas, usuarioActual } = state
 
   const esAdmin =
-    !!usuarioActual && ['administrador', 'admin'].includes(usuarioActual.rol)
+    !!usuarioActual &&
+    (['administrador', 'admin'].includes(usuarioActual.rol) ||
+      (usuarioActual.roles_adicionales || []).some((r) => r === 'admin' || r === 'administrador'))
 
   const [showDialog, setShowDialog] = useState(false)
   const [editingMesa, setEditingMesa] = useState<Mesa | null>(null)
@@ -197,10 +199,14 @@ export function MesasPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold text-foreground">Gestion de Mesas</h1>
-        <Button onClick={handleOpenNew} className="bg-amber-500 text-zinc-900 hover:bg-amber-400">
-          <Plus className="mr-2 h-4 w-4" />
-          Nueva Mesa
-        </Button>
+        {/* Crear y borrar mesas es solo admin (el servidor responde 403 a
+            otros roles desde la sesión 3), así que no se muestra a los demás. */}
+        {esAdmin && (
+          <Button onClick={handleOpenNew} className="bg-amber-500 text-zinc-900 hover:bg-amber-400">
+            <Plus className="mr-2 h-4 w-4" />
+            Nueva Mesa
+          </Button>
+        )}
       </div>
 
         {/* Legend */}
@@ -307,14 +313,16 @@ export function MesasPage() {
                     >
                       <Edit className="h-4 w-4" />
                     </Button>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-8 w-8 text-red-500 hover:text-red-400"
-                      onClick={() => handleDelete(mesa.id)}
-                    >
-                      <Trash2 className="h-4 w-4" />
-                    </Button>
+                    {esAdmin && (
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-8 w-8 text-red-500 hover:text-red-400"
+                        onClick={() => handleDelete(mesa.id)}
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    )}
                   </div>
                 </CardContent>
               </Card>
