@@ -594,7 +594,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         if (cancelled) return
         if (res.status === 401) {
           console.warn('[auth] Sesión cerrada por el servidor', { id: usuarioActualId })
-          showToast('Tu sesión se cerró. Vuelve a ingresar.', 'error')
+          showToast('Tu sesión se cerró (venció o ingresaste desde otro dispositivo). Vuelve a ingresar.', 'error')
           logout()
         }
       } catch {
@@ -631,7 +631,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         } catch {}
         if (ruta.startsWith('/api/') && !ruta.startsWith('/api/auth/')) {
           sesionActivaRef.current = false
-          showToast('Tu sesión expiró. Vuelve a ingresar.', 'error')
+          showToast('Tu sesión se cerró (venció o ingresaste desde otro dispositivo). Vuelve a ingresar.', 'error')
           logoutRef.current()
         }
       }

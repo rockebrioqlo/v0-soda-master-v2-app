@@ -1157,7 +1157,15 @@ export const db = {
   async crearSesion(usuarioId: string, tokenHash: string, expira: Date): Promise<void> {
     await ensureSesionesSchema()
     const sql = getSql()
+    // Una sola sesión por usuario: el login revoca las anteriores y crea la
+    // nueva en un solo statement (si le roban una tablet, el admin entra
+    // desde otro equipo y la anterior queda cerrada).
     await sql`
+      WITH revocadas AS (
+        UPDATE soda_master.sesiones
+        SET revocada_at = now()
+        WHERE usuario_id = ${usuarioId}::uuid AND revocada_at IS NULL
+      )
       INSERT INTO soda_master.sesiones (token_hash, usuario_id, expira)
       VALUES (${tokenHash}, ${usuarioId}::uuid, ${expira.toISOString()}::timestamptz)
     `
