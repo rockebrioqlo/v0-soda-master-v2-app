@@ -46,6 +46,13 @@ Reglas para cualquier agente (Claude Code, v0, Cursor) que trabaje en este repos
 - **Nunca imprimir secretos** (`DATABASE_URL`, tokens) en el chat, en `CHAT_LOG.md` ni en commits.
 - Al cerrar cada sesión: seguir la sección "Cierre de sesión".
 
+## Ramas
+
+- Durante el desarrollo se trabaja directo en `main`.
+- No se crean ramas salvo que el usuario lo pida.
+- Al terminar cada sesión, commit local.
+- `git push` a `main` solo con autorización del usuario (cada push a `main` despliega en producción en Vercel).
+
 ## Cierre de sesión
 
 Al terminar una sesión: deja el commit local, actualiza CHAT_LOG.md, ESTADO_MODULOS.md y ROADMAP.md, entrega el reporte final y detente. No generes el prompt de la sesión siguiente hasta que el usuario revise, depure y lo pida explícitamente.
