@@ -251,7 +251,7 @@ Boleta electrónica:
 
 | Sesión | Tarea | Modelo sugerido | Resuelve |
 |---|---|---|---|
-| 27 | **Localización configurable por local:** moneda (CLP sin decimales / MXN con decimales), formato de fecha, tasa de IVA (ya existe `tasa_impuesto`; revisar valores por país) e identificador fiscal (RUT con Módulo 11 / RFC). Reemplazar los usos fijos de `es-CL` por la configuración del local. | Sonnet 5.5 | K4 |
+| 27 | **Localización configurable por local:** moneda (CLP sin decimales / MXN con decimales), formato de fecha, tasa de IVA (ya existe `tasa_impuesto`; revisar valores por país) e identificador fiscal (RUT con Módulo 11 / RFC). Reemplazar los usos fijos de `es-CL` por la configuración del local. **Textos del negocio según el país del local, no solo moneda y formato.** Ejemplo pedido por el usuario: el botón y los mensajes de "Registrar perro muerto" (pérdida por cliente que se fue sin pagar) deben cambiar según el país seleccionado en la configuración del local: Chile → "perro muerto"; México → "cuenta no pagada" / "se fue sin pagar"; por defecto, un texto neutro "Registrar cuenta impaga". Hacer un inventario de otros chilenismos en la interfaz (textos, toasts, boleta) y llevarlos al mismo mecanismo de textos por país. | Sonnet 5.5 | K4 |
 | — | **Facturación CFDI (México):** módulo local futuro, fuera de alcance por ahora. Solo queda anotado. | — | — |
 
 ### Bloque G — SaaS
