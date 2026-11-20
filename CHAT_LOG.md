@@ -172,6 +172,6 @@
   - `monto_esperado` obligatorio: la pantalla desactualizada (otro cajero cambió el descuento) recibe 409 con el monto del servidor en vez de cobrar mal.
 - Efectos en los datos de prueba (todo marcado "prueba sesión 5"): 4 corridas de la batería y la prueba en el navegador dejaron 49 órdenes marcadas (pagadas o canceladas) y 5 cajas abiertas y cerradas (una con diferencia −$3.500 por un error del propio script, y una que se cerró en vacío al limpiar una corrida abortada), con sus pagos y movimientos de caja. Se restituyó el stock de Coleslaw (49) y la Mesa 5 quedó libre. Un Ensalada Verde del POS descontó ingredientes de receta (no se restituyó). Quedaron 0 cajas abiertas y 0 sesiones activas de prueba.
 - Pendiente / siguiente sesión:
-  - **Usuario:** revisar, decidir el IVA (ver arriba), autorizar el push. Si hay datos viejos mal registrados en caja (por el error del vuelto) no se corrigieron.
+  - **Usuario:** IVA confirmado como incluido en el precio (19-11-2026); falta revisar y autorizar el push. Si hay datos viejos mal registrados en caja (por el error del vuelto) no se corrigieron.
   - F7: cargar la configuración al iniciar; F8: precio de ítems calculado por el servidor (sesión 6); `resolverPerdida` sigue aceptando un monto del cliente (B3, sesión 9).
   - Sesión 6 (R3, A7, A6, C4) según el ROADMAP; el prompt se entrega cuando el usuario lo pida.

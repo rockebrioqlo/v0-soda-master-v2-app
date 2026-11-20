@@ -268,5 +268,5 @@ Tareas que se dejan a propósito para el final, por decisión del usuario.
 - Borrar `variables.txt` y, recomendado, rotar la contraseña de Neon.
 - Confirmar si el cliente de prueba sigue usando la app en producción (afecta cuándo se cierran las rutas abiertas). Las rutas de seed quedan cerradas en cuanto se haga merge de la sesión 2 a `main`.
 - Decidir si el objetivo es un POS para un local o un SaaS multi-tenant.
-- **Decidir el IVA en la boleta (sesión 5):** hoy los precios de la carta se tratan como IVA incluido (el total es el precio menos el descuento, que es lo que mostraba la boleta). Si el IVA debe sumarse sobre el precio, se cambia con `precios_incluyen_iva = false` en `configuracion` (sin código). Ver F7.
+- ~~**Decidir el IVA en la boleta (sesión 5)**~~ ✅ **Decidido por el usuario (19-11-2026): precios con IVA incluido.** Hoy los precios de la carta se tratan como IVA incluido (el total es el precio menos el descuento, que es lo que mostraba la boleta). Si el IVA debe sumarse sobre el precio, se cambia con `precios_incluyen_iva = false` en `configuracion` (sin código). Ver F7.
 - **Revisar y autorizar el push de la sesión 5** (cada push a `main` despliega en producción).
