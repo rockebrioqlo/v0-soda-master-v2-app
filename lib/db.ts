@@ -1,6 +1,16 @@
 import { neon, NeonQueryFunction } from '@neondatabase/serverless'
 import bcryptjs from 'bcryptjs'
 import type { Usuario, Mesa, Producto, Orden, ItemOrden, Pago, Inventario } from './types'
+import {
+  calcularCobro,
+  propinaPermitida,
+  repartirCuotas,
+  ERRORES_COBRO,
+  type ConfigCobro,
+  type DescuentoCobro,
+  type PropinaCobro,
+  type TipoDescuentoCobro,
+} from './cobro'
 
 // Lazy initialization to avoid build-time errors
 let _sql: NeonQueryFunction<false, false> | null = null
@@ -297,6 +307,70 @@ async function ensureOrdenEstadoSchema(): Promise<void> {
     }
   }
   _ordenEstadoReady = true
+}
+
+let _pagoSchemaReady = false
+
+/**
+ * Cobro seguro (sesión 5). Idempotente:
+ *  - `pagos.cobrado_por` / `cobrado_por_nombre`: quién cobró (sale de la sesión).
+ *  - función `soda_master.assert_cobro(cond, codigo)`: aborta la transacción
+ *    con SQLSTATE `SM409` y el código como mensaje. El driver HTTP de Neon no
+ *    permite lógica entre los statements de `sql.transaction([...])`, así que
+ *    las verificaciones del cobro (orden ya pagada, ítems ya reclamados,
+ *    caja cerrada…) viven dentro del propio SQL.
+ */
+async function ensurePagoSchema(): Promise<void> {
+  if (_pagoSchemaReady) return
+  const sql = getSql()
+  await sql`ALTER TABLE soda_master.pagos ADD COLUMN IF NOT EXISTS cobrado_por UUID NULL`
+  await sql`ALTER TABLE soda_master.pagos ADD COLUMN IF NOT EXISTS cobrado_por_nombre TEXT NULL`
+  try {
+    await sql`
+      CREATE OR REPLACE FUNCTION soda_master.assert_cobro(cond boolean, codigo text)
+      RETURNS boolean LANGUAGE plpgsql AS $fn$
+      BEGIN
+        IF cond IS NOT TRUE THEN
+          RAISE EXCEPTION '%', codigo USING ERRCODE = 'SM409';
+        END IF;
+        RETURN TRUE;
+      END
+      $fn$
+    `
+  } catch (err) {
+    // Dos instancias creándola a la vez: si ya existe, está bien.
+    const rows = (await sql`
+      SELECT 1 AS ok FROM pg_proc p
+      JOIN pg_namespace n ON n.oid = p.pronamespace
+      WHERE n.nspname = 'soda_master' AND p.proname = 'assert_cobro'
+    `) as any[]
+    if (rows.length === 0) throw err
+  }
+  _pagoSchemaReady = true
+}
+
+/** Error de negocio de ítems de orden (candado de cobro): la ruta usa `status`. */
+export class ErrorItemOrden extends Error {
+  codigo: string
+  status: number
+  constructor(codigo: string, status: number, mensaje: string) {
+    super(mensaje)
+    this.name = 'ErrorItemOrden'
+    this.codigo = codigo
+    this.status = status
+  }
+}
+
+/** Error de negocio del cobro: la ruta lo traduce a su estado HTTP. */
+export class ErrorCobro extends Error {
+  codigo: string
+  detalle?: Record<string, unknown>
+  constructor(codigo: string, mensaje?: string, detalle?: Record<string, unknown>) {
+    super(mensaje || codigo)
+    this.name = 'ErrorCobro'
+    this.codigo = codigo
+    this.detalle = detalle
+  }
 }
 
 let _cuentasPersonaReady = false
@@ -1846,7 +1920,13 @@ export const db = {
                  WHERE cp.orden_id = o.id
                ),
                '[]'::json
-             ) AS cuentas_persona
+             ) AS cuentas_persona,
+             (SELECT d.tipo FROM soda_master.descuentos d
+               WHERE d.orden_id = o.id ORDER BY d.created_at DESC LIMIT 1) AS descuento_tipo,
+             (SELECT d.valor FROM soda_master.descuentos d
+               WHERE d.orden_id = o.id ORDER BY d.created_at DESC LIMIT 1) AS descuento_valor,
+             (SELECT d.motivo FROM soda_master.descuentos d
+               WHERE d.orden_id = o.id ORDER BY d.created_at DESC LIMIT 1) AS descuento_motivo
       FROM soda_master.ordenes o
       LEFT JOIN soda_master.items_orden i ON o.id = i.orden_id
       LEFT JOIN soda_master.productos p ON i.producto_id = p.id
@@ -2193,9 +2273,46 @@ export const db = {
   async actualizarItemOrden(
     id: string,
     updates: Partial<ItemOrden> & { modificadores?: unknown; precio_unitario?: number },
+    opts: { esAdmin?: boolean } = {},
   ) {
     await ensureItemEstadoSchema()
+    await ensureItemPagoSchema()
     const sql = getSql()
+
+    // Candado de cobro (sesión 5): lo que se cobra sale de estos campos, así
+    // que un ítem ya pagado no se toca (409) y solo el admin cambia el precio
+    // (403). El estado de cocina (estado_item) sí puede avanzar en un ítem
+    // pagado: pagar por adelantado no frena la preparación.
+    const tocaMonto =
+      updates.cantidad !== undefined ||
+      updates.precio_unitario !== undefined ||
+      updates.modificadores !== undefined ||
+      updates.notas_especiales !== undefined
+    if (tocaMonto) {
+      const actual = (await sql`
+        SELECT pagado, precio_unitario FROM soda_master.items_orden WHERE id = ${id}::uuid
+      `) as any[]
+      if (!actual[0]) throw new ErrorItemOrden('ITEM_NO_ENCONTRADO', 404, 'El ítem no existe.')
+      if (actual[0].pagado === true) {
+        throw new ErrorItemOrden(
+          'ITEM_PAGADO',
+          409,
+          'Este ítem ya fue pagado y no se puede modificar.',
+        )
+      }
+      if (
+        updates.precio_unitario !== undefined &&
+        updates.precio_unitario !== null &&
+        Number(updates.precio_unitario) !== Number(actual[0].precio_unitario) &&
+        !opts.esAdmin
+      ) {
+        throw new ErrorItemOrden(
+          'PRECIO_SOLO_ADMIN',
+          403,
+          'Solo el administrador puede cambiar el precio de un ítem.',
+        )
+      }
+    }
 
     // `modificadores` es una columna jsonb. La actualizamos por separado
     // para evitar un desajuste de tipos text/jsonb dentro de COALESCE.
@@ -2206,7 +2323,7 @@ export const db = {
       await sql`
         UPDATE soda_master.items_orden
         SET modificadores = ${modificadoresJson}::jsonb
-        WHERE id = ${id}
+        WHERE id = ${id} AND pagado = FALSE
       `
     }
 
@@ -2216,10 +2333,14 @@ export const db = {
           estado_item = COALESCE(${updates.estado_item}, estado_item),
           notas_especiales = COALESCE(${updates.notas_especiales}, notas_especiales),
           precio_unitario = COALESCE(${updates.precio_unitario}, precio_unitario)
-      WHERE id = ${id}
+      WHERE id = ${id} AND (pagado = FALSE OR ${!tocaMonto})
       RETURNING *
     `
     const itemActualizado = result[0] as ItemOrden | undefined
+    if (tocaMonto && !itemActualizado) {
+      // Lo pagó otro cobro entre la lectura y la escritura.
+      throw new ErrorItemOrden('ITEM_PAGADO', 409, 'Este ítem ya fue pagado y no se puede modificar.')
+    }
 
     // Sincronización del estado de la orden con el de sus items. Esto evita
     // carreras del lado del cliente cuando el mesero marca múltiples items
@@ -2261,205 +2382,346 @@ export const db = {
   },
 
   async eliminarItemOrden(id: string) {
+    await ensureItemPagoSchema()
     const sql = getSql()
-    await sql`DELETE FROM soda_master.items_orden WHERE id = ${id}`
+    // Un ítem pagado es parte del registro de un cobro: no se borra.
+    const borrados = (await sql`
+      DELETE FROM soda_master.items_orden WHERE id = ${id} AND pagado = FALSE RETURNING id
+    `) as any[]
+    if (borrados.length === 0) {
+      const existe = (await sql`
+        SELECT pagado FROM soda_master.items_orden WHERE id = ${id}
+      `) as any[]
+      if (existe[0]?.pagado === true) {
+        throw new ErrorItemOrden('ITEM_PAGADO', 409, 'Este ítem ya fue pagado y no se puede eliminar.')
+      }
+    }
   },
 
-  // Pagos
+  // Pagos (sesión 5: cobro seguro, R2/A1/A5)
   //
-  // crearPago acepta opcionalmente `item_orden_ids: string[]` para soportar
-  // PAGOS PARCIALES por items (caso: un cliente se va antes y paga sólo lo
-  // que él consumió, mientras el resto sigue en la mesa). Cuando se entrega
-  // esa lista, sólo esos items se marcan como pagados; la orden completa
-  // pasa a `estado='pagado'` cuando todos sus items lo están. Cuando NO se
-  // entrega la lista, mantiene el comportamiento clásico de "pagar todo lo
-  // que falte por pagar de la orden".
-  async crearPago(pago: any) {
+  // El servidor calcula TODO a partir de la base: ítems, descuento de la
+  // orden y configuración (IVA, propinas). Del navegador solo toma qué se
+  // cobra (ítems / cantidades), la propina elegida (validada), el método,
+  // el efectivo recibido y `monto_esperado` (lo que muestra la pantalla; si
+  // no coincide con el cálculo del servidor se rechaza con 409).
+  //
+  // Todo el cobro va en UNA transacción (`sql.transaction`): bloqueo de la
+  // orden, verificación de que no cambió desde la lectura, reclamo de los
+  // ítems (UPDATE … WHERE pagado = FALSE), pago, cierre de la orden y caja.
+  // Las verificaciones usan `soda_master.assert_cobro`, que aborta todo.
+  async crearPago(input: {
+    orden_id: string
+    metodo: 'efectivo' | 'tarjeta'
+    monto_esperado: number
+    item_orden_ids?: string[]
+    item_partials?: Array<{ id: string; cantidad: number }>
+    propina?: PropinaCobro | null
+    dividido_en?: number
+    efectivo_recibido?: number | null
+    referencia?: string | null
+    usuario: { id: string; nombre: string }
+  }) {
     await ensureItemPagoSchema()
     await ensureOrdenEstadoSchema()
+    await ensureCajaSchema()
+    await ensurePagoSchema()
     const sql = getSql()
-    const ordenId = pago.orden_id ?? pago.ordenId ?? pago.comandaId
-    if (!ordenId) {
-      throw new Error('orden_id requerido')
+    const ordenId = input.orden_id
+    const metodo = input.metodo
+    const divididoEn = Math.max(Math.floor(Number(input.dividido_en) || 1), 1)
+
+    // ── 1) Lectura (fuera de la transacción; la transacción la revalida) ──
+    const [ordenRows, itemRows, descRows, cfgRows] = (await Promise.all([
+      sql`SELECT id, estado FROM soda_master.ordenes WHERE id = ${ordenId}::uuid`,
+      sql`
+        SELECT id, cantidad, precio_unitario, pagado
+        FROM soda_master.items_orden WHERE orden_id = ${ordenId}::uuid
+      `,
+      sql`
+        SELECT tipo, valor FROM soda_master.descuentos
+        WHERE orden_id = ${ordenId}::uuid ORDER BY created_at DESC LIMIT 1
+      `,
+      sql`
+        SELECT clave, valor, tipo FROM soda_master.configuracion
+        WHERE clave IN ('tasa_impuesto','impuesto_habilitado','propinas_habilitadas','precios_incluyen_iva')
+      `,
+    ])) as any[][]
+
+    const orden = ordenRows[0]
+    if (!orden) throw new ErrorCobro('ORDEN_NO_ENCONTRADA')
+    if (orden.estado === 'pagado') throw new ErrorCobro('ORDEN_YA_PAGADA')
+    if (orden.estado === 'cancelado' || orden.estado === 'perdida') {
+      throw new ErrorCobro('ORDEN_NO_COBRABLE')
     }
-    const metodoNormalizado = normalizarMetodoPago(pago.metodo)
-    const monto = Number(pago.monto ?? pago.total ?? 0)
-    const propina = Number(pago.propina ?? 0)
-    const descuento = Number(pago.descuento ?? 0)
-    const divididoEn = Number(pago.dividido_en ?? pago.divididoEn ?? 1) || 1
-    if (!Number.isFinite(monto) || monto <= 0) throw new Error('monto debe ser mayor que 0')
-    if (!Number.isFinite(propina) || propina < 0) throw new Error('propina inválida')
-    if (!Number.isFinite(descuento) || descuento < 0) throw new Error('descuento inválido')
-    if (!Number.isFinite(divididoEn) || divididoEn < 1) throw new Error('dividido_en inválido')
-    const vueltoVal = pago.vuelto !== undefined && pago.vuelto !== null ? Number(pago.vuelto) : null
-    const referencia = pago.referencia ?? null
-    const aprobado = pago.aprobado !== undefined ? !!pago.aprobado : true
 
-    const itemIdsRaw = pago.item_orden_ids ?? pago.itemOrdenIds
-    const itemIds: string[] = Array.isArray(itemIdsRaw)
-      ? itemIdsRaw.filter((x: unknown) => typeof x === 'string' && x.length > 0)
-      : []
+    const items = (itemRows as any[]).map((r) => ({
+      id: String(r.id),
+      cantidad: Number(r.cantidad) || 0,
+      precio: Number(r.precio_unitario) || 0,
+      pagado: r.pagado === true,
+    }))
+    if (items.length === 0) throw new ErrorCobro('SIN_ITEMS')
+    const pendientes = items.filter((i) => !i.pagado)
+    if (pendientes.length === 0) throw new ErrorCobro('ORDEN_YA_PAGADA')
+    const porId = new Map(items.map((i) => [i.id, i]))
 
-    // `item_partials` permite cobrar PARTE de una línea con cantidad > 1
-    // (ej.: hay un item_orden "2x Cerveza" y una persona paga sólo 1).
-    // En ese caso splitteamos la línea: bajamos la cantidad del original
-    // a la cantidad que se paga ahora y clonamos una línea nueva con la
-    // cantidad restante (queda abierta para que la pague otro cliente).
-    // Estructura: [{ id, cantidad }]
-    const itemPartialsRaw = pago.item_partials ?? pago.itemPartials
-    const itemPartials: Array<{ id: string; cantidad: number }> = Array.isArray(itemPartialsRaw)
-      ? itemPartialsRaw
-          .map((p: any) => ({
-            id: typeof p?.id === 'string' ? p.id : '',
-            cantidad: Number(p?.cantidad) || 0,
-          }))
-          .filter((p: { id: string; cantidad: number }) => p.id && p.cantidad > 0)
-      : []
+    const cfg: Record<string, any> = {}
+    for (const r of cfgRows as any[]) cfg[r.clave] = parseConfigValor(r.valor, r.tipo)
+    const config: ConfigCobro = {
+      impuestoHabilitado: cfg.impuesto_habilitado === true,
+      tasaImpuesto: Number(cfg.tasa_impuesto) || 0,
+      propinasHabilitadas: cfg.propinas_habilitadas !== false,
+      preciosIncluyenIva: cfg.precios_incluyen_iva !== false,
+    }
+    const desc = (descRows as any[])[0]
+    const descuentoOrden: DescuentoCobro = desc
+      ? { tipo: desc.tipo as TipoDescuentoCobro, valor: Number(desc.valor) || 0 }
+      : { tipo: null, valor: 0 }
 
-    const esParcial = itemIds.length > 0 || itemPartials.length > 0
+    // ── 2) Qué se cobra ──
+    const idsSel = Array.from(new Set(input.item_orden_ids ?? []))
+    const parcialesSel = new Map<string, number>()
+    for (const p of input.item_partials ?? []) {
+      if (parcialesSel.has(p.id)) throw new ErrorCobro('ITEM_INVALIDO', 'Ítem repetido en item_partials')
+      parcialesSel.set(p.id, p.cantidad)
+    }
+    const esParcial = idsSel.length > 0 || parcialesSel.size > 0
+    const lineasEnteras: string[] = []
+    const cortes: Array<{ id: string; cobrar: number; original: number }> = []
+    const cobrados: Array<{ precio: number; cantidad: number }> = []
 
-    const inserted = await sql`
-      INSERT INTO soda_master.pagos (orden_id, metodo, monto, propina, descuento, dividido_en, vuelto, referencia, aprobado)
-      VALUES (${ordenId}, ${metodoNormalizado}, ${monto}, ${propina}, ${descuento}, ${divididoEn}, ${vueltoVal}, ${referencia}, ${aprobado})
-      RETURNING *
-    `
-    const pagoCreado = mapPago(inserted[0])
-    const pagoId = (inserted[0] as any).id
-
-    if (esParcial) {
-      // 1) Splits: por cada item con cobro parcial, dejamos la línea
-      //    original con la cantidad que se está cobrando (y pagada=TRUE)
-      //    y clonamos una nueva línea con el remanente sin pagar.
-      for (const partial of itemPartials) {
-        const originalRows = (await sql`
-          SELECT id, orden_id, producto_id, cantidad, precio_unitario, modificadores,
-                 notas_especiales, estado_item, pagado, cuenta_persona_id
-          FROM soda_master.items_orden
-          WHERE id = ${partial.id}::uuid AND orden_id = ${ordenId}
-          FOR UPDATE
-        `) as Array<any>
-        const original = originalRows[0]
-        if (!original) continue
-        if (original.pagado === true) continue
-        const cantidadOriginal = Number(original.cantidad) || 0
-        const cantidadCobrar = Math.min(partial.cantidad, cantidadOriginal)
-        if (cantidadCobrar <= 0) continue
-        if (cantidadCobrar >= cantidadOriginal) {
-          // Cobra la línea completa: igual que un item_orden_ids normal.
-          await sql`
-            UPDATE soda_master.items_orden
-            SET pagado = TRUE, pago_id = ${pagoId}::uuid
-            WHERE id = ${original.id}::uuid
-              AND pagado = FALSE
-          `
-          continue
+    if (!esParcial) {
+      for (const i of pendientes) {
+        lineasEnteras.push(i.id)
+        cobrados.push({ precio: i.precio, cantidad: i.cantidad })
+      }
+    } else {
+      for (const id of idsSel) {
+        const it = porId.get(id)
+        if (!it) throw new ErrorCobro('ITEM_INVALIDO')
+        if (it.pagado) throw new ErrorCobro('ITEMS_YA_PAGADOS')
+        if (parcialesSel.has(id)) throw new ErrorCobro('ITEM_INVALIDO', 'Un ítem no puede ir en ambas listas')
+        lineasEnteras.push(id)
+        cobrados.push({ precio: it.precio, cantidad: it.cantidad })
+      }
+      for (const [id, cantidad] of parcialesSel) {
+        const it = porId.get(id)
+        if (!it) throw new ErrorCobro('ITEM_INVALIDO')
+        if (it.pagado) throw new ErrorCobro('ITEMS_YA_PAGADOS')
+        if (cantidad > it.cantidad) {
+          throw new ErrorCobro('ITEM_INVALIDO', 'La cantidad a cobrar supera la de la línea')
         }
-        // Cobra menos de la línea: split en BD. La línea restante hereda
-        // el `cuenta_persona_id` del original (el cliente que se fue ya
-        // pagó lo suyo; el resto sigue siendo de la misma persona que
-        // tenía asignada esa unidad… si quería repartirla a otro, debió
-        // reasignar antes de cobrar).
-        const cantidadRestante = cantidadOriginal - cantidadCobrar
-        await sql`
+        if (cantidad === it.cantidad) {
+          lineasEnteras.push(id)
+        } else {
+          cortes.push({ id, cobrar: cantidad, original: it.cantidad })
+        }
+        cobrados.push({ precio: it.precio, cantidad })
+      }
+    }
+
+    // ── 3) Cálculo del servidor ──
+    const subtotalOrden = items.reduce((s, i) => s + i.precio * i.cantidad, 0)
+    const sinPropina = calcularCobro({
+      items: cobrados,
+      subtotalOrden,
+      descuento: descuentoOrden,
+      config,
+    })
+    if (!propinaPermitida(sinPropina.base, input.propina, config.propinasHabilitadas)) {
+      throw new ErrorCobro('PROPINA_INVALIDA')
+    }
+    const calc = calcularCobro({
+      items: cobrados,
+      subtotalOrden,
+      descuento: descuentoOrden,
+      config,
+      propina: input.propina,
+    })
+    if (Number(input.monto_esperado) !== calc.total) {
+      throw new ErrorCobro('MONTO_DISTINTO', undefined, {
+        monto_servidor: calc.total,
+        monto_recibido: Number(input.monto_esperado),
+        descuento: calc.descuento,
+        impuesto: calc.impuesto,
+        propina: calc.propina,
+        total_a_pagar: calc.totalAPagar,
+      })
+    }
+
+    // ── 4) Efectivo, vuelto y caja ──
+    let vuelto: number | null = null
+    let efectivoRecibido = 0
+    if (metodo === 'efectivo') {
+      const recibido = input.efectivo_recibido
+      if (recibido === undefined || recibido === null) {
+        efectivoRecibido = calc.totalAPagar
+        vuelto = 0
+      } else {
+        if (recibido < calc.totalAPagar) throw new ErrorCobro('EFECTIVO_INSUFICIENTE')
+        efectivoRecibido = recibido
+        vuelto = recibido - calc.totalAPagar
+      }
+    }
+    const mueveCaja = metodo === 'efectivo' && calc.totalAPagar > 0
+
+    // ── 5) Transacción ──
+    const pagoId = crypto.randomUUID()
+    const O = ordenId
+    const consultas: any[] = []
+    // a) bloqueo de la orden: los cobros concurrentes se serializan aquí
+    consultas.push(sql`SELECT id FROM soda_master.ordenes WHERE id = ${O}::uuid FOR UPDATE`)
+    // b) el estado de la orden sigue siendo cobrable
+    consultas.push(sql`
+      SELECT soda_master.assert_cobro(
+        (SELECT COUNT(*) FROM soda_master.ordenes o
+          WHERE o.id = ${O}::uuid AND o.estado NOT IN ('pagado','cancelado','perdida')) = 1,
+        CASE WHEN (SELECT estado FROM soda_master.ordenes WHERE id = ${O}::uuid) = 'pagado'
+             THEN 'ORDEN_YA_PAGADA' ELSE 'ORDEN_CAMBIO' END
+      )
+    `)
+    // c) nada cambió desde la lectura (ítems, precios, descuento)
+    consultas.push(sql`
+      SELECT soda_master.assert_cobro(
+        ABS(COALESCE((SELECT SUM(precio_unitario * cantidad) FROM soda_master.items_orden
+                       WHERE orden_id = ${O}::uuid), 0) - ${subtotalOrden}::numeric) < 0.01
+        AND (SELECT COUNT(*) FROM soda_master.items_orden WHERE orden_id = ${O}::uuid) = ${items.length}::int
+        AND (SELECT COUNT(*) FROM soda_master.items_orden
+              WHERE orden_id = ${O}::uuid AND pagado = FALSE) = ${pendientes.length}::int
+        AND (SELECT tipo FROM soda_master.descuentos WHERE orden_id = ${O}::uuid
+              ORDER BY created_at DESC LIMIT 1) IS NOT DISTINCT FROM ${descuentoOrden.tipo}::text
+        AND COALESCE((SELECT valor FROM soda_master.descuentos WHERE orden_id = ${O}::uuid
+                       ORDER BY created_at DESC LIMIT 1), 0) = ${descuentoOrden.valor}::numeric,
+        'ORDEN_CAMBIO'
+      )
+    `)
+    // d) efectivo: tiene que haber caja abierta (la bloquea mientras dura el cobro)
+    if (mueveCaja) {
+      consultas.push(sql`
+        SELECT soda_master.assert_cobro(
+          (SELECT COUNT(*) FROM (
+            SELECT id FROM soda_master.cajas WHERE estado = 'abierta' FOR SHARE
+          ) c) = 1,
+          'CAJA_CERRADA'
+        )
+      `)
+    }
+    // e) el pago
+    consultas.push(sql`
+      INSERT INTO soda_master.pagos
+        (id, orden_id, metodo, monto, propina, descuento, dividido_en, vuelto,
+         referencia, aprobado, cobrado_por, cobrado_por_nombre)
+      VALUES
+        (${pagoId}::uuid, ${O}::uuid, ${metodo}, ${calc.total}, ${calc.propina},
+         ${calc.descuento}, ${divididoEn}, ${vuelto}::numeric,
+         ${input.referencia ?? null}, TRUE, ${input.usuario.id}::uuid, ${input.usuario.nombre})
+    `)
+    // f) reclamo de las líneas completas: si otro cobro ya las tomó, aborta todo
+    if (lineasEnteras.length > 0) {
+      consultas.push(sql`
+        WITH reclamados AS (
           UPDATE soda_master.items_orden
-          SET cantidad = ${cantidadCobrar},
-              pagado = TRUE,
-              pago_id = ${pagoId}::uuid
-          WHERE id = ${original.id}::uuid
-        `
-        await sql`
+          SET pagado = TRUE, pago_id = ${pagoId}::uuid
+          WHERE orden_id = ${O}::uuid AND id = ANY(${lineasEnteras}::uuid[]) AND pagado = FALSE
+          RETURNING id
+        )
+        SELECT soda_master.assert_cobro(
+          (SELECT COUNT(*) FROM reclamados) = ${lineasEnteras.length}::int, 'ITEMS_YA_PAGADOS'
+        )
+      `)
+    }
+    // g) cobro de parte de una línea (1 de 2): se corta la línea en BD
+    for (const c of cortes) {
+      consultas.push(sql`
+        WITH orig AS (
+          SELECT * FROM soda_master.items_orden
+          WHERE id = ${c.id}::uuid AND orden_id = ${O}::uuid
+            AND pagado = FALSE AND cantidad = ${c.original}::int
+          FOR UPDATE
+        ),
+        resto AS (
           INSERT INTO soda_master.items_orden
             (orden_id, producto_id, cantidad, precio_unitario, modificadores,
              notas_especiales, estado_item, pagado, cuenta_persona_id)
-          VALUES (
-            ${original.orden_id},
-            ${original.producto_id},
-            ${cantidadRestante},
-            ${original.precio_unitario},
-            ${original.modificadores ?? null},
-            ${original.notas_especiales ?? null},
-            ${original.estado_item ?? 'pendiente'},
-            FALSE,
-            ${original.cuenta_persona_id ?? null}
-          )
-        `
-      }
-
-      // 2) Líneas completas: ids normales que sí se cobran enteros.
-      if (itemIds.length > 0) {
-        await sql`
+          SELECT orden_id, producto_id, cantidad - ${c.cobrar}::int, precio_unitario,
+                 modificadores, notas_especiales, estado_item, FALSE, cuenta_persona_id
+          FROM orig
+          RETURNING id
+        ),
+        cobrada AS (
           UPDATE soda_master.items_orden
-          SET pagado = TRUE, pago_id = ${pagoId}::uuid
-          WHERE orden_id = ${ordenId}
-            AND id = ANY(${itemIds}::uuid[])
-            AND pagado = FALSE
-        `
-      }
-    } else {
-      await sql`
-        UPDATE soda_master.items_orden
-        SET pagado = TRUE, pago_id = ${pagoId}::uuid
-        WHERE orden_id = ${ordenId}
-          AND pagado = FALSE
-      `
+          SET cantidad = ${c.cobrar}::int, pagado = TRUE, pago_id = ${pagoId}::uuid
+          WHERE id IN (SELECT id FROM orig)
+          RETURNING id
+        )
+        SELECT soda_master.assert_cobro(
+          (SELECT COUNT(*) FROM resto) = 1 AND (SELECT COUNT(*) FROM cobrada) = 1,
+          'ITEMS_YA_PAGADOS'
+        )
+      `)
     }
-
-    // Si ya no quedan items por pagar, cerramos la orden. Esto lo decide
-    // el servidor para evitar que clientes en paralelo dejen la orden
-    // "abierta a medias".
-    const pendientesRows = (await sql`
-      SELECT COUNT(*)::int AS cnt
-      FROM soda_master.items_orden
-      WHERE orden_id = ${ordenId} AND pagado = FALSE
-    `) as Array<{ cnt: number }>
-    const restantes = pendientesRows[0]?.cnt ?? 0
-    if (restantes === 0) {
-      await sql`
-        UPDATE soda_master.ordenes
-        SET estado = 'pagado', updated_at = CURRENT_TIMESTAMP
-        WHERE id = ${ordenId}
-          AND estado NOT IN ('pagado','cancelado','perdida')
-      `
-    }
-
-    // Registro automático en caja chica. Si no hay caja abierta, NO se
-    // bloquea el pago (el negocio puede operar sin caja chica activa),
-    // pero sí dejamos rastro intentando registrarlo y silenciando el
-    // error de "CAJA_NO_ABIERTA".
-    if (metodoNormalizado === 'efectivo') {
-      try {
-        await ensureCajaSchema()
-        const abiertaRows = (await sql`
-          SELECT id FROM soda_master.cajas WHERE estado = 'abierta' LIMIT 1
-        `) as any[]
-        const cajaAbiertaId = abiertaRows[0]?.id
-        if (cajaAbiertaId) {
-          const totalEfectivo = Number(monto) + Number(propina)
-          await sql`
-            INSERT INTO soda_master.movimientos_caja
-              (caja_id, tipo, monto, pago_id, descripcion)
-            VALUES
-              (${cajaAbiertaId}::uuid, 'venta_efectivo', ${totalEfectivo},
-               ${pagoId}::uuid,
-               ${'Cobro orden ' + String(ordenId).slice(0, 8)})
-          `
-          if (vueltoVal && vueltoVal > 0) {
-            await sql`
-              INSERT INTO soda_master.movimientos_caja
-                (caja_id, tipo, monto, pago_id, descripcion)
-              VALUES
-                (${cajaAbiertaId}::uuid, 'vuelto', ${vueltoVal},
-                 ${pagoId}::uuid,
-                 ${'Vuelto entregado'})
-            `
-          }
-        }
-      } catch (e) {
-        console.error('No se pudo registrar movimiento de caja:', e)
+    // h) si no queda nada por pagar, la orden se cierra
+    consultas.push(sql`
+      UPDATE soda_master.ordenes
+      SET estado = 'pagado', updated_at = CURRENT_TIMESTAMP
+      WHERE id = ${O}::uuid
+        AND estado NOT IN ('pagado','cancelado','perdida')
+        AND NOT EXISTS (
+          SELECT 1 FROM soda_master.items_orden WHERE orden_id = ${O}::uuid AND pagado = FALSE
+        )
+    `)
+    // i) caja: entra TODO lo recibido (monto + propina + vuelto) y el vuelto sale
+    if (mueveCaja) {
+      consultas.push(sql`
+        INSERT INTO soda_master.movimientos_caja
+          (caja_id, tipo, monto, pago_id, usuario_id, usuario_nombre, descripcion)
+        SELECT c.id, 'venta_efectivo', ${efectivoRecibido}, ${pagoId}::uuid,
+               ${input.usuario.id}::uuid, ${input.usuario.nombre},
+               ${'Cobro orden ' + String(O).slice(0, 8)}
+        FROM soda_master.cajas c WHERE c.estado = 'abierta'
+      `)
+      if (vuelto && vuelto > 0) {
+        consultas.push(sql`
+          INSERT INTO soda_master.movimientos_caja
+            (caja_id, tipo, monto, pago_id, usuario_id, usuario_nombre, descripcion)
+          SELECT c.id, 'vuelto', ${vuelto}, ${pagoId}::uuid,
+                 ${input.usuario.id}::uuid, ${input.usuario.nombre}, 'Vuelto entregado'
+          FROM soda_master.cajas c WHERE c.estado = 'abierta'
+        `)
       }
     }
+    // j) el pago creado, con mesa
+    consultas.push(sql`
+      SELECT p.*, o.mesa_id, ('Mesa ' || m.numero) AS mesa_nombre, o.estado AS orden_estado
+      FROM soda_master.pagos p
+      JOIN soda_master.ordenes o ON o.id = p.orden_id
+      LEFT JOIN soda_master.mesas m ON m.id = o.mesa_id
+      WHERE p.id = ${pagoId}::uuid
+    `)
 
-    return pagoCreado
+    let resultados: any[][]
+    try {
+      resultados = (await sql.transaction(consultas)) as any[][]
+    } catch (err: any) {
+      const texto = `${err?.message ?? ''} ${err?.code ?? ''}`
+      const codigo = Object.keys(ERRORES_COBRO).find((c) => texto.includes(c))
+      if (codigo && (err?.code === 'SM409' || texto.includes('SM409'))) {
+        throw new ErrorCobro(codigo)
+      }
+      throw err
+    }
+
+    const fila = resultados[resultados.length - 1][0]
+    const pago = mapPago(fila)
+    return {
+      ...pago,
+      orden_cerrada: fila.orden_estado === 'pagado',
+      items_pagados: lineasEnteras.length + cortes.length,
+      total_a_pagar: calc.totalAPagar,
+      impuesto: calc.impuesto,
+      cuotas: repartirCuotas(calc.totalAPagar, divididoEn),
+    }
   },
 
   async getPagos(filtro?: { fecha?: string }): Promise<Pago[]> {

@@ -39,6 +39,7 @@ import {
 import { Textarea } from '@/components/ui/textarea'
 import { showToast } from '@/components/toast'
 import { MetodoPago } from '@/lib/types'
+import { calcularCobro, repartirCuotas, type ConfigCobro } from '@/lib/cobro'
 import { PrintPreviewDialog } from '@/components/print-preview-dialog'
 import {
   comandaToTicketItems,
@@ -271,28 +272,53 @@ export function PagosPage() {
   // Calculate totals
   const subtotalCompleto =
     comandaAPagar?.items.reduce((sum, item) => sum + item.precio * item.cantidad, 0) || 0
-  const subtotal = itemsAPagar.reduce((sum, item) => sum + item.precio * item.cantidad, 0)
-  // Para pagos parciales, prorrateamos el descuento (cuando es monto fijo)
-  // en proporción al subtotal de los items que se están cobrando.
-  const ratioParcial = subtotalCompleto > 0 ? subtotal / subtotalCompleto : 0
-  const descuentoMonto = comandaAPagar?.tipoDescuento === 'porcentaje'
-    ? subtotal * ((comandaAPagar?.descuento || 0) / 100)
-    : (comandaAPagar?.descuento || 0) * ratioParcial
-
-  const baseImponible = Math.max(subtotal - descuentoMonto, 0)
-  // El IVA grava sólo el consumo (subtotal - descuento). Nunca grava la propina.
-  const impuestoMonto = impuestoHabilitado ? baseImponible * (tasaImpuesto / 100) : 0
-  // La propina se calcula sobre el consumo (excluyente de IVA), no sobre el total final.
-  const propinaCalculada = propinaTipo === 'porcentaje'
-    ? baseImponible * (parseFloat(propinaValor) / 100)
-    : parseFloat(propinaValor) || 0
-
+  // Cálculo único (lib/cobro.ts): el servidor usa la MISMA función, así que
+  // lo que se ve aquí es lo que el servidor va a registrar. El descuento fijo
+  // se prorratea por lo que se cobra; el IVA grava solo el consumo (subtotal −
+  // descuento) y nunca la propina; la propina va sobre la base sin IVA.
+  const configCobro: ConfigCobro = useMemo(
+    () => ({
+      impuestoHabilitado,
+      tasaImpuesto,
+      propinasHabilitadas,
+      preciosIncluyenIva: configuracion.precios_incluyen_iva !== false,
+    }),
+    [impuestoHabilitado, tasaImpuesto, propinasHabilitadas, configuracion.precios_incluyen_iva],
+  )
+  const propinaInput = {
+    tipo: propinaTipo,
+    valor: parseFloat(propinaValor) || 0,
+  }
+  const descuentoOrdenCobro = useMemo(
+    () => ({
+      tipo: comandaAPagar?.tipoDescuento ?? null,
+      valor: comandaAPagar?.descuento || 0,
+    }),
+    [comandaAPagar?.tipoDescuento, comandaAPagar?.descuento],
+  )
+  const calculo = calcularCobro({
+    items: itemsAPagar,
+    subtotalOrden: subtotalCompleto,
+    descuento: descuentoOrdenCobro,
+    config: configCobro,
+    propina: propinaInput,
+  })
+  const subtotal = calculo.subtotal
+  const descuentoMonto = calculo.descuento
+  const baseImponible = calculo.base
+  const impuestoMonto = calculo.impuesto
+  const propinaCalculada = calculo.propina
   // "Total" = consumo + IVA, SIN propina. Es la cifra fiscal de la boleta.
-  const total = baseImponible + impuestoMonto
+  const total = calculo.total
   // "Total a pagar" = lo que el cliente entrega. Incluye la propina (sugerida).
-  const totalAPagar = total + propinaCalculada
-  const montoPorPersona =
-    dividirCuenta && numPersonasInt > 0 ? totalAPagar / numPersonasInt : totalAPagar
+  const totalAPagar = calculo.totalAPagar
+  // Dividir la cuenta: cuotas enteras; la última absorbe el redondeo.
+  const cuotasDivision = repartirCuotas(
+    totalAPagar,
+    dividirCuenta && numPersonasInt > 0 ? numPersonasInt : 1,
+  )
+  const montoPorPersona = cuotasDivision[0]
+  const cuotaFinal = cuotasDivision[cuotasDivision.length - 1]
   // Aceptamos números escritos a la chilena ("20.000", "20000", "20 000",
   // incluso con $). Sólo nos quedamos con los dígitos. Así "20.000" se
   // interpreta como 20.000 y no como 20 (que es lo que hacía parseFloat).
@@ -345,6 +371,7 @@ export function PagosPage() {
       metodo_pago: metodoPago,
       dividido_en: dividirCuenta ? numPersonasInt || 1 : 1,
       monto_por_persona: dividirCuenta ? montoPorPersona : null,
+      cuota_final: dividirCuenta ? cuotaFinal : null,
       items: ticketItemsCobro,
       totales: {
         subtotal,
@@ -354,7 +381,10 @@ export function PagosPage() {
             ? `Descuento (${comandaAPagar.descuento}%)`
             : 'Descuento',
         impuesto: impuestoMonto,
-        impuesto_label: impuestoHabilitado ? `IVA (${tasaImpuesto}%)` : null,
+        impuesto_label: impuestoHabilitado
+          ? `IVA ${configCobro.preciosIncluyenIva ? 'incluido ' : ''}(${tasaImpuesto}%)`
+          : null,
+        impuesto_incluido: configCobro.preciosIncluyenIva,
         propina: propinaCalculada,
         // total = monto fiscal (consumo + IVA, SIN propina).
         total,
@@ -378,6 +408,7 @@ export function PagosPage() {
     dividirCuenta,
     numPersonasInt,
     montoPorPersona,
+    cuotaFinal,
     ticketItemsCobro,
     subtotal,
     descuentoMonto,
@@ -407,6 +438,7 @@ export function PagosPage() {
       fecha: Date.now(),
       dividido_en: dividirCuenta ? numPersonasInt || 1 : 1,
       monto_por_persona: dividirCuenta ? montoPorPersona : null,
+      cuota_final: dividirCuenta ? cuotaFinal : null,
       items: ticketItemsCobro,
       totales: {
         subtotal,
@@ -416,7 +448,10 @@ export function PagosPage() {
             ? `Descuento (${comandaAPagar.descuento}%)`
             : 'Descuento',
         impuesto: impuestoMonto,
-        impuesto_label: impuestoHabilitado ? `IVA (${tasaImpuesto}%)` : null,
+        impuesto_label: impuestoHabilitado
+          ? `IVA ${configCobro.preciosIncluyenIva ? 'incluido ' : ''}(${tasaImpuesto}%)`
+          : null,
+        impuesto_incluido: configCobro.preciosIncluyenIva,
         propina: propinaCalculada,
         total,
         total_a_pagar: totalAPagar,
@@ -429,6 +464,7 @@ export function PagosPage() {
     dividirCuenta,
     numPersonasInt,
     montoPorPersona,
+    cuotaFinal,
     ticketItemsCobro,
     subtotal,
     descuentoMonto,
@@ -539,24 +575,39 @@ export function PagosPage() {
     for (const p of personas) {
       p.subtotalCompartido = compartidoPorPersona
       p.subtotal = p.subtotalDirecto + p.subtotalCompartido
+      // Misma función que el cobro real: el descuento, el IVA y la propina de
+      // cada persona salen de lib/cobro.ts. La propina fija se reparte por
+      // la parte de la cuenta que consumió cada una.
       const ratio = subtotal > 0 ? p.subtotal / subtotal : 0
-      p.descuento = descuentoMonto * ratio
-      p.base = Math.max(p.subtotal - p.descuento, 0)
-      p.iva = impuestoHabilitado ? p.base * (tasaImpuesto / 100) : 0
-      p.propina = propinaTipo === 'porcentaje'
-        ? p.base * (parseFloat(propinaValor) / 100)
-        : (parseFloat(propinaValor) || 0) * ratio
-      p.total = p.base + p.iva
-      p.totalAPagar = p.total + p.propina
+      const fijo = (parseFloat(propinaValor) || 0) * ratio
+      const cp = calcularCobro({
+        items: [{ precio: p.subtotal, cantidad: 1 }],
+        subtotalOrden: subtotalCompleto,
+        descuento: descuentoOrdenCobro,
+        config: configCobro,
+        propina:
+          propinaTipo === 'porcentaje'
+            ? { tipo: 'porcentaje', valor: parseFloat(propinaValor) || 0 }
+            : { tipo: 'monto', valor: fijo },
+      })
+      p.descuento = cp.descuento
+      p.base = cp.base
+      p.iva = cp.impuesto
+      p.propina = cp.propina
+      p.total = cp.total
+      p.totalAPagar = cp.totalAPagar
 
       const ratioDirecto = subtotal > 0 ? p.subtotalDirecto / subtotal : 0
-      const descuentoDirecto = descuentoMonto * ratioDirecto
-      const baseDirecta = Math.max(p.subtotalDirecto - descuentoDirecto, 0)
-      const ivaDirecto = impuestoHabilitado ? baseDirecta * (tasaImpuesto / 100) : 0
-      const propinaDirecta = propinaTipo === 'porcentaje'
-        ? baseDirecta * (parseFloat(propinaValor) / 100)
-        : (parseFloat(propinaValor) || 0) * ratioDirecto
-      p.totalDirectoAPagar = baseDirecta + ivaDirecto + propinaDirecta
+      p.totalDirectoAPagar = calcularCobro({
+        items: [{ precio: p.subtotalDirecto, cantidad: 1 }],
+        subtotalOrden: subtotalCompleto,
+        descuento: descuentoOrdenCobro,
+        config: configCobro,
+        propina:
+          propinaTipo === 'porcentaje'
+            ? { tipo: 'porcentaje', valor: parseFloat(propinaValor) || 0 }
+            : { tipo: 'monto', valor: (parseFloat(propinaValor) || 0) * ratioDirecto },
+      }).totalAPagar
     }
     return { personas, compartidoItems, totalCompartido, compartidoPorPersona }
   }, [
@@ -565,9 +616,9 @@ export function PagosPage() {
     personasOrden,
     personaIdById,
     subtotal,
-    descuentoMonto,
-    impuestoHabilitado,
-    tasaImpuesto,
+    subtotalCompleto,
+    descuentoOrdenCobro,
+    configCobro,
     propinaTipo,
     propinaValor,
   ])
@@ -615,7 +666,10 @@ export function PagosPage() {
               ? `Descuento (${comandaAPagar.descuento}%)`
               : 'Descuento',
           impuesto: p.iva,
-          impuesto_label: impuestoHabilitado ? `IVA (${tasaImpuesto}%)` : null,
+          impuesto_label: impuestoHabilitado
+          ? `IVA ${configCobro.preciosIncluyenIva ? 'incluido ' : ''}(${tasaImpuesto}%)`
+          : null,
+        impuesto_incluido: configCobro.preciosIncluyenIva,
           propina: propinaActiva ? p.propina : null,
           total: p.total,
           total_a_pagar: p.totalAPagar,
@@ -689,28 +743,18 @@ export function PagosPage() {
   )
 
   const calcularTotalParaSubtotal = useCallback(
-    (subtotalSeleccionado: number) => {
-      const ratio = subtotalCompleto > 0 ? subtotalSeleccionado / subtotalCompleto : 0
-      const descuentoSeleccionado =
-        comandaAPagar?.tipoDescuento === 'porcentaje'
-          ? subtotalSeleccionado * ((comandaAPagar?.descuento || 0) / 100)
-          : (comandaAPagar?.descuento || 0) * ratio
-      const base = Math.max(subtotalSeleccionado - descuentoSeleccionado, 0)
-      const iva = impuestoHabilitado ? base * (tasaImpuesto / 100) : 0
-      const propina =
-        propinaTipo === 'porcentaje'
-          ? base * (parseFloat(propinaValor) / 100)
-          : parseFloat(propinaValor) || 0
-      return base + iva + propina
-    },
-    [
-      subtotalCompleto,
-      comandaAPagar,
-      impuestoHabilitado,
-      tasaImpuesto,
-      propinaTipo,
-      propinaValor,
-    ],
+    (subtotalSeleccionado: number) =>
+      calcularCobro({
+        items: [{ precio: subtotalSeleccionado, cantidad: 1 }],
+        subtotalOrden: subtotalCompleto,
+        descuento: {
+          tipo: comandaAPagar?.tipoDescuento ?? null,
+          valor: comandaAPagar?.descuento || 0,
+        },
+        config: configCobro,
+        propina: { tipo: propinaTipo, valor: parseFloat(propinaValor) || 0 },
+      }).totalAPagar,
+    [subtotalCompleto, comandaAPagar, configCobro, propinaTipo, propinaValor],
   )
 
   const handleCobrarPersonaAsignada = useCallback(
@@ -838,7 +882,21 @@ export function PagosPage() {
     recargarOrdenes,
   ])
 
+  // Evita el doble clic mientras el servidor responde (Neon puede tardar
+  // segundos): el servidor ya rechaza el doble cobro con 409, pero el
+  // cajero no debería ver un error por un clic repetido.
+  const [cobrando, setCobrando] = useState(false)
   const handleConfirmarPago = async () => {
+    if (cobrando) return
+    setCobrando(true)
+    try {
+      await confirmarPago()
+    } finally {
+      setCobrando(false)
+    }
+  }
+
+  const confirmarPago = async () => {
     if (!comandaAPagar || !usuarioActual) return
     if (!puedeCobrar) {
       showToast('Sólo el cajero o administrador puede registrar el pago', 'error')
@@ -849,23 +907,33 @@ export function PagosPage() {
       return
     }
 
+    if (
+      metodoPago === 'efectivo' &&
+      efectivoRecibidoNum > 0 &&
+      efectivoRecibidoNum < totalAPagar
+    ) {
+      showToast('El efectivo recibido es menor que el total a pagar', 'error')
+      return
+    }
+
     try {
-      // monto = total fiscal (consumo + IVA). La propina se registra aparte,
-      // así el cuadro de ventas no la mezcla con el ingreso facturable.
+      // El servidor calcula el monto, el descuento, el IVA y el vuelto desde
+      // la base: aquí solo se dice QUÉ se cobra y cómo. `monto_esperado` es lo
+      // que muestra la pantalla; si no coincide con el servidor, el cobro se
+      // rechaza (409) y se recalcula. La propina se registra aparte, así el
+      // cuadro de ventas no la mezcla con el ingreso facturable.
       // En modo "parcial" mandamos item_orden_ids: el servidor marca SÓLO
       // esos items como pagados y deja la orden abierta hasta que se cobre
       // todo lo demás.
       const payload: any = {
         orden_id: comandaAPagar.id,
         metodo: metodoPago,
-        monto: total,
-        propina: propinaCalculada,
-        descuento: descuentoMonto,
-        dividido_en: dividirCuenta ? numPersonasInt || 1 : 1,
-        vuelto:
-          metodoPago === 'efectivo' && efectivoRecibidoNum >= totalAPagar ? vuelto : null,
-        referencia: null,
-        aprobado: true,
+        monto_esperado: total,
+        propina:
+          propinasHabilitadas && propinaCalculada > 0 ? propinaInput : null,
+        dividido_en: dividirCuenta ? Math.min(numPersonasInt || 1, 20) : 1,
+        efectivo_recibido:
+          metodoPago === 'efectivo' && efectivoRecibidoNum > 0 ? efectivoRecibidoNum : null,
       }
       if (modoPago === 'parcial') {
         payload.item_orden_ids = Array.from(itemsSeleccionados)
@@ -936,6 +1004,20 @@ export function PagosPage() {
       setShowBoletaDialog(true)
     } catch (error: any) {
       showToast(error?.message || 'Error al registrar pago', 'error')
+      // 409: la orden cambió o ya se cobró (otra tablet, otra pestaña). Se
+      // vuelve a traer el estado real para que la pantalla muestre lo mismo
+      // que el servidor.
+      if (
+        ['ORDEN_CAMBIO', 'MONTO_DISTINTO', 'ITEMS_YA_PAGADOS', 'ORDEN_YA_PAGADA'].includes(
+          error?.codigo,
+        )
+      ) {
+        try {
+          await Promise.all([recargarOrdenes(), recargarPagos()])
+        } catch {
+          /* ignore: el siguiente refresco lo resuelve */
+        }
+      }
     }
   }
 
@@ -1081,7 +1163,20 @@ export function PagosPage() {
                 ) : (
                   <div className="space-y-3">
                     {comandasPendientes.map(comanda => {
-                      const comandaTotal = comanda.items.reduce((sum, i) => sum + i.precio * i.cantidad, 0)
+                      // Total que se va a cobrar (con descuento e IVA, sin propina),
+                      // igual que el detalle y la boleta; solo lo que falta por pagar.
+                      const comandaTotal = calcularCobro({
+                        items: comanda.items.filter((i) => !i.pagado),
+                        subtotalOrden: comanda.items.reduce(
+                          (sum, i) => sum + i.precio * i.cantidad,
+                          0,
+                        ),
+                        descuento: {
+                          tipo: comanda.tipoDescuento ?? null,
+                          valor: comanda.descuento || 0,
+                        },
+                        config: configCobro,
+                      }).total
                       return (
                         <div
                           key={comanda.id}
@@ -1451,12 +1546,17 @@ export function PagosPage() {
                 )}
                 {impuestoMonto > 0 && (
                   <div className="flex justify-between text-muted-foreground">
-                    <span>IVA ({tasaImpuesto}%)</span>
-                    <span>+{formatCurrency(impuestoMonto)}</span>
+                    <span>
+                      IVA {configCobro.preciosIncluyenIva ? 'incluido ' : ''}({tasaImpuesto}%)
+                    </span>
+                    <span>
+                      {configCobro.preciosIncluyenIva ? '' : '+'}
+                      {formatCurrency(impuestoMonto)}
+                    </span>
                   </div>
                 )}
                 <div className="flex justify-between border-t border-border pt-2 text-base font-semibold text-foreground">
-                  <span>Total (con IVA)</span>
+                  <span>Total</span>
                   <span>{formatCurrency(total)}</span>
                 </div>
                 <div className="flex justify-between text-muted-foreground">
@@ -1675,7 +1775,11 @@ export function PagosPage() {
                         </p>
                       ) : (
                         <p className="text-muted-foreground">
-                          Cada uno paga {formatCurrency(montoPorPersona)} (total ÷ {numPersonasInt}).
+                          Cada uno paga {formatCurrency(montoPorPersona)} (total ÷ {numPersonasInt}
+                          {cuotaFinal !== montoPorPersona
+                            ? `; la última cuota es ${formatCurrency(cuotaFinal)} por el redondeo`
+                            : ''}
+                          ).
                         </p>
                       )}
                     </div>
@@ -1907,6 +2011,7 @@ export function PagosPage() {
               className="w-full bg-green-600 py-6 text-lg font-bold text-white hover:bg-green-500"
               onClick={handleConfirmarPago}
               disabled={
+                cobrando ||
                 !puedeCobrar ||
                 itemsAPagar.length === 0 ||
                 // En efectivo: el cajero tiene que haber digitado al menos
@@ -1992,12 +2097,15 @@ export function PagosPage() {
                 {(boletaSnapshot.totales.impuesto ?? 0) > 0 && (
                   <div className="flex justify-between">
                     <span>{boletaSnapshot.totales.impuesto_label || 'IVA'}</span>
-                    <span>+{formatCurrency(boletaSnapshot.totales.impuesto || 0)}</span>
+                    <span>
+                      {boletaSnapshot.totales.impuesto_incluido ? '' : '+'}
+                      {formatCurrency(boletaSnapshot.totales.impuesto || 0)}
+                    </span>
                   </div>
                 )}
                 <div className="my-1 border-t border-border" />
                 <div className="flex justify-between font-semibold">
-                  <span>Total (con IVA)</span>
+                  <span>Total</span>
                   <span>{formatCurrency(boletaSnapshot.totales.total)}</span>
                 </div>
                 {(boletaSnapshot.totales.propina ?? 0) > 0 && (
@@ -2025,6 +2133,9 @@ export function PagosPage() {
                   <p className="text-center text-muted-foreground">
                     Dividido entre {boletaSnapshot.dividido_en} personas:{' '}
                     {formatCurrency(boletaSnapshot.monto_por_persona)} c/u
+                    {boletaSnapshot.cuota_final != null &&
+                      boletaSnapshot.cuota_final !== boletaSnapshot.monto_por_persona &&
+                      ` (la última: ${formatCurrency(boletaSnapshot.cuota_final)}, por redondeo)`}
                   </p>
                 )}
                 <div className="my-4 border-t border-dashed border-border" />

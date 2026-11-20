@@ -66,7 +66,7 @@ interface CajaHistorial {
 
 const tipoLabel: Record<MovimientoCaja['tipo'], string> = {
   apertura: 'Apertura',
-  venta_efectivo: 'Venta en efectivo',
+  venta_efectivo: 'Efectivo recibido',
   vuelto: 'Vuelto entregado',
   retiro: 'Retiro',
   deposito: 'Depósito',
@@ -356,7 +356,7 @@ export function CajaPage() {
             <Card className="border-border bg-card">
               <CardHeader className="pb-2">
                 <CardTitle className="text-xs font-normal text-muted-foreground">
-                  Ventas en efectivo
+                  Efectivo recibido (ventas + propinas)
                 </CardTitle>
               </CardHeader>
               <CardContent>
@@ -717,7 +717,7 @@ export function CajaPage() {
                   <p className="font-bold">{formatCurrency(detalleCaja.resumen.fondo_inicial)}</p>
                 </div>
                 <div className="rounded border border-border/40 p-2">
-                  <p className="text-xs text-muted-foreground">Ventas efectivo</p>
+                  <p className="text-xs text-muted-foreground">Efectivo recibido</p>
                   <p className="font-bold text-emerald-500">
                     {formatCurrency(detalleCaja.resumen.ventas_efectivo)}
                   </p>

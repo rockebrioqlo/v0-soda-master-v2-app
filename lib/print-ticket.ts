@@ -97,6 +97,8 @@ export interface TicketTotales {
   descuento_label?: string | null
   impuesto?: number | null
   impuesto_label?: string | null
+  /** true: el IVA ya está dentro del total (solo se desglosa). */
+  impuesto_incluido?: boolean
   propina?: number | null
   /**
    * "Total" en sentido fiscal: subtotal − descuento + IVA, SIN propina.
@@ -124,6 +126,8 @@ export interface TicketData {
   metodo_pago?: string | null
   dividido_en?: number | null
   monto_por_persona?: number | null
+  /** Última cuota si el redondeo a CLP la hace distinta de `monto_por_persona`. */
+  cuota_final?: number | null
   items: TicketItem[]
   totales: TicketTotales
   /**
@@ -354,16 +358,16 @@ function renderTicketBody(data: TicketData, cfg: TicketPrintConfig, opts: { isLa
       totalesHtml.push(`
         <div class="row">
           <div class="row-left">${escapeHtml(data.totales.impuesto_label || 'IVA')}</div>
-          <div class="row-right">+${escapeHtml(formatCurrency(data.totales.impuesto))}</div>
+          <div class="row-right">${data.totales.impuesto_incluido ? '' : '+'}${escapeHtml(formatCurrency(data.totales.impuesto))}</div>
         </div>
       `)
     }
     const hayPropina = !!(data.totales.propina && data.totales.propina > 0)
-    // "Total" fiscal (incluye IVA, NO incluye propina). Si no hay propina
+    // "Total" fiscal (con el IVA ya dentro del precio, NO incluye propina). Si no hay propina
     // este es directamente el total a pagar.
     totalesHtml.push(`
       <div class="row total">
-        <div class="row-left">${hayPropina ? 'TOTAL (con IVA)' : 'TOTAL'}</div>
+        <div class="row-left">TOTAL</div>
         <div class="row-right">${escapeHtml(formatCurrency(data.totales.total))}</div>
       </div>
     `)
@@ -422,6 +426,14 @@ function renderTicketBody(data: TicketData, cfg: TicketPrintConfig, opts: { isLa
         <div class="row-right">${escapeHtml(formatCurrency(data.monto_por_persona))} c/u</div>
       </div>
     `)
+    if (data.cuota_final != null && data.cuota_final !== data.monto_por_persona) {
+      pagoHtml.push(`
+      <div class="row">
+        <div class="row-left">Última cuota (redondeo)</div>
+        <div class="row-right">${escapeHtml(formatCurrency(data.cuota_final))}</div>
+      </div>
+    `)
+    }
   }
   if (isBoleta && data.totales.pagado != null) {
     pagoHtml.push(`

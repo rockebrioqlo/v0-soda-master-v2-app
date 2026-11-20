@@ -354,7 +354,12 @@ function mapOrdenToComanda(orden: any, mesas: any[]): any {
     subtotal: parseFloat(orden.subtotal) || 0,
     impuesto: parseFloat(orden.impuesto) || 0,
     total: parseFloat(orden.total) || 0,
-    descuento: 0,
+    // El descuento vive en la tabla `descuentos`; el servidor lo une a la
+    // orden (descuento_tipo / descuento_valor) para que cualquier pantalla,
+    // también tras recargar, vea el mismo descuento que usa el cobro.
+    descuento: Number(orden.descuento_valor) || 0,
+    tipoDescuento: orden.descuento_tipo || null,
+    motivoDescuento: orden.descuento_motivo || undefined,
     propina: 0,
     notas: orden.notas || '',
     creadoAt: orden.created_at ? new Date(orden.created_at).getTime() : Date.now(),
@@ -949,7 +954,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     })
     if (!res.ok) {
       const data = await res.json().catch(() => ({}))
-      throw new Error(data?.error || 'Error al registrar pago')
+      // `codigo` (ORDEN_YA_PAGADA, MONTO_DISTINTO, CAJA_CERRADA…) deja que la
+      // pantalla de Pagos decida si debe recargar el estado.
+      throw Object.assign(new Error(data?.error || 'Error al registrar pago'), {
+        codigo: data?.codigo as string | undefined,
+        status: res.status,
+      })
     }
     return await res.json()
   }, [])

@@ -1,4 +1,7 @@
-import { db } from '@/lib/db'
+import { z } from 'zod'
+import { db, ErrorCobro } from '@/lib/db'
+import { ERRORES_COBRO } from '@/lib/cobro'
+import { requireSesion } from '@/lib/sesion'
 
 export async function GET(request: Request) {
   try {
@@ -12,54 +15,87 @@ export async function GET(request: Request) {
   }
 }
 
+// Cobro seguro (sesión 5). El navegador solo dice QUÉ se cobra y cómo; los
+// montos, el descuento, el IVA y el vuelto los calcula el servidor. Los
+// campos que antes mandaba el navegador (monto, descuento, vuelto,
+// usuario_id…) ya no existen: `.strict()` rechaza cualquier campo extra.
+const dinero = z.number().int().min(0).max(100_000_000)
+
+const CobroSchema = z
+  .object({
+    orden_id: z.string().uuid(),
+    metodo: z.enum(['efectivo', 'tarjeta']),
+    // Lo que la pantalla muestra como total (sin propina). Si no coincide con
+    // el cálculo del servidor, el cobro se rechaza con 409.
+    monto_esperado: dinero,
+    // Pago parcial: ítems completos y/o parte de una línea (1 de 2).
+    item_orden_ids: z.array(z.string().uuid()).max(200).optional(),
+    item_partials: z
+      .array(
+        z
+          .object({ id: z.string().uuid(), cantidad: z.number().int().positive().max(1000) })
+          .strict(),
+      )
+      .max(200)
+      .optional(),
+    propina: z
+      .object({
+        tipo: z.enum(['porcentaje', 'monto']),
+        valor: z.number().min(0).max(100_000_000),
+      })
+      .strict()
+      .nullish(),
+    dividido_en: z.number().int().min(1).max(20).optional(),
+    efectivo_recibido: dinero.nullish(),
+    referencia: z.string().trim().max(60).nullish(),
+  })
+  .strict()
+
 export async function POST(request: Request) {
   try {
-    const pago = await request.json()
-    if (!pago?.orden_id && !pago?.comandaId && !pago?.ordenId) {
-      return Response.json({ error: 'orden_id requerido' }, { status: 400 })
+    // Quien cobra es el usuario de la sesión, nunca un id del body.
+    const s = await requireSesion(request, ['admin', 'cajero'])
+    if (!s.ok) return s.respuesta
+
+    const parsed = CobroSchema.safeParse(await request.json().catch(() => null))
+    if (!parsed.success) {
+      const motivo = parsed.error.issues
+        .slice(0, 3)
+        .map((i) => `${i.path.join('.') || 'body'}: ${i.message}`)
+        .join('; ')
+      return Response.json(
+        { error: `Datos de cobro inválidos (${motivo})`, codigo: 'DATOS_INVALIDOS' },
+        { status: 400 },
+      )
     }
-    const monto = Number(pago.monto ?? pago.total)
-    const propina = Number(pago.propina ?? 0)
-    const descuento = Number(pago.descuento ?? 0)
-    const divididoEn = Number(pago.dividido_en ?? pago.divididoEn ?? 1)
-    if (!Number.isFinite(monto) || monto <= 0) {
-      return Response.json({ error: 'monto debe ser mayor que 0' }, { status: 400 })
-    }
-    if (!Number.isFinite(propina) || propina < 0) {
-      return Response.json({ error: 'propina inválida' }, { status: 400 })
-    }
-    if (!Number.isFinite(descuento) || descuento < 0) {
-      return Response.json({ error: 'descuento inválido' }, { status: 400 })
-    }
-    if (!Number.isFinite(divididoEn) || divididoEn < 1) {
-      return Response.json({ error: 'dividido_en inválido' }, { status: 400 })
-    }
-    // Pago parcial opcional: el cliente puede mandar `item_orden_ids` para
-    // pagar SOLO esos items y dejar el resto abierto a otros pagos.
-    const itemIdsRaw = pago.item_orden_ids ?? pago.itemOrdenIds
-    if (itemIdsRaw !== undefined && !Array.isArray(itemIdsRaw)) {
-      return Response.json({ error: 'item_orden_ids debe ser un arreglo' }, { status: 400 })
-    }
-    // `item_partials` permite cobrar una porción de una línea con cantidad > 1
-    // (ej. 1 de 2 cervezas iguales). El backend splittea la línea automáticamente.
-    const itemPartialsRaw = pago.item_partials ?? pago.itemPartials
-    if (itemPartialsRaw !== undefined) {
-      if (!Array.isArray(itemPartialsRaw)) {
-        return Response.json({ error: 'item_partials debe ser un arreglo' }, { status: 400 })
-      }
-      for (const p of itemPartialsRaw) {
-        if (!p || typeof p.id !== 'string' || !Number.isFinite(Number(p.cantidad)) || Number(p.cantidad) <= 0) {
-          return Response.json(
-            { error: 'item_partials inválido: requiere { id: string, cantidad: number > 0 }' },
-            { status: 400 },
-          )
-        }
-      }
-    }
-    const newPago = await db.crearPago(pago)
-    return Response.json(newPago, { status: 201 })
+    const d = parsed.data
+
+    const pago = await db.crearPago({
+      orden_id: d.orden_id,
+      metodo: d.metodo,
+      monto_esperado: d.monto_esperado,
+      item_orden_ids: d.item_orden_ids,
+      item_partials: d.item_partials,
+      propina: d.propina ?? null,
+      dividido_en: d.dividido_en,
+      efectivo_recibido: d.efectivo_recibido ?? null,
+      referencia: d.referencia ?? null,
+      usuario: { id: s.usuario.id, nombre: s.usuario.nombre },
+    })
+    return Response.json(pago, { status: 201 })
   } catch (error: any) {
+    if (error instanceof ErrorCobro) {
+      const def = ERRORES_COBRO[error.codigo] ?? { status: 409, mensaje: error.message }
+      return Response.json(
+        {
+          error: error.message !== error.codigo ? error.message : def.mensaje,
+          codigo: error.codigo,
+          ...(error.detalle ?? {}),
+        },
+        { status: def.status },
+      )
+    }
     console.error('Create pago error:', error)
-    return Response.json({ error: error?.message || 'Error en servidor' }, { status: 500 })
+    return Response.json({ error: 'Error en servidor' }, { status: 500 })
   }
 }

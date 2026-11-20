@@ -656,11 +656,18 @@ export function POSPage() {
     }
   })()
   const baseImponible = Math.max(subtotal - descuentoMonto, 0)
-  const impuestoMonto = impuestoHabilitado ? baseImponible * (tasaImpuesto / 100) : 0
+  // Los precios de la carta ya incluyen IVA: se desglosa, no se suma (misma
+  // regla que lib/cobro.ts; con `precios_incluyen_iva: false` sí se suma).
+  const preciosIncluyenIva = configuracion.precios_incluyen_iva !== false
+  const impuestoMonto = !impuestoHabilitado
+    ? 0
+    : preciosIncluyenIva
+      ? Math.round(baseImponible - baseImponible / (1 + tasaImpuesto / 100))
+      : Math.round(baseImponible * (tasaImpuesto / 100))
   const propinaMonto = currentComanda?.tipoPropina === 'porcentaje'
     ? baseImponible * (currentComanda.propina / 100)
     : (currentComanda?.propina || 0)
-  const total = baseImponible + impuestoMonto + propinaMonto
+  const total = (preciosIncluyenIva ? baseImponible : baseImponible + impuestoMonto) + propinaMonto
 
   const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
   const isPersistedId = (id: string) => UUID_RE.test(id)
@@ -1068,7 +1075,7 @@ export function POSPage() {
   // "Total" fiscal (consumo + IVA, sin propina). El "total" del POS general
   // sigue siendo grand-total con propina porque ya se usa en otras partes
   // (pago, persistencia de orden). En el ticket distinguimos los dos.
-  const totalFiscal = baseImponible + impuestoMonto
+  const totalFiscal = preciosIncluyenIva ? baseImponible : baseImponible + impuestoMonto
 
   const ticketDataActual = useMemo<TicketData | null>(() => {
     if (!currentComanda) return null
@@ -1084,7 +1091,10 @@ export function POSPage() {
         descuento: descuentoMonto,
         descuento_label: descuentoLabel,
         impuesto: impuestoMonto,
-        impuesto_label: impuestoHabilitado ? `IVA (${tasaImpuesto}%)` : null,
+        impuesto_label: impuestoHabilitado
+          ? `IVA ${preciosIncluyenIva ? 'incluido ' : ''}(${tasaImpuesto}%)`
+          : null,
+        impuesto_incluido: preciosIncluyenIva,
         propina: propinaMonto,
         total: totalFiscal,
         total_a_pagar: totalFiscal + propinaMonto,
@@ -1110,7 +1120,10 @@ export function POSPage() {
         descuento: descuentoMonto,
         descuento_label: descuentoLabel,
         impuesto: impuestoMonto,
-        impuesto_label: impuestoHabilitado ? `IVA (${tasaImpuesto}%)` : null,
+        impuesto_label: impuestoHabilitado
+          ? `IVA ${preciosIncluyenIva ? 'incluido ' : ''}(${tasaImpuesto}%)`
+          : null,
+        impuesto_incluido: preciosIncluyenIva,
         propina: precuentaIncluirPropina ? propinaMonto : null,
         total: totalFiscal,
         total_a_pagar: totalFiscal + precuentaPropina,
@@ -1448,7 +1461,7 @@ export function POSPage() {
               )}
               {impuestoMonto > 0 && (
                 <div className="flex justify-between text-muted-foreground">
-                  <span>Impuesto ({tasaImpuesto}%)</span><span>+{formatCurrency(impuestoMonto)}</span>
+                  <span>Impuesto {preciosIncluyenIva ? 'incluido ' : ''}({tasaImpuesto}%)</span><span>{preciosIncluyenIva ? '' : '+'}{formatCurrency(impuestoMonto)}</span>
                 </div>
               )}
               {(currentComanda?.propina ?? 0) > 0 && (
@@ -1700,8 +1713,8 @@ export function POSPage() {
                 )}
                 {impuestoMonto > 0 && (
                   <div className="flex justify-between text-muted-foreground">
-                    <span>Impuesto ({tasaImpuesto}%)</span>
-                    <span>+{formatCurrency(impuestoMonto)}</span>
+                    <span>Impuesto {preciosIncluyenIva ? 'incluido ' : ''}({tasaImpuesto}%)</span>
+                    <span>{preciosIncluyenIva ? '' : '+'}{formatCurrency(impuestoMonto)}</span>
                   </div>
                 )}
                 {(currentComanda?.propina ?? 0) > 0 && (
@@ -2252,11 +2265,11 @@ export function POSPage() {
               )}
               {impuestoMonto > 0 && (
                 <div className="flex justify-between text-muted-foreground">
-                  <span>Impuesto ({tasaImpuesto}%)</span><span>+{formatCurrency(impuestoMonto)}</span>
+                  <span>Impuesto {preciosIncluyenIva ? 'incluido ' : ''}({tasaImpuesto}%)</span><span>{preciosIncluyenIva ? '' : '+'}{formatCurrency(impuestoMonto)}</span>
                 </div>
               )}
               <div className="flex justify-between border-t border-border pt-2 text-sm font-semibold text-foreground">
-                <span>Total (con IVA)</span><span>{formatCurrency(totalFiscal)}</span>
+                <span>Total</span><span>{formatCurrency(totalFiscal)}</span>
               </div>
               {precuentaIncluirPropina && propinaMonto > 0 && (
                 <>

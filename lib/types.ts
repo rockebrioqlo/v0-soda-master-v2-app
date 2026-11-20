@@ -298,6 +298,8 @@ export interface Configuracion {
   modoMantenimiento: boolean
   tasa_impuesto?: number
   impuesto_habilitado?: boolean
+  /** false = el IVA se suma al total; por defecto los precios ya lo incluyen. */
+  precios_incluyen_iva?: boolean
   propinas_habilitadas?: boolean
   propina_default?: number
   // Impresión configurable de tickets (ver lib/print-ticket.ts)

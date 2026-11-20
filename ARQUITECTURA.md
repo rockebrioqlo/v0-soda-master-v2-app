@@ -61,6 +61,14 @@ Desde la sesión 3 la sesión vive en el servidor:
 ## Base de datos
 
 - Neon Postgres, esquema `soda_master`, conexión por `DATABASE_URL` (inicialización perezosa en `getSql()`, para que el build no la requiera).
+### Cobro seguro (sesión 5)
+
+- `lib/cobro.ts` (función pura) calcula descuento, IVA, propina, total y cuotas; la usan el servidor (`db.crearPago`) y `components/pagos-page.tsx`, así la pantalla y el servidor dan la misma cifra. Los precios incluyen IVA: se desglosa y no se suma (clave `precios_incluyen_iva` de `configuracion`, por defecto `true`).
+- `POST /api/pagos` (`app/api/pagos/route.ts`): zod `.strict()`; el cobrador sale de `requireSesion(['admin','cajero'])`. El navegador solo envía qué se cobra, el método, la propina, el efectivo recibido y `monto_esperado`; si este no coincide con el cálculo del servidor responde 409 `MONTO_DISTINTO`.
+- `db.crearPago` lee la orden (ítems, descuento, configuración) y ejecuta todo en una `sql.transaction([...])`: bloqueo de la orden (`FOR UPDATE`), verificación de que no cambió desde la lectura, reclamo de ítems (`UPDATE … WHERE pagado = FALSE`), corte de líneas (1 de 2), pago, cierre de la orden y movimientos de caja. Las verificaciones usan la función SQL `soda_master.assert_cobro(cond, codigo)` (se crea en `ensurePagoSchema()`), que aborta toda la transacción con SQLSTATE `SM409`; la ruta traduce el código a su estado HTTP (`ERRORES_COBRO` en `lib/cobro.ts`).
+- Caja: el efectivo recibido entra como `venta_efectivo` (monto + propina + vuelto) y el vuelto sale como `vuelto`; efectivo sin caja abierta → 409 `CAJA_CERRADA`, tarjeta no mueve caja.
+- `PATCH`/`DELETE /api/items-orden`: un ítem pagado no se modifica (409) y solo admin cambia `precio_unitario` (403).
+
 - Tablas principales: usuarios, mesas, categorias, productos, modificadores, ordenes, items_orden, pagos, inventario, movimientos_inventario, configuracion, descuentos, mermas, notificaciones, cuentas_persona, perdidas_comanda, permisos_especiales, ingredientes, recetas, receta_ingredientes, proveedores, compras, compra_items, activos, empleados, gastos, cajas, movimientos_caja, auditoria_admin.
 - Migraciones incrementales idempotentes en `lib/db.ts` (`ensure*Schema`). Las tablas base no tienen script de creación en el repo.
 - Concurrencia: algunos `pg_advisory_xact_lock` dentro de CTE de un solo statement (apertura de mesa). Otros flujos de varios pasos no son atómicos (ver `ROADMAP.md`, R7).
