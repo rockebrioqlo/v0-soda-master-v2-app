@@ -41,7 +41,8 @@ export function RelojAviso() {
     actualizar()
     const id = window.setInterval(actualizar, 1000)
     return () => window.clearInterval(id)
-  }, [clock])
+    // Sesión 10: `clock` es un objeto nuevo en cada render; solo importan estos dos.
+  }, [clock.ready, clock.serverNow])
 
   if (!clock.ready) return null
 

@@ -1,6 +1,5 @@
 'use client'
 
-import { enPausaPorLimite } from '@/lib/pausa-limite'
 import { useEffect, useState } from 'react'
 import { useApp } from '@/lib/app-context'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -39,28 +38,8 @@ export function KDSPage() {
     return () => clearInterval(interval)
   }, [])
 
-  // Serverless-friendly sync: no sockets, just a light refresh while KDS is visible.
-  useEffect(() => {
-    let cancelled = false
-    let running = false
-
-    const refresh = async () => {
-      if (cancelled || running || enPausaPorLimite() || document.visibilityState !== 'visible') return
-      running = true
-      try {
-        await recargarOrdenes()
-      } finally {
-        running = false
-      }
-    }
-
-    void refresh()
-    const interval = window.setInterval(refresh, 7000)
-    return () => {
-      cancelled = true
-      window.clearInterval(interval)
-    }
-  }, [recargarOrdenes])
+  // Sesión 10 (A4): el sondeo del KDS (órdenes + mesas + notificaciones cada 6 s) vive en el
+  // sondeo central de `AppProvider` (lib/app-context.tsx); esta pantalla ya no tiene intervalo propio.
 
   // Manual refresh - viable for serverless (no polling)
   const handleRefresh = async () => {

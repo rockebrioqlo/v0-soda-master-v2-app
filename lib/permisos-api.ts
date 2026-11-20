@@ -58,6 +58,7 @@ export const REGLAS: readonly Regla[] = [
   },
   { ruta: r('notificaciones'), metodos: ['GET', 'POST'], acceso: 'sesion' }, // la ruta filtra por el usuario de la sesión
   { ruta: r(`notificaciones/${ID}`), metodos: ['PATCH'], acceso: 'sesion' },
+  { ruta: r('sondeo'), metodos: ['GET'], acceso: 'sesion' }, // sondeo agrupado órdenes+mesas+notificaciones (sesión 10); las notificaciones salen del usuario de la sesión
   { ruta: r('permisos-especiales'), metodos: ['GET'], acceso: 'sesion' }, // no admin: solo los propios
 
   // ── Salón, POS y KDS ──────────────────────────────────────────────

@@ -166,7 +166,7 @@ export function CajaPage() {
     // Refresca cada 20 s para que las ventas en efectivo entren al
     // panel sin tener que recargar la página manualmente.
     const id = window.setInterval(() => {
-      if (!enPausaPorLimite()) recargar()
+      if (document.visibilityState === 'visible' && !enPausaPorLimite()) recargar()
     }, 20000)
     return () => window.clearInterval(id)
   }, [recargar])

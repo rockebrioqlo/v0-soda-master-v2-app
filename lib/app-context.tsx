@@ -284,6 +284,31 @@ interface AppContextType {
 
 const AppContext = createContext<AppContextType | undefined>(undefined)
 
+// Cadencia del sondeo central (sesión 10, P6): KDS 6 s ≈ 10 peticiones/min; resto 15 s ≈ 4/min;
+// pestaña oculta 1/min. Tope del servidor: 240/min por sesión.
+const SONDEO_KDS_MS = 6_000
+const SONDEO_GENERAL_MS = 15_000
+const SONDEO_OCULTO_MS = 60_000
+const SONDEO_ESPACIO_MIN_MS = 2_000
+
+const UUID_RE_COMANDA = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+
+// Comandas del servidor + las pendientes que solo existen en este navegador (id no UUID) y
+// cuya mesa aún no tiene comanda remota. Lo comparten `recargarOrdenes` y el sondeo central.
+function fusionarComandas(ordenes: any[], mesas: any[], comandasActuales: any[]): any[] {
+  const comandas = ordenes
+    .map((o: any) => mapOrdenToComanda(o, mesas))
+    .filter((c: any) => c.items.length > 0)
+  const mesasConComandaRemota = new Set(comandas.map((c: any) => c.mesaId))
+  const comandasLocalesPendientes = comandasActuales.filter(
+    (c: any) =>
+      c.estado === 'pendiente' &&
+      !UUID_RE_COMANDA.test(c.id) &&
+      !mesasConComandaRemota.has(c.mesaId)
+  )
+  return [...comandasLocalesPendientes, ...comandas]
+}
+
 // Helper to map DB orden to frontend Comanda format
 function mapOrdenToComanda(orden: any, mesas: any[]): any {
   const mesa = mesas.find(m => m.id === orden.mesa_id)
@@ -405,6 +430,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [isInitialized, setIsInitialized] = useState(false)
   const [currentPage, setCurrentPage] = useState<PageType>('dashboard')
   const [posNavigation, setPosNavigation] = useState<POSNavigationState>({ mesaId: null, comandaId: null })
+
+  // Sesión 10 (A4): copia viva de las comandas para que `recargarOrdenes` y el sondeo central las
+  // lean sin depender de `state.comandas` (que cambia con cada respuesta).
+  const comandasRef = useRef(state.comandas)
+  useEffect(() => {
+    comandasRef.current = state.comandas
+  }, [state.comandas])
 
   // Carga los datos de la app desde Neon. Desde la sesión 3 la API exige
   // sesión, así que se llama después de restaurar la sesión (cookie) o de
@@ -611,7 +643,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     }
 
     window.addEventListener('focus', verifyActiveUser)
-    const interval = window.setInterval(verifyActiveUser, 60000)
+    // Sesión 10: con la pestaña oculta no se pide (el sondeo central ya autentica y cualquier 401
+    // cierra la sesión); al volver a la pestaña, `focus` lo revisa.
+    const interval = window.setInterval(() => {
+      if (document.visibilityState === 'visible') void verifyActiveUser()
+    }, 60000)
     return () => {
       cancelled = true
       window.removeEventListener('focus', verifyActiveUser)
@@ -794,23 +830,15 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         const mesas = await mesasRes.json()
 
         if (Array.isArray(ordenes)) {
-          const comandas = ordenes
-            .map((o: any) => mapOrdenToComanda(o, mesas))
-            .filter((c: any) => c.items.length > 0)
-          const mesasConComandaRemota = new Set(comandas.map((c: any) => c.mesaId))
-          const comandasLocalesPendientes = state.comandas.filter(
-            (c: any) =>
-              c.estado === 'pendiente' &&
-              !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(c.id) &&
-              !mesasConComandaRemota.has(c.mesaId)
-          )
-          dispatch({ type: 'SET_COMANDAS', payload: [...comandasLocalesPendientes, ...comandas] })
+          dispatch({ type: 'SET_COMANDAS', payload: fusionarComandas(ordenes, mesas, comandasRef.current) })
         }
       }
     } catch (error) {
       console.error('Error loading ordenes:', error)
     }
-  }, [state.comandas])
+    // Sesión 10 (A4): estable. Lee las comandas actuales desde `comandasRef`; si dependiera de
+    // `state.comandas`, cada respuesta cambiaría la función y reiniciaría el efecto del sondeo.
+  }, [])
 
   // Sesión 8 (#11): la comanda completa (orden + ítems) en una sola llamada y una sola
   // transacción en el servidor. `{ mesa_id, items }` abre la comanda; `{ orden_id, items }` agrega
@@ -1310,62 +1338,94 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     }
   }, [])
 
-  // Polling de notificaciones para el usuario activo.
+  // Sondeo central (sesión 10, A4/B7). Un solo temporizador y una sola petición agrupada
+  // (`GET /api/sondeo`) reemplazan al efecto del KDS y al de notificaciones:
+  //  - KDS: órdenes + mesas + notificaciones cada 6 s. Resto de pantallas: notificaciones cada 15 s.
+  //  - Pestaña oculta: 1 por minuto; al volver a visible se sondea al instante.
+  //  - El candado `running`, la marca del último sondeo y `knownIds` viven en un ref: un reinicio
+  //    del efecto (cambio de página) no los pierde, así ningún reinicio puede encadenar peticiones.
+  //  - Nunca sondea dos veces con menos de 2 s de diferencia ni durante una pausa por 429.
+  const usuarioIdRef = useRef<string | null>(null)
+  const sondeoRef = useRef({ running: false, ultimo: 0, knownIds: new Set<string>() })
   useEffect(() => {
-    const usuario = state.usuarioActual
-    if (!usuario?.id) return
-    let cancelled = false
-    let running = false
-    const knownIds = new Set<string>()
+    usuarioIdRef.current = usuarioActualId
+    sondeoRef.current.knownIds.clear()
+    sondeoRef.current.ultimo = 0
+  }, [usuarioActualId])
 
-    const fetchNotificaciones = async () => {
-      if (cancelled || running || enPausaPorLimite()) return
-      if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return
-      running = true
+  useEffect(() => {
+    if (!usuarioActualId) return
+    const estado = sondeoRef.current
+    const esKds = currentPage === 'kds'
+    const secciones = esKds ? 'ordenes,mesas,notificaciones' : 'notificaciones'
+    let cancelled = false
+    let timer: number | undefined
+
+    const ejecutar = async () => {
+      const ahora = Date.now()
+      if (cancelled || estado.running || enPausaPorLimite() || ahora - estado.ultimo < SONDEO_ESPACIO_MIN_MS) return
+      estado.running = true
+      estado.ultimo = ahora
       try {
-        // El servidor filtra por el usuario y rol de la sesión.
-        const params = new URLSearchParams()
-        params.set('solo_pendientes', 'true')
-        const res = await fetch(`/api/notificaciones?${params.toString()}`, {
-          cache: 'no-store',
-        })
+        const res = await fetch(`/api/sondeo?secciones=${secciones}`, { cache: 'no-store' })
         if (!res.ok) return
-        const rows = await res.json()
-        if (!Array.isArray(rows) || cancelled) return
-        for (const row of rows) {
-          if (!row?.id || knownIds.has(row.id)) continue
-          knownIds.add(row.id)
-          dispatch({
-            type: 'ADD_NOTIFICACION',
-            payload: {
-              id: String(row.id),
-              tipo: row.tipo,
-              ordenId: row.orden_id || '',
-              mesaNombre: row.mesa_nombre || '',
-              mensaje: row.mensaje || '',
-              timestamp: Number(row.creado_ts) || Date.now(),
-              vista: false,
-            },
-          })
+        const datos = await res.json()
+        // Si mientras tanto se cerró la sesión o entró otro usuario, la respuesta ya no sirve.
+        if (usuarioIdRef.current !== usuarioActualId) return
+        if (Array.isArray(datos?.ordenes) && Array.isArray(datos?.mesas)) {
+          dispatch({ type: 'SET_COMANDAS', payload: fusionarComandas(datos.ordenes, datos.mesas, comandasRef.current) })
+        }
+        // El servidor filtra las notificaciones por el usuario y rol de la sesión; `null` = falló allá.
+        if (Array.isArray(datos?.notificaciones)) {
+          for (const row of datos.notificaciones) {
+            if (!row?.id || estado.knownIds.has(row.id)) continue
+            estado.knownIds.add(row.id)
+            dispatch({
+              type: 'ADD_NOTIFICACION',
+              payload: {
+                id: String(row.id),
+                tipo: row.tipo,
+                ordenId: row.orden_id || '',
+                mesaNombre: row.mesa_nombre || '',
+                mensaje: row.mensaje || '',
+                timestamp: Number(row.creado_ts) || Date.now(),
+                vista: false,
+              },
+            })
+          }
         }
       } catch {
         // silenciar para no spamear la consola en redes inestables
       } finally {
-        running = false
+        estado.running = false
       }
     }
 
-    void fetchNotificaciones()
-    const interval = window.setInterval(fetchNotificaciones, 10000)
-    const onFocus = () => fetchNotificaciones()
-    window.addEventListener('focus', onFocus)
+    const programar = () => {
+      window.clearTimeout(timer)
+      const oculto = document.visibilityState !== 'visible'
+      const espera = oculto ? SONDEO_OCULTO_MS : esKds ? SONDEO_KDS_MS : SONDEO_GENERAL_MS
+      timer = window.setTimeout(async () => {
+        await ejecutar()
+        if (!cancelled) programar()
+      }, espera)
+    }
+
+    const alCambiarVisibilidad = () => {
+      programar()
+      if (document.visibilityState === 'visible') void ejecutar()
+    }
+
+    void ejecutar()
+    programar()
+    document.addEventListener('visibilitychange', alCambiarVisibilidad)
 
     return () => {
       cancelled = true
-      window.clearInterval(interval)
-      window.removeEventListener('focus', onFocus)
+      window.clearTimeout(timer)
+      document.removeEventListener('visibilitychange', alCambiarVisibilidad)
     }
-  }, [state.usuarioActual])
+  }, [usuarioActualId, currentPage])
 
   const guardarConfiguracion = useCallback(async (data: Record<string, any>) => {
     try {
