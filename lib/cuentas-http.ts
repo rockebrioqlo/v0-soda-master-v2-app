@@ -51,9 +51,12 @@ export const PerdidaPostSchema = z
 export const PerdidaResolverSchema = z
   .object({
     perdida_id: uuid,
-    // El monto del cliente sigue sin contrastarse con la pérdida: B3 (sesión 9).
-    monto: z.number().positive().max(100_000_000).optional(),
+    // Sesión 9 (B3): entero (CLP sin decimales). El servidor lo contrasta con el monto registrado de
+    // la pérdida (no más que eso; menos solo con motivo). Sin monto se cobra el total registrado.
+    monto: z.number().int().positive().max(100_000_000).optional(),
     metodo: z.enum(['efectivo', 'tarjeta']).optional(),
     referencia: z.string().trim().max(60).nullish(),
+    // Obligatorio (lo verifica el servidor contra lo registrado) cuando el monto es menor.
+    motivo: z.string().trim().min(3, 'El motivo debe tener al menos 3 caracteres').max(300).nullish(),
   })
   .strict()

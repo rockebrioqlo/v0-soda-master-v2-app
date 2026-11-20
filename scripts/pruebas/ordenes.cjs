@@ -173,4 +173,59 @@ exports.correr = async function (ctx) {
   }
   check(`nunca borrado y pagado a la vez, stock coherente (pago ${gPago}, borrar ${gBorra})`, malos === 0, malos)
   check('sin ítems huérfanos', (await L.huerfanos(ctx)) === 0)
+
+  // ───── Sesión 9 (F20): borrar el último ítem sin pagar de una orden con cobros parciales ─────
+  console.log('\n[ordenes] F20: último ítem sin pagar de una orden con cobros parciales')
+  await L.reponer(ctx, L.BIG)
+  const borrarItem = (ses, id) => api(ses, 'DELETE', '/api/items-orden', { id })
+  const estadoMesa = async (n) => (await db`SELECT estado FROM soda_master.mesas WHERE id = ${mesa[n]}::uuid`)[0].estado
+  const kf = await L.K(ctx)
+  const rf = await enviar(maria, { mesa_id: mesa[9], items: [it(f.pR, 1), it(f.pP, 1)] })
+  const Of = rf.json.orden.id
+  const [iR, iP] = rf.json.items
+  const pg1 = await api(carlos, 'POST', '/api/pagos', { orden_id: Of, metodo: 'tarjeta', monto_esperado: 1000, item_orden_ids: [iR.id] })
+  check('cobro parcial del primer ítem: la orden sigue abierta', pg1.status === 201 && (await L.ordenRow(ctx, Of)).estado !== 'pagado', pg1.status)
+  check('borrar ítem: cocina → 403, sin sesión → 401, id inválido y campo extra → 400, ítem inexistente → 404', (await borrarItem(ezio, iP.id)).status === 403 && (await borrarItem(null, iP.id)).status === 401 && (await api(maria, 'DELETE', '/api/items-orden', { id: 'x' })).status === 400 && (await api(maria, 'DELETE', '/api/items-orden', { id: iP.id, foo: 1 })).status === 400 && (await borrarItem(maria, L.UUID_FALSO)).status === 404)
+  check('borrar un ítem ya pagado → 409 y nada cambia', (await borrarItem(maria, iR.id)).status === 409 && (await L.ordenRow(ctx, Of)).estado !== 'pagado')
+  const mesaAntes = await estadoMesa(9)
+  const dF = await borrarItem(maria, iP.id)
+  const oF = await L.ordenRow(ctx, Of)
+  check('borrar el último ítem sin pagar: 200 y orden_cerrada', dF.status === 200 && dF.json.orden_cerrada === true, dF)
+  check('la orden queda pagada, con la nota y sin ítems sin pagar', oF.estado === 'pagado' && (await L.itemsDe(ctx, Of)).every((i) => i.pagado) && /ORDEN CERRADA/.test((await db`SELECT notas FROM soda_master.ordenes WHERE id=${Of}::uuid`)[0].notas || ''), oF)
+  check('ya no hay orden activa en la mesa y la mesa no cambió de estado (como un cobro total)', (await L.activasMesa(ctx, 9)).length === 0 && (await estadoMesa(9)) === mesaAntes, mesaAntes)
+  check('montos de la orden = lo que quedó (1.000), sin crear ni devolver pagos', Number(oF.total) === 1000 && Number(oF.subtotal) === 1000 && Number((await db`SELECT count(*)::int AS n FROM soda_master.pagos WHERE orden_id=${Of}::uuid`)[0].n) === 1)
+  check('el stock del ítem borrado vuelve (K constante)', eq(await L.K(ctx), kf))
+  const nuevaF = await enviar(maria, { mesa_id: mesa[9], items: [it(f.pP)] })
+  check('la mesa admite una orden nueva (ya no está bloqueada)', nuevaF.status === 200, nuevaF.status)
+  await L.limpiarMesas(ctx, [9])
+
+  const r0 = await enviar(maria, { mesa_id: mesa[9], items: [it(f.pR, 1), it(f.pP, 1)] })
+  const d0 = await borrarItem(maria, r0.json.items[0].id)
+  check('sin ningún cobro: borrar uno de dos ítems no cierra la orden', d0.status === 200 && d0.json.orden_cerrada === false && (await L.ordenRow(ctx, r0.json.orden.id)).estado !== 'pagado')
+  const d1 = await borrarItem(maria, r0.json.items[1].id)
+  check('sin ningún cobro: borrar el único ítem que queda tampoco la marca pagada', d1.status === 200 && d1.json.orden_cerrada === false && (await L.ordenRow(ctx, r0.json.orden.id)).estado !== 'pagado')
+  await L.limpiarMesas(ctx, [9])
+
+  console.log('\n[ordenes] F20: carrera borrar el último ítem sin pagar contra su cobro (3 rondas)')
+  let gCobro = 0, gBorra2 = 0, malosF = 0
+  for (let k = 0; k < 3; k++) {
+    const kk = await L.K(ctx)
+    const r = await enviar(maria, { mesa_id: mesa[9], items: [it(f.pR, 1), it(f.pP, 1)] })
+    const Ord = r.json.orden.id
+    const [a, b] = r.json.items
+    await api(carlos, 'POST', '/api/pagos', { orden_id: Ord, metodo: 'tarjeta', monto_esperado: 1000, item_orden_ids: [a.id] })
+    const pagar = () => api(carlos, 'POST', '/api/pagos', { orden_id: Ord, metodo: 'tarjeta', monto_esperado: 1500, item_orden_ids: [b.id] })
+    const borrar = () => borrarItem(maria, b.id)
+    const [p, q] = await Promise.all(k % 2 === 0 ? [pagar(), sleep([0, 300, 700][k]).then(borrar)] : [sleep([0, 300, 700][k]).then(pagar), borrar()])
+    const est = (await L.ordenRow(ctx, Ord)).estado
+    const bDb = (await L.itemsDe(ctx, Ord)).find((i) => i.id === b.id)
+    let ok = est === 'pagado' && (await L.activasMesa(ctx, 9)).length === 0 && !(p.status === 201 && q.status === 200)
+    if (p.status === 201) { ok = ok && !!bDb && bDb.pagado === true && q.status === 409; gCobro++ }
+    else if (q.status === 200) { ok = ok && !bDb && p.status >= 400 && eq(await L.K(ctx), kk); gBorra2++ }
+    else ok = false
+    if (!ok) malosF++
+    await L.limpiarMesas(ctx, [9])
+  }
+  check(`nunca queda abierta con todo pagado, un solo ganador (cobro ${gCobro}, borrar ${gBorra2})`, malosF === 0, malosF)
+  check('F20: sin ítems huérfanos', (await L.huerfanos(ctx)) === 0)
 }

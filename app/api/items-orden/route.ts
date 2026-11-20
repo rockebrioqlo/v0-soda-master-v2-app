@@ -84,8 +84,11 @@ export async function DELETE(request: Request) {
     if (!s.ok) return s.respuesta
     const parsed = await leerBody(request, IdSchema, 'Datos del ítem')
     if (!parsed.ok) return parsed.respuesta
-    await db.eliminarItemOrden(parsed.datos.id)
-    return Response.json({ success: true })
+    const r = await db.eliminarItemOrden(parsed.datos.id, {
+      usuario: { id: s.usuario.id, nombre: s.usuario.nombre },
+    })
+    // `orden_cerrada`: era el último ítem sin pagar de una orden con cobros parciales (F20).
+    return Response.json({ success: true, orden_cerrada: r.orden_cerrada })
   } catch (error) {
     const resp = respuestaDeError(error)
     if (resp) return resp

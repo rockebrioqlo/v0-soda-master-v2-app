@@ -193,7 +193,7 @@ interface AppContextType {
   enviarComandaApi: (payload: any) => Promise<{ orden: any; items: any[] }>
   crearItemOrden: (item: any) => Promise<any>
   actualizarItemOrden: (id: string, updates: any) => Promise<any>
-  eliminarItemOrden: (id: string) => Promise<void>
+  eliminarItemOrden: (id: string) => Promise<{ orden_cerrada: boolean }>
   recargarOrdenes: () => Promise<void>
   recargarMesas: () => Promise<void>
   crearUsuarioApi: (payload: any) => Promise<any>
@@ -218,7 +218,14 @@ interface AppContextType {
     monto?: number
     metodo?: string
     referencia?: string | null
-  }) => Promise<{ id: string; pago_id: string; monto: number }>
+    motivo?: string | null
+  }) => Promise<{
+    id: string
+    pago_id: string
+    monto: number
+    monto_registrado: number
+    monto_condonado: number
+  }>
   getPermisosEspecialesApi: (filtro?: {
     usuario_id?: string
     tipo?: string
@@ -852,6 +859,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       body: JSON.stringify({ id }),
     })
     if (!res.ok) throw await errorDeRespuesta(res, 'No se pudo eliminar el ítem')
+    // Sesión 9 (F20): si era el último ítem sin pagar de una orden con cobros parciales, el servidor la cerró.
+    const data = await res.json().catch(() => null)
+    return { orden_cerrada: data?.orden_cerrada === true }
   }, [])
 
   const recargarUsuarios = useCallback(async () => {
@@ -1117,6 +1127,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     monto?: number
     metodo?: string
     referencia?: string | null
+    motivo?: string | null
   }) => {
     // Quién cobra lo toma el servidor de la sesión.
     const res = await fetch('/api/perdidas/resolver', {
@@ -1127,10 +1138,17 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         monto: payload.monto,
         metodo: payload.metodo,
         referencia: payload.referencia ?? undefined,
+        motivo: payload.motivo || undefined,
       }),
     })
     if (!res.ok) throw await errorDeRespuesta(res, 'Error al cobrar retroactivamente')
-    return (await res.json()) as { id: string; pago_id: string; monto: number }
+    return (await res.json()) as {
+      id: string
+      pago_id: string
+      monto: number
+      monto_registrado: number
+      monto_condonado: number
+    }
   }, [])
 
   const recargarPagos = useCallback(async (fecha?: string) => {

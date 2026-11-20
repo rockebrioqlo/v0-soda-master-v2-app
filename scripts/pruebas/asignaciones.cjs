@@ -37,6 +37,54 @@ exports.correr = async function (ctx) {
   check('ítem pagado no se reasigna → 409', pagadoPrimero.status === 201 && (await asignar(maria, { orden_id: O, asignaciones: [{ item_orden_id: itemP.id, cantidad: 1, cuenta_persona_id: pB }] })).status === 409)
   await L.limpiarMesas(ctx, [3])
 
+  // ───── Sesión 9 (A3): eliminar una persona con ítems pagados ─────
+  console.log('\n[asignaciones] A3: eliminar una persona')
+  await L.reponer(ctx, L.BIG)
+  const delPersona = (ses, id) => api(ses, 'DELETE', '/api/cuentas-persona', { id })
+  const codigo = (x) => x.json && x.json.codigo
+  const personaDe = async (id) => (await db`SELECT id FROM soda_master.cuentas_persona WHERE id = ${id}::uuid`).length
+  const cuentaDeItem = async (id) => (await db`SELECT cuenta_persona_id::text AS c, pagado FROM soda_master.items_orden WHERE id = ${id}::uuid`)[0]
+  const ra3 = await enviar(maria, { mesa_id: mesa[9], items: [it(f.pP, 1), it(f.pR, 1)] })
+  const O3 = ra3.json.orden.id
+  const [x1, x2] = ra3.json.items
+  const qa = idDe(await api(maria, 'POST', '/api/cuentas-persona', { orden_id: O3, nombre: 'Paga' }))
+  const qb = idDe(await api(maria, 'POST', '/api/cuentas-persona', { orden_id: O3, nombre: 'Pendiente' }))
+  const qc = idDe(await api(maria, 'POST', '/api/cuentas-persona', { orden_id: O3, nombre: 'Vacía' }))
+  await asignar(maria, { orden_id: O3, asignaciones: [{ item_orden_id: x1.id, cantidad: 1, cuenta_persona_id: qa }, { item_orden_id: x2.id, cantidad: 1, cuenta_persona_id: qb }] })
+  await api(carlos, 'POST', '/api/pagos', { orden_id: O3, metodo: 'tarjeta', monto_esperado: 1500, item_orden_ids: [x1.id] })
+  const dA = await delPersona(maria, qa)
+  check('eliminar una persona con ítems pagados → 409 PERSONA_CON_ITEMS_PAGADOS y el historial intacto', dA.status === 409 && codigo(dA) === 'PERSONA_CON_ITEMS_PAGADOS' && /ya pagó 1 ítem/.test(dA.json.error) && (await personaDe(qa)) === 1 && (await cuentaDeItem(x1.id)).c === qa && (await cuentaDeItem(x1.id)).pagado === true, dA)
+  check('eliminar con cocina → 403, sin sesión → 401, id inválido y campo extra → 400', (await delPersona(ezio, qb)).status === 403 && (await delPersona(null, qb)).status === 401 && (await delPersona(maria, 'x')).status === 400 && (await api(maria, 'DELETE', '/api/cuentas-persona', { id: qb, foo: 1 })).status === 400 && (await personaDe(qb)) === 1)
+  const dB = await delPersona(maria, qb)
+  const itB = await cuentaDeItem(x2.id)
+  check('persona con solo ítems pendientes: se elimina y sus ítems quedan compartidos (sin pagar)', dB.status === 200 && (await personaDe(qb)) === 0 && itB.c === null && itB.pagado === false, [dB.status, itB])
+  check('persona sin ítems: 200, y repetir (doble clic) también', (await delPersona(maria, qc)).status === 200 && (await delPersona(maria, qc)).status === 200 && (await personaDe(qc)) === 0)
+  check('persona renombrable aunque tenga ítems pagados', (await api(maria, 'PATCH', '/api/cuentas-persona', { id: qa, nombre: 'Ya pagó' })).status === 200)
+  await L.limpiarMesas(ctx, [9])
+
+  console.log('\n[asignaciones] A3: carrera eliminar persona contra el cobro de su ítem (3 rondas)')
+  let buenasA3 = 0, ganaCobro = 0
+  for (let k = 0; k < 3; k++) {
+    await L.limpiarMesas(ctx, [9])
+    const rr = await enviar(maria, { mesa_id: mesa[9], items: [it(f.pP, 1)] })
+    const Ord = rr.json.orden.id
+    const itm = rr.json.items[0]
+    const pp = idDe(await api(maria, 'POST', '/api/cuentas-persona', { orden_id: Ord, nombre: 'Carrera' }))
+    await asignar(maria, { orden_id: Ord, asignaciones: [{ item_orden_id: itm.id, cantidad: 1, cuenta_persona_id: pp }] })
+    const pagar = () => api(carlos, 'POST', '/api/pagos', { orden_id: Ord, metodo: 'tarjeta', monto_esperado: 1500, item_orden_ids: [itm.id] })
+    const elimina = () => delPersona(maria, pp)
+    const demora = [0, 300, 700][k]
+    const [c, d] = await Promise.all(k % 2 === 0 ? [pagar(), sleep(demora).then(elimina)] : [sleep(demora).then(pagar), elimina()])
+    const existe = await personaDe(pp)
+    const it2 = await cuentaDeItem(itm.id)
+    // o el cobro llegó primero (persona e historial intactos, 409) o la persona se eliminó antes de pagar
+    const coherente = c.status === 201 && it2.pagado === true &&
+      ((d.status === 409 && existe === 1 && it2.c === pp) || (d.status === 200 && existe === 0 && it2.c === null))
+    if (coherente) { buenasA3++; if (d.status === 409) ganaCobro++ }
+  }
+  check(`el historial de quién pagó nunca se pierde: o 409 con la persona intacta o eliminada antes del cobro (${buenasA3}/3, cobro primero ${ganaCobro})`, buenasA3 === 3, buenasA3)
+  await L.limpiarMesas(ctx, [9])
+
   console.log('\n[asignaciones] carreras (3 rondas)')
   let ganan = 0, malos = 0
   for (let k = 0; k < 3; k++) {
@@ -82,5 +130,102 @@ exports.correr = async function (ctx) {
   const rpg = await enviar(maria, { mesa_id: mesa[7], items: [it(f.pP)] })
   await api(carlos, 'POST', '/api/pagos', { orden_id: rpg.json.orden.id, metodo: 'tarjeta', monto_esperado: 1500 })
   check('pérdida sobre una orden pagada → 409', (await api(admin, 'POST', '/api/perdidas', { orden_id: rpg.json.orden.id, motivo: ctx.marca })).status === 409)
+  await L.limpiarMesas(ctx)
+
+  // ───── Sesión 9 (B3, F24): monto y motivo del cobro retroactivo, y su paso por la caja ─────
+  console.log('\n[asignaciones] B3: el monto del cobro retroactivo contra lo registrado')
+  await L.reponer(ctx, L.BIG)
+  const resolver = (ses, body) => api(ses, 'POST', '/api/perdidas/resolver', body)
+  const nuevaPerdida = async (n, items, conPersona) => {
+    const r = await enviar(maria, { mesa_id: mesa[n], items })
+    const O = r.json.orden.id
+    const persona = conPersona ? idDe(await api(maria, 'POST', '/api/cuentas-persona', { orden_id: O, nombre: 'P' })) : null
+    const probe = await api(carlos, 'POST', '/api/pagos', { orden_id: O, metodo: 'tarjeta', monto_esperado: 1 })
+    const reg = await api(admin, 'POST', '/api/perdidas', { orden_id: O, motivo: ctx.marca })
+    return { O, persona, ms: Number(probe.json.monto_servidor), pid: idDe(reg), st: reg.status }
+  }
+  const perdidaDb = async (pid) => (await db`SELECT resuelto, monto_perdido::float AS reg, monto_cobrado::float AS cobrado, monto_condonado::float AS condonado, motivo_condonacion, pago_id::text AS pago_id FROM soda_master.perdidas_comanda WHERE id = ${pid}::uuid`)[0]
+  const nPagos = async (O) => Number((await db`SELECT count(*)::int AS n FROM soda_master.pagos WHERE orden_id = ${O}::uuid`)[0].n)
+  const auditoria = async (pid) => db`SELECT usuario_id::text AS u, usuario_rol, detalles FROM soda_master.auditoria_admin WHERE accion = 'perdida_cobro_parcial' AND entidad_id = ${pid}::uuid`
+
+  const b1 = await nuevaPerdida(8, [it(f.pR, 2), it(f.pP, 1)], true)
+  check('pérdida registrada con el monto de Pagos', b1.st === 201 && b1.ms >= 1000 && (await perdidaDb(b1.pid)).reg === b1.ms, b1)
+  check('persona de una orden ya perdida: eliminar → 409 ORDEN_NO_ACTIVA', codigo(await delPersona(maria, b1.persona)) === 'ORDEN_NO_ACTIVA')
+  const exceso = await resolver(carlos, { perdida_id: b1.pid, metodo: 'tarjeta', monto: b1.ms + 1 })
+  check('monto mayor que lo registrado → 400 MONTO_EXCEDE_PERDIDA, sin pago y sin resolver', exceso.status === 400 && codigo(exceso) === 'MONTO_EXCEDE_PERDIDA' && (await nPagos(b1.O)) === 0 && !(await perdidaDb(b1.pid)).resuelto, exceso)
+  const sinMotivo = await resolver(carlos, { perdida_id: b1.pid, metodo: 'tarjeta', monto: b1.ms - 100 })
+  check('monto menor sin motivo → 400 MOTIVO_REQUERIDO, sin pago y sin resolver', sinMotivo.status === 400 && codigo(sinMotivo) === 'MOTIVO_REQUERIDO' && (await nPagos(b1.O)) === 0 && !(await perdidaDb(b1.pid)).resuelto, sinMotivo)
+  const invalidos = await Promise.all([
+    { monto: b1.ms - 0.5, motivo: 'xxx' }, { monto: 0 }, { monto: -5 }, { monto: b1.ms - 100, motivo: 'ab' }, { cobrado_por: admin.id }, { usuario_id: admin.id },
+  ].map((extra) => resolver(carlos, { perdida_id: b1.pid, metodo: 'tarjeta', ...extra })))
+  check('monto decimal, cero, negativo, motivo corto y campos ajenos (cobrado_por, usuario_id) → 400', invalidos.every((x) => x.status === 400), invalidos.map((x) => x.status))
+  check('mesero → 403, sin sesión → 401, id inválido → 400, pérdida inexistente → 404', (await resolver(maria, { perdida_id: b1.pid, metodo: 'tarjeta' })).status === 403 && (await resolver(null, { perdida_id: b1.pid, metodo: 'tarjeta' })).status === 401 && (await resolver(carlos, { perdida_id: 'x' })).status === 400 && (await resolver(carlos, { perdida_id: L.UUID_FALSO, metodo: 'tarjeta' })).status === 404)
+  check('nada de lo anterior dejó pagos ni resolvió la pérdida', (await nPagos(b1.O)) === 0 && !(await perdidaDb(b1.pid)).resuelto)
+
+  const cuerpos = [
+    { perdida_id: b1.pid, metodo: 'tarjeta' },
+    { perdida_id: b1.pid, metodo: 'tarjeta', monto: b1.ms - 100, motivo: 'carrera A' },
+    { perdida_id: b1.pid, metodo: 'tarjeta', monto: b1.ms - 200, motivo: 'carrera B' },
+  ]
+  const carrera = await Promise.all(cuerpos.map((c, i) => sleep(i * 20).then(() => resolver(carlos, c))))
+  const gano = carrera.filter((x) => x.status === 200 || x.status === 201)
+  const dbB1 = await perdidaDb(b1.pid)
+  const pagoB1 = (await db`SELECT monto::float AS m FROM soda_master.pagos WHERE orden_id = ${b1.O}::uuid`)
+  check('3 cobros retroactivos en paralelo con montos distintos: uno gana, los otros 409 y un solo pago', gano.length === 1 && carrera.filter((x) => x.status === 409).length === 2 && pagoB1.length === 1, carrera.map((x) => x.status))
+  check('lo cobrado, lo condonado y la auditoría coinciden con el pago ganador', dbB1.resuelto && pagoB1[0].m === dbB1.cobrado && dbB1.condonado === b1.ms - dbB1.cobrado && (dbB1.condonado > 0 ? (await auditoria(b1.pid)).length === 1 && !!dbB1.motivo_condonacion : (await auditoria(b1.pid)).length === 0), { dbB1, pagoB1 })
+
+  const b2 = await nuevaPerdida(8, [it(f.pR, 2), it(f.pP, 1)])
+  const parcial = await resolver(carlos, { perdida_id: b2.pid, metodo: 'tarjeta', monto: b2.ms - 500, motivo: 'Cliente reclamó un plato frío' })
+  const dbB2 = await perdidaDb(b2.pid)
+  const pagoB2 = (await db`SELECT monto::float AS m, cobrado_por::text AS por, metodo FROM soda_master.pagos WHERE id = ${dbB2.pago_id}::uuid`)[0]
+  const audB2 = await auditoria(b2.pid)
+  check('cobro parcial con motivo: 201 y la respuesta informa lo condonado', parcial.status === 201 && parcial.json.monto === b2.ms - 500 && parcial.json.monto_condonado === 500 && parcial.json.monto_registrado === b2.ms, parcial)
+  check('el parcial queda resuelto con cobrado, condonado y motivo; el pago es el parcial y lo cobra la sesión', dbB2.resuelto && dbB2.cobrado === b2.ms - 500 && dbB2.condonado === 500 && dbB2.motivo_condonacion === 'Cliente reclamó un plato frío' && pagoB2.m === b2.ms - 500 && pagoB2.por === carlos.id && pagoB2.metodo === 'tarjeta', [dbB2, pagoB2])
+  check('el parcial deja UNA fila de auditoría con el usuario de la sesión, el motivo y las cifras', audB2.length === 1 && audB2[0].u === carlos.id && audB2[0].usuario_rol === 'cajero' && audB2[0].detalles.motivo === 'Cliente reclamó un plato frío' && Number(audB2[0].detalles.monto_condonado) === 500 && Number(audB2[0].detalles.monto_registrado) === b2.ms, audB2)
+  check('la nota de la orden menciona la diferencia condonada y resolver de nuevo → 409', /condonada \$500/.test((await db`SELECT notas FROM soda_master.ordenes WHERE id = ${b2.O}::uuid`)[0].notas || '') && (await resolver(carlos, { perdida_id: b2.pid, metodo: 'tarjeta' })).status === 409)
+
+  const b3 = await nuevaPerdida(8, [it(f.pP, 1)])
+  const total = await resolver(carlos, { perdida_id: b3.pid, metodo: 'tarjeta', monto: b3.ms, motivo: 'no hace falta' })
+  const dbB3 = await perdidaDb(b3.pid)
+  check('cobro del total (monto explícito): sin condonación y sin fila de auditoría, aunque venga un motivo', total.status === 201 && dbB3.cobrado === b3.ms && dbB3.condonado === 0 && dbB3.motivo_condonacion === null && (await auditoria(b3.pid)).length === 0, dbB3)
+
+  console.log('\n[asignaciones] F24: el cobro retroactivo en efectivo entra a la caja')
+  if (ctx.cajaAjena) {
+    console.log('  (hay una caja abierta ajena: se omiten las pruebas de efectivo y de cierre de caja)')
+  } else {
+    const c1 = await nuevaPerdida(8, [it(f.pP, 1)])
+    const sinCaja = await resolver(carlos, { perdida_id: c1.pid, metodo: 'efectivo' })
+    check('efectivo sin caja abierta → 409 CAJA_CERRADA, sin pago y la pérdida sigue pendiente', sinCaja.status === 409 && codigo(sinCaja) === 'CAJA_CERRADA' && (await nPagos(c1.O)) === 0 && !(await perdidaDb(c1.pid)).resuelto, sinCaja)
+    const tarj = await resolver(carlos, { perdida_id: c1.pid, metodo: 'tarjeta' })
+    check('tarjeta se permite sin caja y no mueve la caja', tarj.status === 201 && Number((await db`SELECT count(*)::int AS n FROM soda_master.movimientos_caja WHERE pago_id = ${tarj.json.pago_id}::uuid`)[0].n) === 0, tarj)
+
+    const caja = await api(carlos, 'POST', '/api/caja', { fondo_inicial: 50000, notas: ctx.marca })
+    const cajaId = (caja.json.caja && caja.json.caja.id) || caja.json.id
+    check('abrir caja con fondo 50.000', [200, 201].includes(caja.status) && !!cajaId, caja)
+    let efectivo = 0
+    try {
+      const c2 = await nuevaPerdida(8, [it(f.pP, 1), it(f.pR, 1)])
+      const ef = await resolver(carlos, { perdida_id: c2.pid, metodo: 'efectivo' })
+      efectivo += c2.ms
+      const mv = await db`SELECT tipo, monto::float AS m, usuario_id::text AS u, caja_id::text AS caja FROM soda_master.movimientos_caja WHERE pago_id = ${ef.json.pago_id}::uuid`
+      check('efectivo con caja abierta: un solo movimiento venta_efectivo con el monto, la caja abierta y el usuario de la sesión', ef.status === 201 && mv.length === 1 && mv[0].tipo === 'venta_efectivo' && mv[0].m === c2.ms && mv[0].u === carlos.id && mv[0].caja === cajaId, [ef.status, mv])
+
+      const c3 = await nuevaPerdida(8, [it(f.pR, 2), it(f.pP, 1)])
+      const ef3 = await resolver(carlos, { perdida_id: c3.pid, metodo: 'efectivo', monto: c3.ms - 300, motivo: 'Descuento de cortesía' })
+      efectivo += c3.ms - 300
+      const mv3 = await db`SELECT tipo, monto::float AS m FROM soda_master.movimientos_caja WHERE pago_id = ${ef3.json.pago_id}::uuid`
+      check('efectivo parcial: el movimiento es lo cobrado, no lo registrado', ef3.status === 201 && mv3.length === 1 && mv3[0].m === c3.ms - 300, [ef3.status, mv3])
+
+      const c4 = await nuevaPerdida(8, [it(f.pP, 1)])
+      const dos = await Promise.all([0, 20].map((d) => sleep(d).then(() => resolver(carlos, { perdida_id: c4.pid, metodo: 'efectivo' }))))
+      const g4 = dos.filter((x) => x.status === 201)
+      if (g4.length === 1) efectivo += c4.ms
+      const mv4 = await db`SELECT count(*)::int AS n FROM soda_master.movimientos_caja m JOIN soda_master.pagos p ON p.id = m.pago_id WHERE p.orden_id = ${c4.O}::uuid`
+      check('2 cobros en efectivo en paralelo: uno gana, el otro 409 y un solo movimiento de caja', g4.length === 1 && dos.filter((x) => x.status === 409).length === 1 && Number(mv4[0].n) === 1, dos.map((x) => x.status))
+    } finally {
+      const cierre = await api(carlos, 'POST', '/api/caja/cerrar', { caja_id: cajaId, efectivo_contado: 50000 + efectivo, notas: ctx.marca })
+      check('cierre de caja con el efectivo retroactivo contado: diferencia 0', cierre.status === 200 && Number(cierre.json.diferencia) === 0, cierre.json)
+    }
+  }
   await L.limpiarMesas(ctx)
 }

@@ -543,9 +543,12 @@ export function POSPage() {
     // Sesión 8 (F10): un ítem ya enviado vive en el servidor; antes el botón solo lo quitaba de
     // la pantalla y reaparecía en el siguiente sondeo. Ahora se borra de verdad (el servidor
     // devuelve el stock si la cocina aún no lo toca) y, si no se puede, se avisa y se deja.
+    let ordenCerrada = false
     if (isPersistedId(itemId)) {
       try {
-        await eliminarItemOrden(itemId)
+        // Sesión 9 (F20): si era el último ítem sin pagar de una orden con cobros parciales,
+        // el servidor la cierra como pagada.
+        ordenCerrada = (await eliminarItemOrden(itemId)).orden_cerrada
       } catch (error) {
         showToast(mensajeAccionable(error, 'No se pudo eliminar el ítem'), 'error')
         return
@@ -554,9 +557,13 @@ export function POSPage() {
     const updatedComanda: Comanda = {
       ...currentComanda,
       items: currentComanda.items.filter(i => i.id !== itemId),
+      ...(ordenCerrada ? { estado: 'pagado' as const } : {}),
     }
     dispatch({ type: 'UPDATE_COMANDA', payload: updatedComanda })
     setCurrentComanda(updatedComanda)
+    if (ordenCerrada) {
+      showToast('Ítem eliminado: lo que quedaba ya estaba cobrado, la orden se cerró como pagada.', 'success')
+    }
   }
 
   // ─── Edición de un ítem existente ─────────────────────

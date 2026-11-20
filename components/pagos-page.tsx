@@ -143,6 +143,7 @@ export function PagosPage() {
   const [perdidaSeleccionada, setPerdidaSeleccionada] = useState<any | null>(null)
   const [showResolverDialog, setShowResolverDialog] = useState(false)
   const [montoResolver, setMontoResolver] = useState('')
+  const [motivoResolver, setMotivoResolver] = useState('')
   const [metodoResolver, setMetodoResolver] = useState<MetodoPago>('efectivo')
   const [resolviendoPerdida, setResolviendoPerdida] = useState(false)
 
@@ -1091,6 +1092,7 @@ export function PagosPage() {
   const abrirResolverPerdida = (perdida: any) => {
     setPerdidaSeleccionada(perdida)
     setMontoResolver(String(Number(perdida.monto_perdido) || 0))
+    setMotivoResolver('')
     setMetodoResolver('efectivo')
     setShowResolverDialog(true)
   }
@@ -1101,9 +1103,19 @@ export function PagosPage() {
       showToast('Sólo cajero o administrador puede cobrar retroactivamente', 'error')
       return
     }
-    const monto = parseFloat(montoResolver) || 0
+    const monto = Math.round(parseFloat(montoResolver) || 0)
+    const registrado = Number(perdidaSeleccionada.monto_perdido) || 0
     if (monto <= 0) {
       showToast('El monto debe ser mayor que 0', 'error')
+      return
+    }
+    if (monto > registrado) {
+      showToast(`El monto no puede superar lo registrado (${formatCurrency(registrado)})`, 'error')
+      return
+    }
+    const motivo = motivoResolver.trim()
+    if (monto < registrado && motivo.length < 3) {
+      showToast('Si cobras menos de lo registrado, indica el motivo (mínimo 3 caracteres)', 'error')
       return
     }
     setResolviendoPerdida(true)
@@ -1112,9 +1124,12 @@ export function PagosPage() {
         perdida_id: perdidaSeleccionada.id,
         monto,
         metodo: metodoResolver,
+        motivo: monto < registrado ? motivo : undefined,
       })
       showToast(
-        `Cobro retroactivo registrado: ${formatCurrency(result.monto)}`,
+        result.monto_condonado > 0
+          ? `Cobro retroactivo registrado: ${formatCurrency(result.monto)} (se condonaron ${formatCurrency(result.monto_condonado)})`
+          : `Cobro retroactivo registrado: ${formatCurrency(result.monto)}`,
         'success',
       )
       setShowResolverDialog(false)
@@ -1123,8 +1138,9 @@ export function PagosPage() {
       recargarPagos()
     } catch (error: any) {
       showToast(error?.message || 'Error al registrar el cobro retroactivo', 'error')
-      // 409: otra persona ya cobró esta pérdida.
-      if (error?.status === 409) {
+      // 409 PERDIDA_YA_RESUELTA: otra persona ya cobró esta pérdida (otros 409, como CAJA_CERRADA,
+      // dejan el diálogo abierto para corregir el método de pago).
+      if (error?.status === 409 && error?.codigo === 'PERDIDA_YA_RESUELTA') {
         setShowResolverDialog(false)
         cargarPerdidas()
       }
@@ -1368,15 +1384,35 @@ export function PagosPage() {
                   </label>
                   <Input
                     type="number"
+                    min={1}
+                    max={Number(perdidaSeleccionada.monto_perdido) || undefined}
+                    step={1}
                     value={montoResolver}
                     onChange={(e) => setMontoResolver(e.target.value)}
                     className="bg-muted"
                   />
                   <p className="text-xs text-muted-foreground">
-                    Si el cliente paga sólo una parte, podés ajustarlo. Por
-                    defecto se cobra el total perdido.
+                    Por defecto se cobra el total registrado. No puede ser mayor; si el
+                    cliente paga sólo una parte, debes indicar el motivo y la diferencia
+                    queda registrada como condonada.
                   </p>
                 </div>
+
+                {(Math.round(parseFloat(montoResolver) || 0)) > 0 &&
+                  Math.round(parseFloat(montoResolver) || 0) < (Number(perdidaSeleccionada.monto_perdido) || 0) && (
+                    <div className="space-y-1">
+                      <label className="text-sm font-medium text-foreground">
+                        Motivo de la diferencia (obligatorio)
+                      </label>
+                      <Textarea
+                        value={motivoResolver}
+                        onChange={(e) => setMotivoResolver(e.target.value)}
+                        maxLength={300}
+                        placeholder="Por qué se cobra menos de lo registrado"
+                        className="bg-muted"
+                      />
+                    </div>
+                  )}
 
                 <div className="space-y-1">
                   <label className="text-sm font-medium text-foreground">

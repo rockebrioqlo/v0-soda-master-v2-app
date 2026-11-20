@@ -12,7 +12,9 @@ import { PerdidaResolverSchema } from '@/lib/cuentas-http'
  *    `referencia` apuntando a la pérdida, marca `perdidas_comanda` como
  *    `resuelto = true` y deja una nota en `ordenes.notas`;
  *  - dos cobros en paralelo: uno gana (201) y el otro recibe 409.
- * El monto del cliente todavía no se compara con la pérdida (B3, sesión 9).
+ * Sesión 9: el monto no puede superar lo registrado de la pérdida (400); si es menor, el
+ * motivo es obligatorio (400) y la diferencia queda condonada y en la auditoría (B3). El efectivo
+ * entra a la caja abierta en la misma transacción; sin caja abierta → 409 (F24).
  */
 export async function POST(request: Request) {
   try {
@@ -26,8 +28,10 @@ export async function POST(request: Request) {
       monto: v.datos.monto,
       metodo: v.datos.metodo,
       referencia: v.datos.referencia ?? null,
+      motivo: v.datos.motivo ?? null,
       resuelto_por_id: s.usuario.id,
       resuelto_por_nombre: s.usuario.nombre,
+      resuelto_por_rol: s.usuario.rol,
     })
     return Response.json(result, { status: 201 })
   } catch (error: any) {
