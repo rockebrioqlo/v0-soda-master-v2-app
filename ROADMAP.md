@@ -124,6 +124,7 @@ Todos quedan asignados a una sesión (sección 4). C2 ya está corregido. Estado
 | C6 | 🟡 Menor | Falta índice en `items_orden(orden_id, pagado)` | 14 |
 | C7 | 🟡 Menor | `setTimeout` del toast no se cancela al desmontar | 14 |
 | C8 | 🟡 Menor | Botón "quitar persona" visible con ítems recién asignados | 14 |
+| C9 | 🟡 Menor | Pagos: tras cobrar, el formulario no se limpia y queda un "Vuelto $10.000" residual (con el total en $0). Es estado del formulario (efectivo recibido) que no se reinicia. Visto en la sesión 6 | 14 |
 | #23 | 🟡 Menor | Crear/editar mesa ignora el nombre personalizado | 15 |
 | #26 | 🟡 Menor | Init silencia errores y muestra app vacía | 15 |
 | B8 / #24 | 🟡 Menor | Log `[v0]` en `pos-page.tsx:810` | 15 |
@@ -200,7 +201,7 @@ Regla: **1 tarea atómica por sesión**, `pnpm build` antes de cerrar, sin `git 
 
 | Sesión | Tarea | Modelo sugerido | Resuelve |
 |---|---|---|---|
-| 14 | Lote de menores en pagos, toasts e índices: `[...pagos].sort`, `mapPago` explícito, índice `items_orden(orden_id, pagado)`, limpiar `setTimeout` del toast, botón "quitar persona". | Haiku 5.5 o Sonnet 5.5 | C1, C5, C6, C7, C8 |
+| 14 | Lote de menores en pagos, toasts e índices: `[...pagos].sort`, `mapPago` explícito, índice `items_orden(orden_id, pagado)`, limpiar `setTimeout` del toast, botón "quitar persona", limpiar el estado del formulario de Pagos tras cobrar (efectivo recibido y vuelto residual). | Haiku 5.5 o Sonnet 5.5 | C1, C5, C6, C7, C8, C9 |
 | 15 | Mesas y robustez: guardar el nombre personalizado de mesa y validarlo único (#23); pantalla "Error de conexión con la BD – reintentar" (#26); quitar log `[v0]` (B8/#24); documentar la decisión sobre commits con `Co-authored-by: Cursor` (#27). | Sonnet 5.5 | #23, #26, B8, #24, #27 |
 
 ### Bloque D — Cumplimiento para vender en Chile (después de todos los bugs)
