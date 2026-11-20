@@ -7,11 +7,16 @@
  * ni al navegador.
  *
  * Reglas (las mismas que mostraba la boleta antes de esta sesión):
- *  - Descuento sobre el subtotal de lo que se cobra en ESTE pago:
- *      porcentaje        → subtotal × valor / 100
- *      monto_fijo        → valor (tope: subtotal de toda la orden), prorrateado
- *      cortesia_parcial    por la parte de la orden que se cobra ahora
+ *  - Descuento (sesión 12, B4): primero el de la ORDEN completa
+ *      porcentaje        → subtotal de la orden × valor / 100
+ *      monto_fijo        → valor (tope: subtotal de la orden)
+ *      cortesia_parcial
  *      cortesia_total    → todo el subtotal
+ *    y de ahí lo que le toca a ESTE pago: lo que falta por entregar
+ *    (descuento de la orden − lo ya dado en pagos anteriores) prorrateado por
+ *    la parte de lo pendiente que se cobra ahora; el pago que cubre todo lo
+ *    pendiente se lleva el resto exacto, así la suma de los cobros es el total
+ *    de la orden. Tope por pago: su propio subtotal.
  *  - IVA: los precios de la carta YA lo incluyen (como en Chile). Si el IVA
  *    está habilitado en configuración se DESGLOSA para la boleta
  *    (base − base / (1 + tasa)), pero no se suma al total: el total es la
@@ -76,28 +81,58 @@ export function subtotalItems(items: ReadonlyArray<ItemCobro>): number {
   return items.reduce((s, i) => s + (Number(i.precio) || 0) * (Number(i.cantidad) || 0), 0)
 }
 
-export function descuentoDelPago(
-  subtotal: number,
-  subtotalOrden: number,
-  descuento: DescuentoCobro,
-): number {
-  if (!descuento.tipo || subtotal <= 0) return 0
+/**
+ * Descuento de la ORDEN completa (sesión 12, B4): el tipo y el valor aplicados
+ * al subtotal de todos los ítems vigentes (pagados o no). Es la cifra a la que
+ * tienen que converger los descuentos de todos los cobros de la orden.
+ */
+export function descuentoDeOrden(subtotalOrden: number, descuento: DescuentoCobro): number {
+  if (!descuento.tipo || subtotalOrden <= 0) return 0
   const valor = Math.max(Number(descuento.valor) || 0, 0)
   switch (descuento.tipo) {
     case 'porcentaje':
-      return redondearCLP(Math.min(subtotal * (Math.min(valor, 100) / 100), subtotal))
+      return redondearCLP(Math.min(subtotalOrden * (Math.min(valor, 100) / 100), subtotalOrden))
     case 'cortesia_total':
-      return redondearCLP(subtotal)
+      return redondearCLP(subtotalOrden)
     case 'monto_fijo':
-    case 'cortesia_parcial': {
-      if (subtotalOrden <= 0) return 0
-      const tope = Math.min(valor, subtotalOrden)
-      const ratio = Math.min(subtotal / subtotalOrden, 1)
-      return redondearCLP(Math.min(tope * ratio, subtotal))
-    }
+    case 'cortesia_parcial':
+      return redondearCLP(Math.min(valor, subtotalOrden))
     default:
       return 0
   }
+}
+
+/** Lo que una orden sabe de sus cobros anteriores, para prorratear el descuento (sesión 12, B4). */
+export interface ContextoDescuento {
+  /** Subtotal de TODA la orden (ítems vigentes, pagados o no). */
+  subtotalOrden: number
+  /** Subtotal de lo que todavía no se paga (incluye lo que se cobra ahora). Por defecto, todo. */
+  subtotalPendiente?: number
+  /** Σ del descuento ya entregado en los pagos anteriores de la orden (`pagos.descuento`). */
+  descuentoDado?: number
+}
+
+/**
+ * Descuento de UN pago (sesión 12, B4). Con `D` = descuento de la orden completa
+ * y `restante = max(0, D − dado)`:
+ *   - el pago que cubre todo lo pendiente se lleva el `restante` completo
+ *     (así la suma de los cobros es exactamente `D`);
+ *   - los demás se llevan `restante × subtotal_del_pago / subtotal_pendiente`,
+ *     redondeado a CLP entero.
+ * En ambos casos el tope es el subtotal del pago, aplicado después del redondeo.
+ */
+export function descuentoDelPago(
+  subtotal: number,
+  ctx: ContextoDescuento,
+  descuento: DescuentoCobro,
+): number {
+  if (!descuento.tipo || subtotal <= 0) return 0
+  const orden = descuentoDeOrden(ctx.subtotalOrden, descuento)
+  const restante = Math.max(0, orden - Math.max(Number(ctx.descuentoDado) || 0, 0))
+  if (restante <= 0) return 0
+  const pendiente = Math.max(ctx.subtotalPendiente ?? ctx.subtotalOrden, subtotal)
+  if (subtotal >= pendiente) return Math.min(restante, subtotal)
+  return Math.min(restante, subtotal, redondearCLP((restante * subtotal) / pendiente))
 }
 
 export function propinaDelPago(
@@ -129,14 +164,27 @@ export function propinaPermitida(
 export function calcularCobro(input: {
   /** Ítems que se cobran en este pago (con la cantidad que se cobra). */
   items: ReadonlyArray<ItemCobro>
-  /** Subtotal de TODA la orden (incluye lo ya pagado): prorratea el descuento fijo. */
+  /** Subtotal de TODA la orden (incluye lo ya pagado): base del descuento de la orden. */
   subtotalOrden: number
+  /** Subtotal de lo que falta por pagar (incluye lo que se cobra ahora). Por defecto, toda la orden. */
+  subtotalPendiente?: number
+  /** Descuento ya entregado en los cobros anteriores de la orden. Por defecto, 0. */
+  descuentoDado?: number
   descuento: DescuentoCobro
   config: ConfigCobro
   propina?: PropinaCobro | null
 }): ResultadoCobro {
   const subtotal = redondearCLP(subtotalItems(input.items))
-  const descuento = descuentoDelPago(subtotal, redondearCLP(input.subtotalOrden), input.descuento)
+  const descuento = descuentoDelPago(
+    subtotal,
+    {
+      subtotalOrden: redondearCLP(input.subtotalOrden),
+      subtotalPendiente:
+        input.subtotalPendiente === undefined ? undefined : redondearCLP(input.subtotalPendiente),
+      descuentoDado: input.descuentoDado,
+    },
+    input.descuento,
+  )
   const base = Math.max(subtotal - descuento, 0)
   const tasa = Number(input.config.tasaImpuesto) || 0
   const incluido = input.config.preciosIncluyenIva

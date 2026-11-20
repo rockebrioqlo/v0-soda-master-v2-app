@@ -446,6 +446,11 @@ const ERRORES_TX_ORDEN: Record<string, { status: number; mensaje: string }> = {
     mensaje: 'Si cobras menos de lo registrado, indica el motivo (mínimo 3 caracteres).',
   },
   CAJA_CERRADA: ERRORES_COBRO.CAJA_CERRADA,
+  // Sesión 12: descuentos y prorrateo (B4, F17).
+  ORDEN_CON_COBROS: {
+    status: 409,
+    mensaje: 'La orden ya tiene cobros; usa un descuento de monto fijo',
+  },
   // Sesión 11: inventario con unidad de compra y de consumo.
   INSUMO_NO_ENCONTRADO: { status: 404, mensaje: 'El insumo no existe o está dado de baja.' },
   CANTIDAD_INVALIDA: {
@@ -926,7 +931,11 @@ async function leerContextoTotales(ordenId: string | null): Promise<ContextoTota
   }
 }
 
-/** Montos de la orden con una lista de ítems dada (misma cuenta que `recalcularTotalesOrden`). */
+/**
+ * Montos de la orden completa con una lista de ítems dada (sesión 12, B4): el total es el
+ * del descuento de la orden (`descuentoDeOrden`) sobre todos los ítems vigentes, igual a
+ * la suma de los cobros cuando el descuento existía antes del primero.
+ */
 function totalesDe(ctx: ContextoTotales, items: Array<{ cantidad: number; precio: number }>) {
   return calcularCobro({
     items: items.map((i) => ({ precio: i.precio, cantidad: i.cantidad })),
@@ -954,6 +963,51 @@ function sentenciaHuellaOrden(sql: Sql, ordenId: string, ctx: ContextoTotales) {
       AND COALESCE((SELECT valor FROM soda_master.descuentos WHERE orden_id = ${O}::uuid
                      ORDER BY created_at DESC LIMIT 1), 0) = ${ctx.descuento.valor}::numeric,
       'ORDEN_MODIFICADA')`
+}
+
+/**
+ * Red de seguridad al cerrar una orden (sesión 12, B4). Con el prorrateo nuevo, Σ pagos
+ * debe ser igual al total calculado de la orden; si difiere (el descuento que se pierde por
+ * el tope de un pago, o el cierre por F20, donde los cobros anteriores no se reescriben),
+ * `ordenes.total` queda como lo realmente cobrado y se deja un evento de auditoría y un
+ * `console.error` con la orden, el total calculado y Σ pagos. No lanza: el cobro ya está hecho.
+ */
+async function verificarCierreOrden(
+  ordenId: string,
+  totalCalculado: number,
+  origen: 'cobro' | 'item_eliminado',
+  usuario?: { id: string; nombre: string },
+  sumaPagosConocida?: number,
+): Promise<void> {
+  try {
+    const sql = getSql()
+    let suma = sumaPagosConocida
+    if (suma === undefined) {
+      const r = (await sql`
+        SELECT COALESCE(SUM(monto), 0)::numeric AS suma FROM soda_master.pagos
+        WHERE orden_id = ${ordenId}::uuid
+      `) as any[]
+      suma = Number(r[0]?.suma) || 0
+    }
+    if (Math.abs(suma - totalCalculado) < 0.5) return
+    if (origen === 'cobro') {
+      await sql`UPDATE soda_master.ordenes SET total = ${suma} WHERE id = ${ordenId}::uuid`
+    }
+    console.error(
+      `[cierre-orden] orden ${ordenId} (${origen}): total calculado ${totalCalculado}, Σ pagos ${suma}; ` +
+        `ordenes.total queda en lo cobrado`,
+    )
+    await db.registrarAuditoriaAdmin({
+      usuario_id: usuario?.id ?? null,
+      usuario_nombre: usuario?.nombre ?? null,
+      accion: 'cierre_orden_descuadre',
+      entidad: 'orden',
+      entidad_id: ordenId,
+      detalles: { origen, total_calculado: totalCalculado, suma_pagos: suma },
+    })
+  } catch (err) {
+    console.error('[cierre-orden] no se pudo verificar el cierre de', ordenId, err)
+  }
 }
 
 /** Statements que abren una orden bajo lock de la mesa (B1). El último devuelve la orden. */
@@ -2655,7 +2709,10 @@ export const db = {
              (SELECT d.valor FROM soda_master.descuentos d
                WHERE d.orden_id = o.id ORDER BY d.created_at DESC LIMIT 1) AS descuento_valor,
              (SELECT d.motivo FROM soda_master.descuentos d
-               WHERE d.orden_id = o.id ORDER BY d.created_at DESC LIMIT 1) AS descuento_motivo
+               WHERE d.orden_id = o.id ORDER BY d.created_at DESC LIMIT 1) AS descuento_motivo,
+             -- B4: lo que los cobros anteriores de la orden ya descontaron (prorrateo en Pagos)
+             (SELECT COALESCE(SUM(pg.descuento), 0) FROM soda_master.pagos pg
+               WHERE pg.orden_id = o.id) AS descuento_dado
       FROM soda_master.ordenes o
       LEFT JOIN soda_master.items_orden i ON o.id = i.orden_id
       LEFT JOIN soda_master.productos p ON i.producto_id = p.id
@@ -3003,27 +3060,6 @@ export const db = {
       }).catch((e) => console.error('[auditoria] eliminar_orden:', e))
     }
     return { success: true }
-  },
-
-  /**
-   * Recalcula subtotal, impuesto y total de la orden desde sus ítems, el
-   * descuento vigente y la configuración (sesión 6). Mismas reglas que el
-   * cobro (`calcularCobro`): subtotal = suma bruta de ítems; total = con el
-   * descuento aplicado y sin propina; impuesto = IVA (desglosado si los
-   * precios lo incluyen). El navegador ya no manda ninguno de los tres.
-   * Sesión 8: crear, editar y borrar ítems ya NO lo usan (calculan los montos dentro de su
-   * transacción, con guarda de huella); solo `crearDescuento` (F17) lo sigue llamando.
-   */
-  async recalcularTotalesOrden(ordenId: string) {
-    const sql = getSql()
-    const ctx = await leerContextoTotales(ordenId)
-    const calc = totalesDe(ctx, ctx.items)
-    await sql`
-      UPDATE soda_master.ordenes
-      SET subtotal = ${calc.subtotal}, impuesto = ${calc.impuesto}, total = ${calc.total}
-      WHERE id = ${ordenId}::uuid
-    `
-    return calc
   },
 
   /**
@@ -3591,9 +3627,12 @@ export const db = {
    * el último ítem sin pagar, la orden queda toda cobrada y se cierra como `pagado` en
    * la misma transacción (el mismo cierre del paso h de `crearPago`), con una nota de quién
    * borró. La mesa NO se toca: igual que tras un cobro total, queda ocupada hasta que se
-   * libera desde Mesas. Los montos de la orden son los de lo que queda (ya cobrado) con el
-   * descuento vigente; no se crea ni se devuelve ningún pago (el ítem borrado no estaba
-   * pagado). Una orden sin ningún ítem pagado no se cierra (la limpian las vacías de la sesión 8).
+   * libera desde Mesas. Sesión 12 (B4/F25): al cerrarse así `ordenes.total` queda como Σ pagos
+   * (lo realmente cobrado; los cobros anteriores prorratearon el descuento sobre ítems que ya
+   * no existen y no se reescriben) y, si difiere del total calculado, se deja un evento de
+   * auditoría `cierre_orden_descuadre` y un `console.error`. No se crea ni se devuelve ningún
+   * pago (el ítem borrado no estaba pagado). Una orden sin ningún ítem pagado no se cierra (la
+   * limpian las vacías de la sesión 8).
    */
   async eliminarItemOrden(
     id: string,
@@ -3640,17 +3679,25 @@ export const db = {
               WHERE id = ${O}::uuid`,
           // F20: si no queda nada por pagar y hubo cobros, la orden se cierra (mismo criterio
           // que el paso h de `crearPago`; la orden sigue bloqueada, así que ve lo confirmado)
+          // B4/F25: al cerrarse así, `ordenes.total` queda como lo realmente cobrado (Σ pagos):
+          // los cobros anteriores prorratearon el descuento sobre ítems que ya no existen y no
+          // se reescriben.
           sql`UPDATE soda_master.ordenes
               SET estado = 'pagado',
+                  total = (SELECT COALESCE(SUM(monto), 0) FROM soda_master.pagos WHERE orden_id = ${O}::uuid),
                   notas = CASE WHEN COALESCE(notas, '') = '' THEN ${nota} ELSE notas || E'\n' || ${nota} END,
                   updated_at = CURRENT_TIMESTAMP
               WHERE id = ${O}::uuid
                 AND estado = ANY(${[...ESTADOS_ORDEN_ACTIVA]}::text[])
                 AND NOT EXISTS (SELECT 1 FROM soda_master.items_orden WHERE orden_id = ${O}::uuid AND pagado = FALSE)
                 AND EXISTS (SELECT 1 FROM soda_master.items_orden WHERE orden_id = ${O}::uuid AND pagado = TRUE)
-              RETURNING id`,
+              RETURNING id, total`,
         ])) as any[][]
-        return { orden_cerrada: (res[res.length - 1] ?? []).length > 0 }
+        const cierre = (res[res.length - 1] ?? [])[0]
+        if (cierre) {
+          await verificarCierreOrden(O, calc.total, 'item_eliminado', opts.usuario, Number(cierre.total) || 0)
+        }
+        return { orden_cerrada: !!cierre }
       } catch (err) {
         traducirErrorTx(err, { ITEM_PAGADO: 'Este ítem ya fue pagado y no se puede eliminar.' })
       }
@@ -3691,7 +3738,7 @@ export const db = {
     const divididoEn = Math.max(Math.floor(Number(input.dividido_en) || 1), 1)
 
     // ── 1) Lectura (fuera de la transacción; la transacción la revalida) ──
-    const [ordenRows, itemRows, descRows, cfgRows] = (await Promise.all([
+    const [ordenRows, itemRows, descRows, cfgRows, pagosPrevRows] = (await Promise.all([
       sql`SELECT id, estado FROM soda_master.ordenes WHERE id = ${ordenId}::uuid`,
       sql`
         SELECT id, cantidad, precio_unitario, pagado
@@ -3705,7 +3752,14 @@ export const db = {
         SELECT clave, valor, tipo FROM soda_master.configuracion
         WHERE clave IN ('tasa_impuesto','impuesto_habilitado','propinas_habilitadas','precios_incluyen_iva')
       `,
+      // B4: lo que los cobros anteriores ya descontaron (el descuento "dado")
+      sql`
+        SELECT COUNT(*)::int AS n, COALESCE(SUM(descuento), 0)::numeric AS dado
+        FROM soda_master.pagos WHERE orden_id = ${ordenId}::uuid
+      `,
     ])) as any[][]
+    const nPagosPrevios = Number(pagosPrevRows[0]?.n) || 0
+    const descuentoDado = Number(pagosPrevRows[0]?.dado) || 0
 
     const orden = ordenRows[0]
     if (!orden) throw new ErrorCobro('ORDEN_NO_ENCONTRADA')
@@ -3782,9 +3836,13 @@ export const db = {
 
     // ── 3) Cálculo del servidor ──
     const subtotalOrden = items.reduce((s, i) => s + i.precio * i.cantidad, 0)
+    // B4: el descuento se prorratea sobre lo pendiente, descontando lo ya dado.
+    const subtotalPendiente = pendientes.reduce((s, i) => s + i.precio * i.cantidad, 0)
     const sinPropina = calcularCobro({
       items: cobrados,
       subtotalOrden,
+      subtotalPendiente,
+      descuentoDado,
       descuento: descuentoOrden,
       config,
     })
@@ -3794,10 +3852,19 @@ export const db = {
     const calc = calcularCobro({
       items: cobrados,
       subtotalOrden,
+      subtotalPendiente,
+      descuentoDado,
       descuento: descuentoOrden,
       config,
       propina: input.propina,
     })
+    // Total de la orden completa con ese descuento (para la red de seguridad del cierre)
+    const totalOrdenCalculado = calcularCobro({
+      items: items.map((i) => ({ precio: i.precio, cantidad: i.cantidad })),
+      subtotalOrden,
+      descuento: descuentoOrden,
+      config,
+    }).total
     if (Number(input.monto_esperado) !== calc.total) {
       throw new ErrorCobro('MONTO_DISTINTO', undefined, {
         monto_servidor: calc.total,
@@ -3848,6 +3915,9 @@ export const db = {
         AND (SELECT COUNT(*) FROM soda_master.items_orden WHERE orden_id = ${O}::uuid) = ${items.length}::int
         AND (SELECT COUNT(*) FROM soda_master.items_orden
               WHERE orden_id = ${O}::uuid AND pagado = FALSE) = ${pendientes.length}::int
+        AND (SELECT COUNT(*) FROM soda_master.pagos WHERE orden_id = ${O}::uuid) = ${nPagosPrevios}::int
+        AND COALESCE((SELECT SUM(descuento) FROM soda_master.pagos WHERE orden_id = ${O}::uuid), 0)
+              = ${descuentoDado}::numeric
         AND (SELECT tipo FROM soda_master.descuentos WHERE orden_id = ${O}::uuid
               ORDER BY created_at DESC LIMIT 1) IS NOT DISTINCT FROM ${descuentoOrden.tipo}::text
         AND COALESCE((SELECT valor FROM soda_master.descuentos WHERE orden_id = ${O}::uuid
@@ -3973,6 +4043,10 @@ export const db = {
 
     const fila = resultados[resultados.length - 1][0]
     const pago = mapPago(fila)
+    // B4: al cerrarse la orden, Σ pagos debe ser el total calculado; si no, queda registrado
+    if (fila.orden_estado === 'pagado') {
+      await verificarCierreOrden(ordenId, totalOrdenCalculado, 'cobro', input.usuario)
+    }
     return {
       ...pago,
       orden_cerrada: fila.orden_estado === 'pagado',
@@ -4176,7 +4250,7 @@ export const db = {
     const O = input.orden_id
 
     // ── 1) Lectura (la transacción la revalida) ──
-    const [ordenRows, itemRows, descRows, cfgRows] = (await Promise.all([
+    const [ordenRows, itemRows, descRows, cfgRows, pagosPrevRows] = (await Promise.all([
       sql`
         SELECT o.id, o.mesa_id, o.estado, o.usuario_id,
                u.nombre AS usuario_nombre, u.rol AS usuario_rol
@@ -4196,7 +4270,13 @@ export const db = {
         SELECT clave, valor, tipo FROM soda_master.configuracion
         WHERE clave IN ('tasa_impuesto','impuesto_habilitado','propinas_habilitadas','precios_incluyen_iva')
       `,
+      sql`
+        SELECT COUNT(*)::int AS n, COALESCE(SUM(descuento), 0)::numeric AS dado
+        FROM soda_master.pagos WHERE orden_id = ${O}::uuid
+      `,
     ])) as any[][]
+    const nPagosPrevios = Number(pagosPrevRows[0]?.n) || 0
+    const descuentoDado = Number(pagosPrevRows[0]?.dado) || 0
 
     const orden = ordenRows[0]
     if (!orden) throw new ErrorOrden('ORDEN_NO_ENCONTRADA', 404, 'La orden no existe.')
@@ -4232,9 +4312,13 @@ export const db = {
       ? { tipo: desc.tipo as TipoDescuentoCobro, valor: Number(desc.valor) || 0 }
       : { tipo: null, valor: 0 }
     const subtotalOrden = items.reduce((s, i) => s + i.precio * i.cantidad, 0)
+    // B4: el descuento que falta por entregar (el de la orden menos lo ya dado) cae sobre lo
+    // pendiente completo, igual que en el último cobro de la orden.
     const calc = calcularCobro({
       items: pendientes.map((i) => ({ precio: i.precio, cantidad: i.cantidad })),
       subtotalOrden,
+      subtotalPendiente: pendientes.reduce((s, i) => s + i.precio * i.cantidad, 0),
+      descuentoDado,
       descuento: descuentoOrden,
       config,
     })
@@ -4276,6 +4360,9 @@ export const db = {
             AND ABS(COALESCE((SELECT SUM(precio_unitario * cantidad) FROM soda_master.items_orden
                                WHERE orden_id = ${O}::uuid AND pagado = FALSE), 0)
                     - ${pendientes.reduce((s, i) => s + i.precio * i.cantidad, 0)}::numeric) < 0.01
+            AND (SELECT COUNT(*) FROM soda_master.pagos WHERE orden_id = ${O}::uuid) = ${nPagosPrevios}::int
+            AND COALESCE((SELECT SUM(descuento) FROM soda_master.pagos WHERE orden_id = ${O}::uuid), 0)
+                  = ${descuentoDado}::numeric
             AND (SELECT tipo FROM soda_master.descuentos WHERE orden_id = ${O}::uuid
                   ORDER BY created_at DESC LIMIT 1) IS NOT DISTINCT FROM ${descuentoOrden.tipo}::text
             AND COALESCE((SELECT valor FROM soda_master.descuentos WHERE orden_id = ${O}::uuid
@@ -4895,6 +4982,14 @@ export const db = {
   },
 
   // Descuentos
+  //
+  // Sesión 12 (F17, B4): una sola `sql.transaction` con la orden bloqueada (`FOR UPDATE`), el
+  // mismo patrón del cobro y de `eliminarItemOrden`. Verifica que la orden esté activa (no
+  // `pagado`, `cancelado` ni `perdida`: 409 `ORDEN_NO_ACTIVA`), que los ítems y el descuento
+  // anterior sean los leídos (guarda de huella, con reintento), reemplaza el descuento y
+  // recalcula subtotal, impuesto y total de la orden dentro de la misma transacción. Un
+  // porcentaje sobre una orden con cobros se rechaza (409 `ORDEN_CON_COBROS`): el monto fijo y
+  // la cortesía sí se aceptan y lo no entregado cae sobre lo pendiente (ver `lib/cobro.ts`).
   async crearDescuento(input: {
     orden_id: string
     tipo: string
@@ -4903,37 +4998,54 @@ export const db = {
     autorizado_por?: string | null
     motivo: string
   }) {
+    await ensureItemPagoSchema()
+    await ensurePagoSchema()
+    await ensureOrdenesAtomicasSchema()
     const sql = getSql()
-    const rows = await sql`
-      WITH lock_orden AS (
-        SELECT pg_advisory_xact_lock(hashtext(${input.orden_id}::text)::bigint)
-      ),
-      borrar_anterior AS (
-        DELETE FROM soda_master.descuentos d
-        USING lock_orden
-        WHERE d.orden_id = ${input.orden_id}
+    const O = input.orden_id
+    return await conReintento(async () => {
+      const ordenRows = (await sql`
+        SELECT id FROM soda_master.ordenes WHERE id = ${O}::uuid
+      `) as any[]
+      if (!ordenRows[0]) throw new ErrorOrden('ORDEN_NO_ENCONTRADA', 404, 'La orden no existe.')
+      const ctx = await leerContextoTotales(O)
+      const nuevo: DescuentoCobro = { tipo: input.tipo as TipoDescuentoCobro, valor: input.valor }
+      const calc = totalesDe({ ...ctx, descuento: nuevo }, ctx.items)
+      const consultas: any[] = [
+        sql`SELECT id FROM soda_master.ordenes WHERE id = ${O}::uuid FOR UPDATE`,
+        sql`SELECT soda_master.assert_cobro(
+              (SELECT COUNT(*) FROM soda_master.ordenes WHERE id = ${O}::uuid) = 1,
+              'ORDEN_NO_ENCONTRADA')`,
+        sql`SELECT soda_master.assert_cobro(
+              (SELECT estado FROM soda_master.ordenes WHERE id = ${O}::uuid) = ANY(${[...ESTADOS_ORDEN_ACTIVA]}::text[]),
+              'ORDEN_NO_ACTIVA')`,
+      ]
+      if (input.tipo === 'porcentaje') {
+        consultas.push(sql`SELECT soda_master.assert_cobro(
+              NOT EXISTS (SELECT 1 FROM soda_master.items_orden WHERE orden_id = ${O}::uuid AND pagado = TRUE)
+              AND NOT EXISTS (SELECT 1 FROM soda_master.pagos WHERE orden_id = ${O}::uuid),
+              'ORDEN_CON_COBROS')`)
+      }
+      consultas.push(sentenciaHuellaOrden(sql, O, ctx))
+      const posInsert = consultas.length + 1
+      consultas.push(
+        sql`DELETE FROM soda_master.descuentos WHERE orden_id = ${O}::uuid`,
+        sql`INSERT INTO soda_master.descuentos
+              (orden_id, tipo, valor, aplicado_por, autorizado_por, motivo)
+            VALUES (${O}::uuid, ${input.tipo}, ${input.valor}, ${input.aplicado_por}::uuid,
+                    ${input.autorizado_por || null}::uuid, ${input.motivo})
+            RETURNING *`,
+        sql`UPDATE soda_master.ordenes
+            SET subtotal = ${calc.subtotal}, impuesto = ${calc.impuesto}, total = ${calc.total}
+            WHERE id = ${O}::uuid`,
       )
-      INSERT INTO soda_master.descuentos (
-        orden_id,
-        tipo,
-        valor,
-        aplicado_por,
-        autorizado_por,
-        motivo
-      )
-      SELECT
-        ${input.orden_id},
-        ${input.tipo},
-        ${input.valor},
-        ${input.aplicado_por},
-        ${input.autorizado_por || null},
-        ${input.motivo}
-      FROM lock_orden
-      RETURNING *
-    `
-    // El total de la orden refleja el descuento (sesión 6).
-    await this.recalcularTotalesOrden(input.orden_id)
-    return rows[0]
+      try {
+        const res = (await sql.transaction(consultas)) as any[][]
+        return res[posInsert][0]
+      } catch (err) {
+        traducirErrorTx(err)
+      }
+    })
   },
 
   async getDescuentos(filtros?: { desde?: string; hasta?: string; orden_id?: string }) {

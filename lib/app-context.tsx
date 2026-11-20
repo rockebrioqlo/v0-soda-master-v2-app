@@ -388,6 +388,7 @@ function mapOrdenToComanda(orden: any, mesas: any[]): any {
     descuento: Number(orden.descuento_valor) || 0,
     tipoDescuento: orden.descuento_tipo || null,
     motivoDescuento: orden.descuento_motivo || undefined,
+    descuentoDado: Number(orden.descuento_dado) || 0,
     propina: 0,
     notas: orden.notas || '',
     creadoAt: orden.created_at ? new Date(orden.created_at).getTime() : Date.now(),

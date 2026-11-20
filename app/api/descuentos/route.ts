@@ -1,8 +1,23 @@
-import { db } from '@/lib/db'
+import { z } from 'zod'
+import { db, ErrorOrden } from '@/lib/db'
 import { requireSesion } from '@/lib/sesion'
 import { verificarAutorizacionAdmin } from '@/lib/autorizacion-admin'
 
-const TIPOS = ['porcentaje', 'monto_fijo', 'cortesia_parcial', 'cortesia_total']
+// Sesión 12 (F17): el body se valida con zod `.strict()`: cualquier campo extra (por ejemplo
+// un `aplicado_por` del navegador) se rechaza. Quien aplica es el usuario de la sesión.
+const DescuentoSchema = z
+  .object({
+    orden_id: z.string().uuid(),
+    tipo: z.enum(['porcentaje', 'monto_fijo', 'cortesia_parcial', 'cortesia_total']),
+    valor: z.number().finite().min(0).max(100_000_000),
+    motivo: z.string().trim().min(1).max(300),
+    autorizacion: z.string().max(2000).nullish(),
+  })
+  .strict()
+  .refine((d) => d.tipo !== 'porcentaje' || d.valor <= 100, {
+    message: 'Porcentaje no puede superar 100',
+    path: ['valor'],
+  })
 
 export async function GET(request: Request) {
   try {
@@ -24,27 +39,19 @@ export async function POST(request: Request) {
     const s = await requireSesion(request, ['admin', 'mesero', 'cajero'])
     if (!s.ok) return s.respuesta
     const aplicador = s.usuario
-    const body = await request.json()
-    const tipo = String(body.tipo || '')
-    if (!TIPOS.includes(tipo)) {
-      return Response.json({ error: 'Tipo inválido' }, { status: 400 })
+    const parsed = DescuentoSchema.safeParse(await request.json().catch(() => null))
+    if (!parsed.success) {
+      const motivo = parsed.error.issues
+        .slice(0, 3)
+        .map((i) => `${i.path.join('.') || 'body'}: ${i.message}`)
+        .join('; ')
+      return Response.json(
+        { error: `Datos de descuento inválidos (${motivo})`, codigo: 'DATOS_INVALIDOS' },
+        { status: 400 },
+      )
     }
-    const valor = Number(body.valor)
-    if (!Number.isFinite(valor) || valor < 0) {
-      return Response.json({ error: 'Valor inválido' }, { status: 400 })
-    }
-    if (tipo === 'porcentaje' && valor > 100) {
-      return Response.json({ error: 'Porcentaje no puede superar 100' }, { status: 400 })
-    }
-    const orden_id = String(body.orden_id || '')
-    if (!orden_id) {
-      return Response.json({ error: 'orden_id requerido' }, { status: 400 })
-    }
+    const { orden_id, tipo, valor, motivo, autorizacion } = parsed.data
     const aplicado_por = aplicador.id
-    const motivo = String(body.motivo || '').trim()
-    if (!motivo) {
-      return Response.json({ error: 'motivo requerido' }, { status: 400 })
-    }
     let autorizado_por: string | null = null
 
     const permisos = await db.getPermisosDescuento()
@@ -59,11 +66,14 @@ export async function POST(request: Request) {
     if (requiereAutorizacion) {
       // Se exige la autorización firmada que entrega /api/auth/verificar-pin
       // cuando el admin escribe su PIN (5 minutos). Un id suelto ya no sirve.
-      const autorizador = await verificarAutorizacionAdmin(body.autorizacion)
+      const autorizador = await verificarAutorizacionAdmin(autorizacion)
       if (!autorizador) {
         return Response.json(
-          { error: 'Este descuento requiere autorización del administrador' },
-          { status: 403 }
+          {
+            error: 'Este descuento requiere autorización del administrador',
+            codigo: 'AUTORIZACION_REQUERIDA',
+          },
+          { status: 403 },
         )
       }
       autorizado_por = autorizador.id
@@ -79,6 +89,9 @@ export async function POST(request: Request) {
     })
     return Response.json(created, { status: 201 })
   } catch (error) {
+    if (error instanceof ErrorOrden) {
+      return Response.json({ error: error.message, codigo: error.codigo }, { status: error.status })
+    }
     console.error('Create descuento error:', error)
     return Response.json({ error: 'Error en servidor' }, { status: 500 })
   }

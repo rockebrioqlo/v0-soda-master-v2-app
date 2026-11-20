@@ -227,5 +227,99 @@ exports.correr = async function (ctx) {
       check('cierre de caja con el efectivo retroactivo contado: diferencia 0', cierre.status === 200 && Number(cierre.json.diferencia) === 0, cierre.json)
     }
   }
+  // ───── Sesión 12 (B4, F18): el descuento por persona y en las pérdidas suma exacto ─────
+  console.log('\n[asignaciones] B4: cuentas por persona y pérdidas con descuento (Σ exacta)')
+  await L.limpiarMesas(ctx)
+  await L.reponer(ctx, L.BIG)
+  const b4_categoria = ((await api(admin, 'GET', '/api/productos')).json.find((p) => p.categoria) || {}).categoria
+  ctx.limpiezaProd = ctx.limpiezaProd || []
+  const b4_prodPrecio = async (precio) => {
+    const rp = await api(admin, 'POST', '/api/productos', { nombre: `${ctx.marca} asig p${precio}`, categoria: b4_categoria, precio, descripcion: ctx.marca })
+    if (rp.status !== 200) throw new Error(`no se pudo crear el producto de ${precio} (${rp.status})`)
+    ctx.limpiezaProd.push(rp.json.id)
+    return rp.json.id
+  }
+  const b4_q3333 = await b4_prodPrecio(3333)
+  const b4_q4000 = await b4_prodPrecio(4000)
+  const b4_descuentoB4 = (body) => api(admin, 'POST', '/api/descuentos', { motivo: ctx.marca, ...body })
+  const b4_cobrarSel = async (Ord, sel) => {
+    const probe = await api(carlos, 'POST', '/api/pagos', { orden_id: Ord, metodo: 'tarjeta', monto_esperado: 99999999, ...sel })
+    if (probe.status !== 409 || probe.json.codigo !== 'MONTO_DISTINTO') return probe
+    return api(carlos, 'POST', '/api/pagos', { orden_id: Ord, metodo: 'tarjeta', monto_esperado: Number(probe.json.monto_servidor), ...sel })
+  }
+  const b4_pagosB4 = async (Ord) => db`SELECT monto::float AS m, descuento::float AS d FROM soda_master.pagos WHERE orden_id = ${Ord}::uuid ORDER BY created_at`
+  const b4_sumaM = (rows) => rows.reduce((t, x) => t + x.m, 0)
+  const b4_perdidaDe = async (Ord) => (await db`SELECT id::text AS id, monto_perdido::float AS m FROM soda_master.perdidas_comanda WHERE orden_id = ${Ord}::uuid`)[0]
+
+  // por persona: 3 b4_personas, una línea de 3 unidades asignada de a una; 10 % cobrado persona por persona
+  const b4_rpp = await enviar(maria, { mesa_id: mesa[2], items: [it(b4_q3333, 3)] })
+  const b4_Opp = b4_rpp.json.orden.id
+  const b4_personas = []
+  for (const nombre of ['A', 'B', 'C']) b4_personas.push(idDe(await api(maria, 'POST', '/api/cuentas-persona', { orden_id: b4_Opp, nombre })))
+  await b4_descuentoB4({ orden_id: b4_Opp, tipo: 'porcentaje', valor: 10 })
+  for (const pid of b4_personas) {
+    const lineas = await db`SELECT id::text AS id, cantidad FROM soda_master.items_orden WHERE orden_id = ${b4_Opp}::uuid AND pagado = FALSE AND cuenta_persona_id IS NULL ORDER BY created_at`
+    await asignar(maria, { orden_id: b4_Opp, asignaciones: [{ item_orden_id: lineas[0].id, cantidad: 1, cuenta_persona_id: pid }] })
+  }
+  let b4_ult = null
+  for (const pid of b4_personas) {
+    const suyos = await db`SELECT id::text AS id FROM soda_master.items_orden WHERE orden_id = ${b4_Opp}::uuid AND pagado = FALSE AND cuenta_persona_id = ${pid}::uuid`
+    b4_ult = await b4_cobrarSel(b4_Opp, { item_orden_ids: suyos.map((x) => x.id) })
+  }
+  const b4_pgPP = await b4_pagosB4(b4_Opp)
+  check('10 % por persona (3 b4_personas de 3.333, una línea asignada de a una): Σ pagos = 8.999 exacta y orden cerrada', b4_ult.status === 201 && b4_ult.json.orden_cerrada === true && b4_pgPP.length === 3 && b4_sumaM(b4_pgPP) === 8999, b4_pgPP)
+  await L.limpiarMesas(ctx)
+
+  // pérdida con descuento: lo que cobraría Pagos por lo que falta, y su cobro retroactivo completa el total
+  const b4_r1 = await enviar(maria, { mesa_id: mesa[5], items: [it(b4_q4000, 1), it(b4_q4000, 1), it(b4_q4000, 1)] })
+  const b4_O1 = b4_r1.json.orden.id
+  await b4_descuentoB4({ orden_id: b4_O1, tipo: 'monto_fijo', valor: 3000 })
+  await b4_cobrarSel(b4_O1, { item_orden_ids: [b4_r1.json.items[0].id] })
+  const b4_reg1 = await api(admin, 'POST', '/api/perdidas', { orden_id: b4_O1, motivo: ctx.marca })
+  const b4_per1 = await b4_perdidaDe(b4_O1)
+  check('pérdida tras un cobro parcial con fijo 3.000: monto_perdido = 6.000 (lo que falta menos el descuento restante) y Σ pagos + pérdida = 9.000', [200, 201].includes(b4_reg1.status) && b4_per1 && b4_per1.m === 6000 && b4_sumaM(await b4_pagosB4(b4_O1)) + b4_per1.m === 9000, [b4_reg1.status, b4_per1])
+  const b4_res1 = await api(carlos, 'POST', '/api/perdidas/resolver', { perdida_id: b4_per1.id, metodo: 'tarjeta' })
+  const b4_pgR1 = await b4_pagosB4(b4_O1)
+  check('cobro retroactivo del total: un pago de 6.000 y Σ pagos de la orden = 9.000 exacta', b4_res1.status === 201 && b4_pgR1.length === 2 && b4_sumaM(b4_pgR1) === 9000, [b4_res1.status, b4_pgR1])
+
+  // F18: borrar un ítem sin pagar entre el cobro parcial y la pérdida
+  const b4_r2 = await enviar(maria, { mesa_id: mesa[6], items: [it(b4_q4000, 1), it(b4_q4000, 1), it(b4_q4000, 1)] })
+  const b4_O2 = b4_r2.json.orden.id
+  await b4_descuentoB4({ orden_id: b4_O2, tipo: 'monto_fijo', valor: 3000 })
+  await b4_cobrarSel(b4_O2, { item_orden_ids: [b4_r2.json.items[0].id] })
+  await api(maria, 'DELETE', '/api/items-orden', { id: b4_r2.json.items[2].id })
+  const b4_reg2 = await api(admin, 'POST', '/api/perdidas', { orden_id: b4_O2, motivo: ctx.marca })
+  const b4_per2 = await b4_perdidaDe(b4_O2)
+  check('F18: cobro A, borro C, pérdida de B → monto_perdido = 2.000 (antes 2.500) y Σ pagos + pérdida = 5.000 = 8.000 − 3.000', [200, 201].includes(b4_reg2.status) && b4_per2 && b4_per2.m === 2000 && b4_sumaM(await b4_pagosB4(b4_O2)) + b4_per2.m === 5000, [b4_reg2.status, b4_per2])
+
+  // pérdida con porcentaje sin cobros previos: igual a lo que cobraría Pagos
+  const b4_r3 = await enviar(maria, { mesa_id: mesa[7], items: [it(b4_q3333, 1), it(b4_q3333, 1)] })
+  const b4_O3 = b4_r3.json.orden.id
+  await b4_descuentoB4({ orden_id: b4_O3, tipo: 'porcentaje', valor: 10 })
+  const b4_probe3 = await api(carlos, 'POST', '/api/pagos', { orden_id: b4_O3, metodo: 'tarjeta', monto_esperado: 99999999 })
+  const b4_reg3 = await api(admin, 'POST', '/api/perdidas', { orden_id: b4_O3, motivo: ctx.marca })
+  const b4_per3 = await b4_perdidaDe(b4_O3)
+  check('pérdida con 10 % y sin cobros: monto_perdido = 5.999 = lo que cobraría Pagos', [200, 201].includes(b4_reg3.status) && Number(b4_probe3.json.monto_servidor) === 5999 && b4_per3 && b4_per3.m === 5999, [b4_probe3.json, b4_per3])
+
+  // pérdida concurrente con un cobro y con un descuento en la misma orden (3 rondas): cada operación gana o pierde por completo
+  let rondasP = 0
+  for (let k = 0; k < 3; k++) {
+    const b4_rr = await enviar(maria, { mesa_id: mesa[8], items: [it(b4_q4000, 1), it(b4_q4000, 1)] })
+    const b4_Oc = b4_rr.json.orden.id
+    await b4_descuentoB4({ orden_id: b4_Oc, tipo: 'monto_fijo', valor: 1000 })
+    const [b4_rp1, b4_rp2] = await Promise.all([
+      api(admin, 'POST', '/api/perdidas', { orden_id: b4_Oc, motivo: ctx.marca }),
+      sleep(15 * k).then(() => b4_descuentoB4({ orden_id: b4_Oc, tipo: 'monto_fijo', valor: 2000 })),
+    ])
+    const per = await b4_perdidaDe(b4_Oc)
+    const fila = await db`SELECT valor::float AS v FROM soda_master.descuentos WHERE orden_id = ${b4_Oc}::uuid`
+    const est = (await L.ordenRow(ctx, b4_Oc)).estado
+    // o la pérdida se registró con el descuento viejo (7.000) y el nuevo se rechazó (409), o el descuento nuevo entró antes y la pérdida se calculó con él (6.000)
+    const coherente = (b4_rp2.status === 201 && fila[0].v === 2000 && per && per.m === 6000 && est === 'perdida') || (b4_rp2.status === 409 && fila[0].v === 1000 && per && per.m === 7000 && est === 'perdida') || (b4_rp1.status === 409 && per === undefined)
+    if (coherente && fila.length === 1) rondasP++
+    await L.limpiarMesas(ctx)
+  }
+  check(`pérdida y cambio de descuento en paralelo: un resultado coherente con una sola fila de descuento (${rondasP}/3)`, rondasP === 3)
+
   await L.limpiarMesas(ctx)
 }

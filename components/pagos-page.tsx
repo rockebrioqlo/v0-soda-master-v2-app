@@ -273,6 +273,13 @@ export function PagosPage() {
   // Calculate totals
   const subtotalCompleto =
     comandaAPagar?.items.reduce((sum, item) => sum + item.precio * item.cantidad, 0) || 0
+  // B4: el descuento se prorratea sobre lo que falta por pagar y descuenta lo que los
+  // cobros anteriores ya entregaron (mismo cálculo que el servidor, lib/cobro.ts).
+  const subtotalPendienteOrden =
+    comandaAPagar?.items
+      .filter((item) => !item.pagado)
+      .reduce((sum, item) => sum + item.precio * item.cantidad, 0) || 0
+  const descuentoDadoOrden = comandaAPagar?.descuentoDado || 0
   // Cálculo único (lib/cobro.ts): el servidor usa la MISMA función, así que
   // lo que se ve aquí es lo que el servidor va a registrar. El descuento fijo
   // se prorratea por lo que se cobra; el IVA grava solo el consumo (subtotal −
@@ -300,6 +307,8 @@ export function PagosPage() {
   const calculo = calcularCobro({
     items: itemsAPagar,
     subtotalOrden: subtotalCompleto,
+    subtotalPendiente: subtotalPendienteOrden,
+    descuentoDado: descuentoDadoOrden,
     descuento: descuentoOrdenCobro,
     config: configCobro,
     propina: propinaInput,
@@ -584,6 +593,8 @@ export function PagosPage() {
       const cp = calcularCobro({
         items: [{ precio: p.subtotal, cantidad: 1 }],
         subtotalOrden: subtotalCompleto,
+        subtotalPendiente: subtotalPendienteOrden,
+        descuentoDado: descuentoDadoOrden,
         descuento: descuentoOrdenCobro,
         config: configCobro,
         propina:
@@ -602,6 +613,8 @@ export function PagosPage() {
       p.totalDirectoAPagar = calcularCobro({
         items: [{ precio: p.subtotalDirecto, cantidad: 1 }],
         subtotalOrden: subtotalCompleto,
+        subtotalPendiente: subtotalPendienteOrden,
+        descuentoDado: descuentoDadoOrden,
         descuento: descuentoOrdenCobro,
         config: configCobro,
         propina:
@@ -618,6 +631,8 @@ export function PagosPage() {
     personaIdById,
     subtotal,
     subtotalCompleto,
+    subtotalPendienteOrden,
+    descuentoDadoOrden,
     descuentoOrdenCobro,
     configCobro,
     propinaTipo,
@@ -748,6 +763,8 @@ export function PagosPage() {
       calcularCobro({
         items: [{ precio: subtotalSeleccionado, cantidad: 1 }],
         subtotalOrden: subtotalCompleto,
+        subtotalPendiente: subtotalPendienteOrden,
+        descuentoDado: descuentoDadoOrden,
         descuento: {
           tipo: comandaAPagar?.tipoDescuento ?? null,
           valor: comandaAPagar?.descuento || 0,
@@ -755,7 +772,7 @@ export function PagosPage() {
         config: configCobro,
         propina: { tipo: propinaTipo, valor: parseFloat(propinaValor) || 0 },
       }).totalAPagar,
-    [subtotalCompleto, comandaAPagar, configCobro, propinaTipo, propinaValor],
+    [subtotalCompleto, subtotalPendienteOrden, descuentoDadoOrden, comandaAPagar, configCobro, propinaTipo, propinaValor],
   )
 
   const handleCobrarPersonaAsignada = useCallback(
@@ -973,6 +990,8 @@ export function PagosPage() {
         payload: {
           ...comandaAPagar,
           items: itemsActualizados,
+          // B4: el descuento de este pago ya está "dado"; el prorrateo del siguiente lo descuenta
+          descuentoDado: (comandaAPagar.descuentoDado || 0) + (Number(nuevoPago?.descuento) || 0),
           estado: esPagoQueCierra ? 'pagado' : comandaAPagar.estado,
         },
       })
@@ -1195,6 +1214,10 @@ export function PagosPage() {
                           (sum, i) => sum + i.precio * i.cantidad,
                           0,
                         ),
+                        subtotalPendiente: comanda.items
+                          .filter((i) => !i.pagado)
+                          .reduce((sum, i) => sum + i.precio * i.cantidad, 0),
+                        descuentoDado: comanda.descuentoDado || 0,
                         descuento: {
                           tipo: comanda.tipoDescuento ?? null,
                           valor: comanda.descuento || 0,

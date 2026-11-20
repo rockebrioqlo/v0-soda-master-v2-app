@@ -169,6 +169,8 @@ export interface Comanda {
   propina: number
   tipoPropina: 'porcentaje' | 'monto_fijo'
   motivoDescuento?: string
+  /** Descuento que los cobros anteriores de la orden ya entregaron (Σ `pagos.descuento`); lo usa el prorrateo de Pagos. */
+  descuentoDado?: number
   descuentoAplicadoPor?: string
   descuentoAutorizadoPor?: string
   /** Personas asociadas a esta comanda (división por productos). */
