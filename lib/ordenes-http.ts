@@ -51,6 +51,46 @@ export const ItemPostSchema = z
   })
   .strict()
 
+const ItemEnvioSchema = z
+  .object({
+    producto_id: uuid,
+    cantidad: z.number().int().min(1).max(999),
+    modificadores: z.array(z.string().max(120)).max(50).optional(),
+    seleccion_modificadores: z.array(z.string().max(120)).max(50).optional(),
+    extras_ingredientes: z
+      .array(
+        z
+          .object({ ingrediente_id: z.string().max(64), cantidad: z.number().min(0).max(20).optional() })
+          .strict(),
+      )
+      .max(30)
+      .optional(),
+    notas_especiales: z.string().max(4000).nullish(),
+  })
+  .strict()
+
+/**
+ * Sesión 8 (#11): orden + ítems en una sola transacción. `mesa_id` abre la comanda
+ * (Enviar); `orden_id` agrega ítems a una existente (Enviar nuevos). Exactamente uno de los dos.
+ * Ni precio, ni estado, ni montos, ni usuario: el servidor los decide.
+ */
+export const ComandaEnviarSchema = z
+  .object({
+    mesa_id: uuid.optional(),
+    orden_id: uuid.optional(),
+    notas: z.string().trim().max(500).optional(),
+    items: z.array(ItemEnvioSchema).min(1).max(50),
+  })
+  .strict()
+  .superRefine((d, ctx) => {
+    if (Boolean(d.mesa_id) === Boolean(d.orden_id)) {
+      ctx.addIssue({ code: 'custom', path: ['mesa_id'], message: 'Indica la mesa (comanda nueva) o la orden (agregar ítems), solo una' })
+    }
+    if (d.orden_id && d.notas !== undefined) {
+      ctx.addIssue({ code: 'custom', path: ['notas'], message: 'Las notas solo van al abrir una comanda nueva' })
+    }
+  })
+
 export const ItemPatchSchema = z
   .object({
     id: uuid,

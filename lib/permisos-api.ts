@@ -65,6 +65,7 @@ export const REGLAS: readonly Regla[] = [
   { ruta: r(`ordenes/${ID}`), metodos: ['PATCH'], acceso: SALON_Y_COCINA },
   { ruta: r('items-orden'), metodos: ['PATCH'], acceso: SALON_Y_COCINA },
   { ruta: r('ordenes'), metodos: ['POST', 'DELETE'], acceso: SALON },
+  { ruta: r('ordenes/enviar'), metodos: ['POST'], acceso: SALON }, // orden + ítems en una transacción (sesión 8)
   { ruta: r('items-orden'), metodos: ['POST', 'DELETE'], acceso: SALON },
   { ruta: r('mesas'), metodos: ['PATCH'], acceso: SALON },
   { ruta: r('cuentas-persona'), metodos: ['POST', 'PATCH', 'DELETE'], acceso: SALON },

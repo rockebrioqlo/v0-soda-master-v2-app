@@ -190,6 +190,7 @@ interface AppContextType {
   crearOrden: (orden: any) => Promise<any>
   updateOrden: (id: string, updates: any) => Promise<void>
   enviarOrdenACocina: (ordenId: string) => Promise<void>
+  enviarComandaApi: (payload: any) => Promise<{ orden: any; items: any[] }>
   crearItemOrden: (item: any) => Promise<any>
   actualizarItemOrden: (id: string, updates: any) => Promise<any>
   eliminarItemOrden: (id: string) => Promise<void>
@@ -804,6 +805,19 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     }
   }, [state.comandas])
 
+  // Sesión 8 (#11): la comanda completa (orden + ítems) en una sola llamada y una sola
+  // transacción en el servidor. `{ mesa_id, items }` abre la comanda; `{ orden_id, items }` agrega
+  // ítems a una existente. Devuelve la orden y los ítems con el precio que calculó el servidor.
+  const enviarComandaApi = useCallback(async (payload: any) => {
+    const res = await fetch('/api/ordenes/enviar', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+    if (!res.ok) throw await errorDeRespuesta(res, 'No se pudo enviar la comanda')
+    return (await res.json()) as { orden: any; items: any[] }
+  }, [])
+
   // Devuelve el ítem tal como quedó en la base: `precio_unitario` es el que
   // calculó el servidor (el navegador ya no manda precio).
   const crearItemOrden = useCallback(async (item: any) => {
@@ -1377,6 +1391,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       crearOrden,
       updateOrden,
       enviarOrdenACocina,
+      enviarComandaApi,
       crearItemOrden,
       actualizarItemOrden,
       eliminarItemOrden,

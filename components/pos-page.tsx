@@ -89,10 +89,9 @@ export function POSPage() {
     clearPOSNavigation,
     navigateTo,
     updateMesa,
-    crearOrden,
-    updateOrden,
-    crearItemOrden,
+    enviarComandaApi,
     actualizarItemOrden,
+    eliminarItemOrden,
     recargarOrdenes,
     crearDescuentoApi,
     getPermisosEspecialesApi,
@@ -539,8 +538,19 @@ export function POSPage() {
     showToast(`${selectedItem.nombre} agregado`, 'success')
   }
 
-  const handleRemoveItem = (itemId: string) => {
+  const handleRemoveItem = async (itemId: string) => {
     if (!currentComanda) return
+    // Sesión 8 (F10): un ítem ya enviado vive en el servidor; antes el botón solo lo quitaba de
+    // la pantalla y reaparecía en el siguiente sondeo. Ahora se borra de verdad (el servidor
+    // devuelve el stock si la cocina aún no lo toca) y, si no se puede, se avisa y se deja.
+    if (isPersistedId(itemId)) {
+      try {
+        await eliminarItemOrden(itemId)
+      } catch (error) {
+        showToast(mensajeAccionable(error, 'No se pudo eliminar el ítem'), 'error')
+        return
+      }
+    }
     const updatedComanda: Comanda = {
       ...currentComanda,
       items: currentComanda.items.filter(i => i.id !== itemId),
@@ -692,62 +702,55 @@ export function POSPage() {
       return
     }
 
-    let ordenCreadaParaRollback: string | null = null
     try {
-      // El servidor decide el usuario (sesión), los montos (desde los ítems y
-      // el descuento) y la hora de envío: el navegador solo dice qué mesa.
-      const ordenData = {
-        mesa_id: currentComanda.mesaId,
-        estado: 'en_cocina',
+      // Sesión 8 (#11): la comanda completa viaja en UNA llamada y se guarda en UNA transacción
+      // del servidor (orden + ítems + stock + estado + montos). Si algo falla no queda nada a
+      // medias, así que ya no hay rollback que hacer desde el navegador. El servidor decide el
+      // usuario (sesión), los precios, los montos y la hora de envío.
+      const esOrdenPersistida = isPersistedId(currentComanda.id)
+      const itemsPendientesDeEnviar = esOrdenPersistida
+        ? currentComanda.items.filter((item) => !isPersistedId(item.id))
+        : currentComanda.items
+      if (itemsPendientesDeEnviar.length === 0) {
+        showToast('Comanda ya estaba enviada', 'success')
+        return
       }
 
-      const esOrdenPersistida = isPersistedId(currentComanda.id)
-      const nuevaOrden = esOrdenPersistida ? null : await crearOrden(ordenData)
-      const ordenId = esOrdenPersistida ? currentComanda.id : nuevaOrden?.id
-      ordenCreadaParaRollback = !esOrdenPersistida && ordenId ? ordenId : null
-
-      if (ordenId) {
-        const itemsPendientesDeEnviar = esOrdenPersistida
-          ? currentComanda.items.filter((item) => !isPersistedId(item.id))
-          : currentComanda.items
-        const idsPersistidosPorLocal = new Map<string, string>()
-        const preciosServidor = new Map<string, number>()
-
-        for (const item of itemsPendientesDeEnviar) {
+      const { orden: ordenGuardada, items: itemsGuardados } = await enviarComandaApi({
+        ...(esOrdenPersistida
+          ? { orden_id: currentComanda.id }
+          : { mesa_id: currentComanda.mesaId }),
+        items: itemsPendientesDeEnviar.map((item) => {
           const metadata = {
             salsa: item.salsaSeleccionada || '',
             notas: item.notas || '',
             notaEspecial: item.notaEspecial || '',
             ingredientesEspeciales: item.ingredientesEspeciales || [],
           }
-          const extrasIngredientes = (item.ingredientesEspeciales || []).map((e) => ({
-            ingrediente_id: e.id,
-            cantidad: 1,
-          }))
-          const itemCreado = await crearItemOrden({
-            orden_id: ordenId,
+          return {
             producto_id: item.productoId,
             cantidad: item.cantidad,
             modificadores: item.ingredientesEstandar || [],
-            extras_ingredientes: extrasIngredientes,
+            extras_ingredientes: (item.ingredientesEspeciales || []).map((e) => ({
+              ingrediente_id: e.id,
+              cantidad: 1,
+            })),
             notas_especiales: JSON.stringify(metadata),
-          })
-          if (itemCreado?.id) {
-            idsPersistidosPorLocal.set(item.id, itemCreado.id)
-            // El precio lo calculó el servidor: la comanda adopta ese valor.
-            const precioServidor = Number(itemCreado.precio_unitario)
-            if (Number.isFinite(precioServidor)) preciosServidor.set(item.id, precioServidor)
-          } else {
-            throw new Error(`No se pudo enviar ${item.productoNombre}`)
           }
-        }
-        ordenCreadaParaRollback = null
-
-        // If this is an existing comanda, adding more products must reopen it
-        // for Cocina/Bar and refresh totals instead of creating a duplicate order.
-        if (esOrdenPersistida) {
-          await updateOrden(ordenId, { estado: 'en_cocina' })
-        }
+        }),
+      })
+      const ordenId: string = ordenGuardada?.id
+      if (ordenId) {
+        const idsPersistidosPorLocal = new Map<string, string>()
+        const preciosServidor = new Map<string, number>()
+        itemsPendientesDeEnviar.forEach((item, i) => {
+          const guardado = itemsGuardados?.[i]
+          if (!guardado?.id) throw new Error(`No se pudo enviar ${item.productoNombre}`)
+          idsPersistidosPorLocal.set(item.id, guardado.id)
+          // El precio lo calculó el servidor: la comanda adopta ese valor.
+          const precioServidor = Number(guardado.precio_unitario)
+          if (Number.isFinite(precioServidor)) preciosServidor.set(item.id, precioServidor)
+        })
 
         // La mesa se marca como ocupada SOLO al enviar la comanda a cocina/bar.
         // Antes de este punto, la comanda existe únicamente en memoria local.
@@ -811,13 +814,6 @@ export function POSPage() {
       }
     } catch (error) {
       console.error('[v0] Error sending to kitchen:', error)
-      if (ordenCreadaParaRollback) {
-        await fetch('/api/ordenes', {
-          method: 'DELETE',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ id: ordenCreadaParaRollback }),
-        }).catch(() => null)
-      }
       showToast(mensajeAccionable(error, 'Error al enviar a cocina'), 'error')
     }
   }
