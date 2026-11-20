@@ -288,3 +288,32 @@
   - Resultado: `prueba:humo` 14 de 14 (unos 40 s); `prueba:completa` 142 de 142 (unos 6 minutos); `--modulo=permisos` 12 de 12. Sin residuos: 0 cajas abiertas, ninguna orden activa fuera de la Mesa 4 y los productos e ingredientes de prueba desactivados.
   - **Lo que NO se pudo rescatar:** los scripts de las sesiones 5 a 7 no se conservaron (estaban en carpetas temporales de esas sesiones y ya no existen), así que sus baterías originales (79, 138, 62 y 55 casos) no están. Los módulos `cobro`, `asignaciones` y `permisos` son versiones nuevas y más cortas de lo que esas sesiones cubrían (cobro en efectivo, vuelto, tarjeta, propina, descuento, parcial por ítems y por cantidad, dividido, doble cobro, cobros simultáneos, caja cuadrada, asignaciones y pérdidas con carreras, roles y búsqueda de fugas de PIN); el módulo `ordenes` incluye lo de la sesión 6 en versión resumida (allowlist de PATCH, estados por rol, precio manual, DELETE por rol). No cubren: bloqueo por intentos fallidos y límite de 240 peticiones por minuto (sesión 4, por ser intrusivos), `GET /api/items-orden` con id inválido (F14) ni descuentos con autorización de admin.
   - Política de pruebas agregada a `AGENTS.md` y la primera regresión completa anotada en la fila de la sesión 10 de `ROADMAP.md`.
+
+
+## Integridad de cobros y pérdidas (A3, B3, F20, F24) | 20-11-2026 | sesión 9
+- Modelo usado: Sonnet 5.5 (esfuerzo alto). Directo en `main` (según AGENTS.md); sin push.
+- Qué se pidió: no permitir eliminar personas con ítems pagados (A3); validar el monto de `resolverPerdida` contra lo registrado (B3); cerrar la orden como pagada al borrar el último ítem sin pagar de una orden con cobros parciales (F20). Fase 1 aprobada con las recomendaciones para excedente (rechazar), cobro parcial (un solo pago que resuelve y condona con motivo y auditoría), mesa (no se toca el estado) y personas (bloquear con 409); la decisión 5 cambió: F24 (cobro retroactivo en efectivo sin movimiento de caja) entra en esta sesión.
+- Verificación previa del git (a pedido del usuario): `0bc76df` es el padre de `e75f8b7` (11:11 y 11:36), está en `main` y en `origin/main`, y el ROADMAP ya tenía F20 en la fila de la sesión 9; no había nada que recuperar. `e75f8b7` ya estaba subido, así que no había commits locales sin subir al empezar.
+- Qué se hizo (archivos tocados):
+  - `lib/db.ts`: `eliminarCuentaPersona` (orden activa, 409 `PERSONA_CON_ITEMS_PAGADOS`, solo desasigna ítems pendientes); `resolverPerdida` reescrito (monto contra `monto_perdido` dentro de la transacción, motivo obligatorio si es menor, condonación y auditoría `perdida_cobro_parcial`, `venta_efectivo` en caja con `CAJA_CERRADA`); `eliminarItemOrden(id, { usuario })` cierra la orden y devuelve `orden_cerrada`; columnas `monto_cobrado`, `monto_condonado` y `motivo_condonacion` en `ensurePerdidasTable()` (idempotentes); errores nuevos en `ERRORES_TX_ORDEN`.
+  - Rutas: `app/api/perdidas/resolver/route.ts` (motivo y rol de la sesión), `app/api/items-orden/route.ts` (usuario y `orden_cerrada`), `lib/cuentas-http.ts` (monto entero, `motivo`).
+  - Cliente (mínimo): `lib/app-context.tsx`, `components/pagos-page.tsx` (tope de monto, campo de motivo, el diálogo solo se cierra con `PERDIDA_YA_RESUELTA`), `components/pos-page.tsx` (aviso y estado de la orden cerrada).
+  - Pruebas: casos nuevos en `scripts/pruebas/asignaciones.cjs` (A3, B3 y F24) y `scripts/pruebas/ordenes.cjs` (F20).
+  - Documentos: `ROADMAP.md`, `ESTADO_MODULOS.md`, `ARQUITECTURA.md`.
+- Pruebas (Neon real, `next start` :3011, login real con los 4 roles; PINs en memoria, no se repiten aquí; datos marcados "prueba prueba:completa" y "prueba navegador"):
+  - `pnpm prueba:completa --modulo=asignaciones`: 44 de 44. `--modulo=ordenes,cobro`: 95 de 95. `pnpm prueba:humo`: 14 de 14 (dos veces: la segunda con el build final). Detalle de casos y carreras (3 rondas) en `ESTADO_MODULOS.md`.
+  - Navegador (admin): cobro retroactivo de la pérdida de $3.500 con monto mayor, menor sin motivo, efectivo sin caja abierta y parcial de $3.000 con tarjeta y motivo (verificado en la base: cobrado 3.000, condonado 500 y fila de auditoría); Mesa 9 con Dividir cuenta, cobro a la Persona 1 con tarjeta y el intento de quitarla (mensaje accionable, la persona y su ítem pagado intactos). Consola con solo los 401, 404 y 409 esperados; el log del servidor tiene un único error, el "ya hay una caja abierta" que provoca a propósito `prueba:completa --modulo=cobro`.
+  - `pnpm build` limpio (y `tsc --noEmit` sin errores). `next-env.d.ts` restaurado.
+  - **No re-verificado en el navegador:** el último ajuste del diálogo (que no se cierre con `CAJA_CERRADA`); se compiló y pasó el humo, pero la pantalla se recorrió con el build anterior.
+- Decisiones tomadas y por qué:
+  - El monto se compara contra `monto_perdido` (lo que calculó `registrarPerdida`) y no se recalcula: una orden perdida ya no cambia y una configuración de IVA distinta falsearía la cifra.
+  - Validar dentro de la transacción con la fila bloqueada y no con la lectura previa; la lectura solo arma el mensaje.
+  - Un cobro parcial resuelve la pérdida y condona la diferencia (con motivo y auditoría) en vez de permitir varios abonos: más simple y deja el rastro completo.
+  - No se acepta más que lo registrado (sin propina en el cobro retroactivo).
+  - La mesa no se toca al cerrar la orden por F20: es lo que hace el cobro total y evita decidir por el cajero si hay otra ronda.
+  - Eliminar persona: bloquear (409) en vez de baja lógica; menos código y el historial no cambia de forma.
+- Hallazgos nuevos (anotados en `ROADMAP.md`): F24 (resuelto aquí), F25 (prorrateo del descuento tras F20, parte de B4) y F26 (el botón "quitar" persona aparece también en personas que ya pagaron). F17, F19 y F11 siguen solo anotados.
+- Efectos en los datos de prueba: las órdenes de `prueba:completa` y de la prueba de navegador quedaron pagadas, canceladas o perdidas (ninguna activa); 1 caja abierta y cerrada con diferencia 0 por corrida del módulo de asignaciones y por el humo; pérdidas resueltas y filas de `auditoria_admin` `perdida_cobro_parcial`; productos e ingredientes de prueba desactivados. Sigue habiendo pérdidas pendientes de pruebas anteriores (87 en la pantalla de Pagos), que no se tocaron. La orden de $36.000 de la Mesa 4 no se tocó. No se borró ni sembró nada por SQL.
+- Pendiente / siguiente sesión:
+  - **Usuario:** revisar y autorizar el push (commit local de esta sesión).
+  - Sesión 10 (A4, B7) según el ROADMAP; el prompt se entrega cuando el usuario lo pida.
