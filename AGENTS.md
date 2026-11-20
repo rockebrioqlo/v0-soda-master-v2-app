@@ -54,6 +54,23 @@ Reglas para cualquier agente (Claude Code, v0, Cursor) que trabaje en este repos
 - Al terminar cada sesión, commit local.
 - `git push` a `main` solo con autorización del usuario (cada push a `main` despliega en producción en Vercel).
 
+## Política de pruebas
+
+Las pruebas de integración viven en `scripts/pruebas/` y hablan con un servidor ya levantado (`pnpm build` y `pnpm start -p 3011`; puerto o URL con `PRUEBAS_PUERTO` o `PRUEBAS_URL`) usando login real y la base de Neon. Los PINs se resuelven en memoria en cada corrida (nunca en archivos), todo lo que crean queda marcado "prueba <comando> <fecha>" y al terminar se limpian mesas, productos, ingredientes y sesiones (si una corrida abortada dejó órdenes en las mesas de prueba, `PRUEBAS_LIMPIAR_MESAS=1`).
+
+- `pnpm prueba:humo`: login real de los roles, comanda, cobro en efectivo con vuelto, tarjeta, doble cobro 409 y cierre de caja con diferencia 0 (menos de 1 minuto).
+- `pnpm prueba:completa`: todas las baterías de las sesiones 5 a 8 (permisos, órdenes, stock, cobro, asignaciones y pérdidas), con carreras de máximo 3 rondas (unos 6 minutos). `--modulo=stock` (o `cobro`, `ordenes`, `permisos`, `asignaciones`, también varios separados por coma) corre solo esa parte.
+
+**Cada sesión:**
+- Verifica solo lo que cambió: el arreglo, 1 carrera de 3 rondas si aplica y los casos 403, 400 y 409 que correspondan.
+- Reproduce el bug viejo solo si no queda claro leyendo el código.
+- Agrega los casos de la sesión a `scripts/pruebas/` (en el módulo que corresponda, o uno nuevo registrado en `completa.cjs`).
+- Corre `pnpm prueba:humo` al final.
+- Navegador solo si la sesión tocó pantallas, y solo el flujo principal.
+- Si la sesión toca cobro, caja o stock, corre además `pnpm prueba:completa --modulo=<ese módulo>`.
+
+**Regresión completa** (`pnpm prueba:completa` más el navegador completo: POS, KDS, Pagos con cuentas divididas, Caja): cada 5 sesiones o al cerrar cada bloque del ROADMAP, lo que llegue primero. La primera, al cerrar la sesión 10.
+
 ## Cierre de sesión
 
 Al terminar una sesión: deja el commit local, actualiza CHAT_LOG.md, ESTADO_MODULOS.md y ROADMAP.md, entrega el reporte final y detente. No generes el prompt de la sesión siguiente hasta que el usuario revise, depure y lo pida explícitamente.

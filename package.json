@@ -10,7 +10,9 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "prueba:humo": "node --env-file=.env.local scripts/pruebas/humo.cjs",
+    "prueba:completa": "node --env-file=.env.local scripts/pruebas/completa.cjs"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.9.1",
