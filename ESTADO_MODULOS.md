@@ -1,6 +1,6 @@
 # ESTADO_MODULOS — Sodamaster
 
-Última actualización: 19-11-2026 (sesión 6).
+Última actualización: 20-11-2026 (sesión 6.5).
 
 Estados: **completo** · **a medias** · **roto** · **sin probar**.
 "Qué se probó" indica lo verificado por nosotros en esta etapa; lo heredado de `ESTADO_DESARROLLO.md` se marca como "según doc heredado".
@@ -32,4 +32,5 @@ Estados: **completo** · **a medias** · **roto** · **sin probar**.
 | Menú QR público | `app/menu/`, `app/api/menu-publico/route.ts` | completo | — | Sin login: `GET /api/menu-publico` → 200 con id, nombre, descripción, precio y categoría (33 productos); `/menu` se ve en el navegador. `/api/productos` y `/api/configuracion` sin sesión → 401 |
 | Seeds | `app/api/seed*`, `lib/seed-*.ts`, `lib/seed-guard.ts` | ✅ cerrado (sesión 2, en producción) | Primer admin sin PINs demo (P3). La ruta con `PERMITIR_SEED=true` no se ejecutó, para no sembrar la base real | Local (`next start`): `DELETE /api/seed` → 405; `POST /api/seed`, `/seed-demo`, `/seed-recetas` → 403; la app carga con los datos actuales (6 usuarios, 33 productos, 20 mesas) sin pedir `/api/seed`. Candado probado en 7 combinaciones de `PERMITIR_SEED`/`VERCEL_ENV` |
 | Esquema base de BD | `lib/db.ts` (`ensure*Schema`) | a medias | Script que cree las tablas base desde cero | Por verificar contra Neon |
+| Plataforma y dependencias | `package.json`, `pnpm-lock.yaml`, `pnpm-workspace.yaml`, `vercel.json` | ✅ sesión 6.5 (local, sin push) | Falta ver el log del primer despliegue (Node 24.x y pnpm). 4 avisos de `pnpm audit` sin atender (F12: zod 3, lodash vía recharts, baseline-browser-mapping). Rutas que dependen solo del proxy (F13) | Next 16.4.6, React 19.2.9, lockfile 9.0 verificado con `--frozen-lockfile` en pnpm 9.15.9 y 10.34.9, `pnpm audit` 46 → 4, `pnpm build` OK. `next start` :3011 con login real: 4 roles, sin sesión 401, rol sin permiso 403, 240 peticiones y luego 429 con `Retry-After`, `PATCH` con campo no permitido 400, `/_next/image` 404. Flujo por API (37 casos): caja, POS, KDS, cobro con vuelto, tarjeta, doble cobro 409, cierre con diferencia 0. Navegador: POS (mesero), KDS (cocina), Pagos (efectivo con vuelto y tarjeta, boleta) y Caja (apertura y cierre "Cuadre exacto") |
 | Compilación | — | completo | — | `pnpm build` local sin errores; `pnpm dev` carga el login y la API responde con datos de Neon (sesión 1) |

@@ -87,7 +87,14 @@ No hay almacenamiento de archivos ni imágenes subidas. `public/` contiene solo 
 
 ## Deploy
 
-Vercel, enlazado a v0 (`vercel.json`: `pnpm install --frozen-lockfile`, `next build`). Cada merge a `main` despliega. `next.config.mjs` desactiva la optimización de imágenes.
+Vercel, enlazado a v0 (`vercel.json`: `pnpm install --frozen-lockfile`, `next build`). Cada merge a `main` despliega. `next.config.mjs` desactiva la optimización de imágenes (`/_next/image` responde 404).
+
+**Versiones y cadena de suministro (sesión 6.5):**
+- **Node:** `engines.node = "24.x"` en `package.json`. Vercel toma la versión mayor de ahí por encima del Project Settings. Producción corre Node 24 (Active LTS; Node 20 es EOL desde el 30-04-2026). El equipo local corre Node 26 (Current), así que `pnpm` avisa "Unsupported engine" al instalar: es esperado y no bloquea.
+- **pnpm:** `packageManager = pnpm@10.34.9`. No se activa `ENABLE_EXPERIMENTAL_COREPACK` en Vercel ni se depende de que respete `packageManager`: sin corepack Vercel elige pnpm por la versión del lockfile (`lockfileVersion: 9.0` → pnpm 9 o 10). Por eso el lockfile y `pnpm-workspace.yaml` se probaron con `--frozen-lockfile` en pnpm 9.15.9 y en 10.34.9.
+- **`pnpm-workspace.yaml`:** lleva `packages: ['.']` porque pnpm 9 falla con "packages field missing or empty" si el archivo existe sin esa clave, y `minimumReleaseAge: 4320` (minutos, 3 días).
+- **Dónde vive la protección:** `minimumReleaseAge` solo actúa al **resolver** versiones en local (`pnpm add` / `pnpm update`) y exige pnpm ≥ 10.16 (con una versión anterior se ignora en silencio). Vercel instala desde el lockfile congelado, así que la protección real es el lockfile revisado. **Toda actualización de dependencias se hace en local con pnpm ≥ 10.16**, se revisa el diff del lockfile y recién después se sube. Para un parche urgente de menos de 3 días, agregar el paquete a `minimumReleaseAgeExclude` y quitarlo después.
+- **Next 16.4.6** empaqueta su propio React de servidor (`19.3.0-canary-…`, con los parches retroportados), por eso `react-server-dom-*` no aparece en el lockfile. Para comprobar un fix hay que mirar el código en `node_modules/next/dist/compiled/`, no la versión del paquete.
 
 ## Decisiones técnicas y motivo
 
@@ -97,4 +104,6 @@ Vercel, enlazado a v0 (`vercel.json`: `pnpm install --frozen-lockfile`, `next bu
 | SPA de una ruta con estado global | Heredado; simple para tablets del local, pero sin URLs por módulo |
 | Polling en vez de WebSockets | Vercel serverless no mantiene conexiones; polling ligero fue suficiente (bug #28 del doc heredado) |
 | Migraciones dentro de `lib/db.ts` | Permitió evolucionar el esquema desde v0 sin herramienta de migraciones; a futuro conviene un script versionado |
+| `engines.node = 24.x`, local en Node 26 | Fija producción en una LTS soportada sin tocar el dashboard de Vercel; el local puede ir más adelante sin romper nada (sesión 6.5) |
+| `minimumReleaseAge` de 3 días | Un paquete comprometido suele detectarse y retirarse en horas o pocos días. Con 7 días un parche de un crítico de Next quedaría bloqueado una semana (sesión 6.5) |
 | Sesión en la base + cookie firmada (no JWT) | Un JWT no se puede invalidar al hacer logout o desactivar a alguien, y igual habría que ir a la base para saber si el usuario sigue activo. Firma con `node:crypto`, sin dependencias nuevas (sesión 3) |

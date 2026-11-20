@@ -10,7 +10,7 @@ POS para sodas y restaurantes, de Latencia Cero SpA. Une en una sola aplicación
 - Tailwind CSS v4 · shadcn/ui · Lucide · Recharts
 - Neon Postgres (`@neondatabase/serverless`, SQL directo, esquema `soda_master`)
 - Login propio: email + PIN con bcrypt
-- pnpm 10 · Vercel
+- pnpm 10.34.9 · Node 24 (producción) · Vercel
 
 ## Mapa de rutas
 
@@ -36,7 +36,7 @@ Los `roles_adicionales` de cada usuario y los permisos especiales temporales amp
 
 ## Instalación local
 
-Requisitos: Node.js 20+ y pnpm 10.
+Requisitos: Node.js 24 (LTS; en local funciona también Node 26, con un aviso de "Unsupported engine") y pnpm ≥ 10.16 (el `packageManager` fija 10.34.9; las actualizaciones de dependencias se hacen siempre en local por el `minimumReleaseAge` de `pnpm-workspace.yaml`).
 
 ```bash
 pnpm install

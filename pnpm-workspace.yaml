@@ -1,0 +1,7 @@
+# Raíz del proyecto (sin workspaces). Necesario para que pnpm 9 no falle por "packages field missing".
+packages:
+  - .
+
+# Protege contra versiones recién publicadas (minutos): 4320 = 3 días. Requiere pnpm >= 10.16.
+# Solo actúa al resolver versiones en local (pnpm add/update); Vercel instala desde el lockfile.
+minimumReleaseAge: 4320
