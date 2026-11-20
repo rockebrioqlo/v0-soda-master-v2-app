@@ -478,6 +478,11 @@ const ERRORES_TX_ORDEN: Record<string, { status: number; mensaje: string }> = {
 /** Estados de una orden que todavía se puede modificar (ni pagada, ni cancelada, ni perdida). */
 const ESTADOS_ORDEN_ACTIVA = ['pendiente', 'en_cocina', 'en_preparacion', 'listo', 'entregado', 'problema']
 
+/** F41: las órdenes ya pagadas solo siguen en el KDS si se cobraron hace menos de estas horas... */
+export const VENTANA_PAGADAS_KDS_HORAS = 2
+/** ...y como máximo esta cantidad (las más recientes). */
+export const TOPE_PAGADAS_KDS = 30
+
 let _estadoOrdenFnReady = false
 
 /**
@@ -2747,9 +2752,12 @@ export const db = {
   },
 
   /**
-   * Órdenes que carga la app (KDS, POS, Pagos y Mesas) y que devuelve el sondeo. Sesión 13 (F37): además
-   * de las activas, trae las órdenes `pagado` de HOY (zona America/Santiago, por la hora del cobro) con
-   * algún ítem sin `listo` ni `entregado`: se pagaron por adelantado pero cocina todavía las prepara.
+   * Órdenes que carga la app (KDS, POS, Pagos y Mesas) y que devuelve el sondeo. Sesión 13 (F37, F41):
+   * además de las activas, trae las órdenes `pagado` con algún ítem sin `listo` ni `entregado` (se
+   * pagaron por adelantado pero cocina todavía las prepara), con DOS límites para que el sondeo no
+   * crezca: solo las cobradas en las últimas `VENTANA_PAGADAS_KDS_HORAS` horas (la fecha del cobro es
+   * la del último pago de la orden, `pagos.created_at`: ninguna otra operación la mueve, a diferencia de
+   * `ordenes.updated_at`) y como máximo las `TOPE_PAGADAS_KDS` más recientes.
    * Esas órdenes NO las ve ninguna otra pantalla: `lib/app-context.tsx` las separa en
    * `state.comandasCocinaPagadas` y solo las muestra el KDS; `comandas` queda igual que antes.
    */
@@ -2758,6 +2766,8 @@ export const db = {
     await ensureCuentasPersonaSchema()
     await ensureTimestampTzMigration()
     const sql = getSql()
+    const ventanaHoras = VENTANA_PAGADAS_KDS_HORAS
+    const tope = TOPE_PAGADAS_KDS
     const result = await sql`
       SELECT o.*,
              COALESCE(
@@ -2804,10 +2814,16 @@ export const db = {
       LEFT JOIN soda_master.productos p ON i.producto_id = p.id
       LEFT JOIN soda_master.categorias c ON p.categoria_id = c.id
       WHERE o.estado NOT IN ('pagado', 'cancelado', 'perdida')
-         OR (o.estado = 'pagado'
-             AND (o.updated_at AT TIME ZONE 'America/Santiago')::date = (now() AT TIME ZONE 'America/Santiago')::date
-             AND EXISTS (SELECT 1 FROM soda_master.items_orden x
-                          WHERE x.orden_id = o.id AND COALESCE(x.estado_item, 'pendiente') NOT IN ('listo', 'entregado')))
+         OR o.id IN (
+              SELECT pg.orden_id
+                FROM soda_master.pagos pg
+                JOIN soda_master.ordenes op ON op.id = pg.orden_id AND op.estado = 'pagado'
+               WHERE EXISTS (SELECT 1 FROM soda_master.items_orden x
+                              WHERE x.orden_id = op.id AND COALESCE(x.estado_item, 'pendiente') NOT IN ('listo', 'entregado'))
+               GROUP BY pg.orden_id
+              HAVING MAX(pg.created_at) >= now() - make_interval(hours => ${ventanaHoras}::int)
+               ORDER BY MAX(pg.created_at) DESC
+               LIMIT ${tope}::int)
       GROUP BY o.id
       ORDER BY o.created_at ASC
     `

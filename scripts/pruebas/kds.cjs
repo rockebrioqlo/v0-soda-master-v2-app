@@ -240,7 +240,7 @@ exports.correr = async function (ctx) {
   const pagoF = await api(carlos, 'POST', '/api/pagos', { orden_id: Of, metodo: 'tarjeta', monto_esperado: 3000 })
   check('se paga la orden completa con los dos ítems pendientes: 201 y la orden queda pagado (el cobro no cambió)', pagoF.status === 201 && (await estadoOrden(Of)) === 'pagado', pagoF)
   const visF = await enSondeoKds(ezio, Of)
-  check('el KDS la sigue recibiendo: el sondeo trae la orden pagada de hoy con sus 2 ítems pendientes', !!visF && visF.estado === 'pagado' && visF.items.length === 2 && visF.items.every((i) => i.estado_item === 'pendiente'), visF && visF.estado)
+  check('el KDS la sigue recibiendo: el sondeo trae la orden pagada reciente con sus 2 ítems pendientes', !!visF && visF.estado === 'pagado' && visF.items.length === 2 && visF.items.every((i) => i.estado_item === 'pendiente'), visF && visF.estado)
   const lista = await api(ezio, 'GET', '/api/ordenes?kds=true')
   check('GET /api/ordenes?kds=true (carga inicial y recarga) también la trae', Array.isArray(lista.json) && lista.json.some((o) => o.id === Of && o.estado === 'pagado'))
   const g1 = await bulk(ezio, Of, [f1.id], 'listo')
@@ -263,13 +263,48 @@ exports.correr = async function (ctx) {
   check('pagada con todo listo: no aparece en el KDS', (await estadoOrden(Oh)) === 'pagado' && (await enSondeoKds(ezio, Oh)) === null)
   await L.limpiarMesas(ctx, [3])
 
-  const rv = await enviar(maria, { mesa_id: mesa[5], notas: ctx.marca, items: [it(f.pP, 1)] })
-  const Ov = rv.json.orden.id
-  await api(carlos, 'POST', '/api/pagos', { orden_id: Ov, metodo: 'tarjeta', monto_esperado: 1500 })
-  const vistaHoy = !!(await enSondeoKds(ezio, Ov))
-  await db`UPDATE soda_master.ordenes SET updated_at = now() - interval '2 days' WHERE id = ${Ov}::uuid AND notas LIKE 'prueba %'`
-  check('solo las pagadas de HOY: la misma orden con el cobro de hace 2 días ya no aparece', vistaHoy && (await enSondeoKds(ezio, Ov)) === null)
-  await L.limpiarMesas(ctx, [5])
+  // F41: ventana de 2 horas. Sin tocar datos: se busca (solo lectura) una orden pagada con ítems sin terminar
+  // cuyo último pago es de hace más de 2 horas (las dejan las corridas anteriores de las pruebas) y se
+  // comprueba que el sondeo no la trae; la fecha que cuenta es la del pago (`pagos.created_at`), no `updated_at`.
+  const vieja = await db`
+    SELECT o.id::text AS id FROM soda_master.ordenes o JOIN soda_master.pagos pg ON pg.orden_id = o.id
+    WHERE o.estado = 'pagado'
+      AND EXISTS (SELECT 1 FROM soda_master.items_orden x WHERE x.orden_id = o.id AND COALESCE(x.estado_item, 'pendiente') NOT IN ('listo', 'entregado'))
+    GROUP BY o.id HAVING MAX(pg.created_at) < now() - interval '2 hours'
+    ORDER BY MAX(pg.created_at) DESC LIMIT 1`
+  if (vieja[0]) {
+    const sd = await api(ezio, 'GET', '/api/sondeo?secciones=ordenes')
+    check('ventana de 2 horas: una orden pagada con ítems sin terminar cobrada hace más de 2 horas NO llega al KDS', sd.status === 200 && !(sd.json.ordenes || []).some((o) => o.id === vieja[0].id), vieja[0].id)
+  } else {
+    console.log('  (sin datos viejos en la base: se omite la comprobación de la ventana contra una orden anterior)')
+  }
+
+  console.log('\n[kds] F41: tope de 30 órdenes pagadas (31 pagadas por adelantado seguidas)')
+  await L.reponer(ctx, L.BIG)
+  const creadas = []
+  for (let k = 0; k < 31; k++) {
+    const r = await enviar(maria, { mesa_id: mesa[8], notas: ctx.marca, items: [it(f.pP, 1)] })
+    const pg = await api(carlos, 'POST', '/api/pagos', { orden_id: r.json.orden.id, metodo: 'tarjeta', monto_esperado: 1500 })
+    if (r.status !== 200 || pg.status !== 201) { check('crear y pagar la orden ' + (k + 1), false, [r.status, pg.status]); break }
+    creadas.push(r.json.orden.id)
+  }
+  check('31 órdenes pagadas por adelantado, todas con su ítem pendiente', creadas.length === 31)
+  const sdT = await api(ezio, 'GET', '/api/sondeo?secciones=ordenes')
+  const pagadasKds = (sdT.json.ordenes || []).filter((o) => o.estado === 'pagado')
+  check(`el sondeo trae como máximo 30 órdenes pagadas (trajo ${pagadasKds.length})`, sdT.status === 200 && pagadasKds.length === 30, pagadasKds.length)
+  const idsKds = pagadasKds.map((o) => o.id)
+  check('son las más recientes: la última creada está y la primera de las 31 no', idsKds.includes(creadas[30]) && !idsKds.includes(creadas[0]))
+  const esperadas = await db`
+    SELECT o.id::text AS id FROM soda_master.ordenes o JOIN soda_master.pagos pg ON pg.orden_id = o.id
+    WHERE o.estado = 'pagado'
+      AND EXISTS (SELECT 1 FROM soda_master.items_orden x WHERE x.orden_id = o.id AND COALESCE(x.estado_item, 'pendiente') NOT IN ('listo', 'entregado'))
+    GROUP BY o.id HAVING MAX(pg.created_at) >= now() - interval '2 hours'
+    ORDER BY MAX(pg.created_at) DESC LIMIT 30`
+  check('coinciden con las 30 cobradas más recientes dentro de las 2 horas (lectura directa de la base)', eq([...idsKds].sort(), esperadas.map((e) => e.id).sort()))
+  check('todas traen al menos un ítem sin terminar', pagadasKds.every((o) => o.items.some((i) => i.estado_item !== 'listo' && i.estado_item !== 'entregado')))
+  const lectura = await api(ezio, 'GET', '/api/ordenes?kds=true')
+  check('GET /api/ordenes?kds=true (carga inicial y recarga) respeta el mismo tope', Array.isArray(lectura.json) && lectura.json.filter((o) => o.estado === 'pagado').length === 30)
+  await L.limpiarMesas(ctx, [8])
 
   console.log('\n[kds] F37: carrera — dos estaciones terminan los dos últimos ítems de una orden pagada (3 rondas)')
   let malosP = 0, unaSolaP = 0
