@@ -21,7 +21,7 @@ import {
 
 export function KDSPage() {
   const { state, cambiarEstadoItemsApi, recargarOrdenes, crearNotificacionApi } = useApp()
-  const { comandas, usuarioActual, productos, configuracion } = state
+  const { comandas, comandasCocinaPagadas, usuarioActual, productos, configuracion } = state
   const [isLoading, setIsLoading] = useState(false)
   const [, setTick] = useState(0)
   const [reimprimirTickets, setReimprimirTickets] = useState<TicketData[]>([])
@@ -60,9 +60,17 @@ export function KDSPage() {
   // responsibility (delivery widget in POS), so the KDS drops it.
   // Sesión 13 (B5): una comanda con un ítem en 'problema' sigue en el KDS (la orden queda en
   // 'problema' como aviso al mesero, pero cocina y bar siguen con el resto y pueden resolver el ítem).
-  const comandasActivas = comandas.filter(
-    (c) => c.estado === 'en_cocina' || c.estado === 'en_preparacion' || c.estado === 'problema'
-  )
+  // Sesión 13 (F37): una orden pagada por adelantado sigue en el KDS mientras tenga algún ítem sin
+  // listo ni entregado (solo el KDS las ve; vienen aparte en `comandasCocinaPagadas`). Su estado sigue
+  // siendo 'pagado': se le muestra una etiqueta y sale cuando cocina termina el último ítem.
+  const comandasActivas = [
+    ...comandas.filter(
+      (c) => c.estado === 'en_cocina' || c.estado === 'en_preparacion' || c.estado === 'problema'
+    ),
+    ...comandasCocinaPagadas.filter((c) =>
+      c.items.some((item) => item.estado !== 'listo' && item.estado !== 'entregado')
+    ),
+  ]
 
   const CATEGORIAS_BAR = ['bebidas', 'cervezas', 'jugos_bebidas', 'tragos']
 
@@ -99,7 +107,8 @@ export function KDSPage() {
   // (409 porque otra estación o el mesero cambió el ítem, 429, red), se avisa con el mensaje real
   // y se recarga el estado verdadero; la función nunca lanza, así el botón siempre se libera.
   const handleMarkReady = async (comandaId: string, estado: string, itemIds: string[]) => {
-    const comanda = comandas.find((c) => c.id === comandaId)
+    const comanda =
+      comandas.find((c) => c.id === comandaId) ?? comandasCocinaPagadas.find((c) => c.id === comandaId)
     if (!comanda) return
     const itemIdsSet = new Set(itemIds)
     const itemsAfectados = comanda.items.filter((it) => itemIdsSet.has(it.id))
@@ -123,7 +132,8 @@ export function KDSPage() {
         return
       }
 
-      const ordenLista = orden.estado === 'listo'
+      // Cocina terminó TODOS los ítems de la orden (también si ya estaba pagada y su estado sigue 'pagado').
+      const ordenLista = orden.cocina_lista
       // Toast con contexto: si fue un solo ítem, mencionamos su nombre.
       // Si fueron varios (bulk), avisamos cuántos.
       const accion =
@@ -139,9 +149,9 @@ export function KDSPage() {
       showToast(`${comanda.mesaNombre} • ${detalle} — ${accion}`, 'success')
 
       // Avisar al mesero SOLO si esta acción fue la que dejó la orden lista: el servidor devuelve
-      // el estado anterior, así dos estaciones que terminan casi a la vez no avisan dos veces ni
+      // si cocina ya había terminado antes de este cambio, así dos estaciones que terminan casi a la vez no avisan dos veces ni
       // ninguna (el cálculo con la copia local de cada pantalla fallaba en esa carrera).
-      if (ordenLista && orden.estado_anterior !== 'listo' && comanda.usuarioId) {
+      if (ordenLista && !orden.cocina_lista_antes && comanda.usuarioId) {
         void crearNotificacionApi({
           tipo: 'listo',
           orden_id: comandaId,
@@ -445,6 +455,9 @@ function ComandaCard({
           <CardTitle className="flex items-center gap-2 text-lg text-foreground">
             {comanda.mesaNombre}
             {isNew && <Badge className="bg-amber-500 text-zinc-900 text-xs">NUEVO</Badge>}
+            {comanda.estado === 'pagado' && (
+              <Badge className="bg-blue-600 text-white text-xs">PAGADA</Badge>
+            )}
             {isDelayed && (
               <Badge className="bg-red-500 text-white text-xs">
                 <AlertCircle className="mr-1 h-3 w-3" />

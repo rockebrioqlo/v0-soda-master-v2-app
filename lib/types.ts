@@ -337,6 +337,8 @@ export interface AppState {
   productos: Producto[]
   ingredientes: Ingrediente[]
   comandas: Comanda[]
+  /** Sesión 13 (F37): órdenes pagadas hoy con ítems aún sin terminar; solo las muestra el KDS. */
+  comandasCocinaPagadas: Comanda[]
   pagos: Pago[]
   mermas: Merma[]
   comandasNoPagadas: ComandaNoPagada[]
@@ -361,6 +363,7 @@ export type AppAction =
   | { type: 'UPDATE_PRODUCTO'; payload: Producto }
   | { type: 'DELETE_PRODUCTO'; payload: string }
   | { type: 'SET_COMANDAS'; payload: Comanda[] }
+  | { type: 'SET_COMANDAS_COCINA_PAGADAS'; payload: Comanda[] }
   | { type: 'ADD_COMANDA'; payload: Comanda }
   | { type: 'UPDATE_COMANDA'; payload: Comanda }
   | { type: 'DELETE_COMANDA'; payload: string }

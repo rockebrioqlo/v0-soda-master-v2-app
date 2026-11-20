@@ -426,3 +426,13 @@
 - Pendiente / siguiente sesión:
   - **Usuario:** decidir F37 (pago por adelantado y cocina) y revisar y autorizar el push (commit local; `origin/main` seguía en a7e791c, sesión 12).
   - Sesión 14 (lote de menores del bloque C, más F19 y F21) según el ROADMAP; el prompt se entrega cuando el usuario lo pida.
+
+## F37: órdenes pagadas por adelantado siguen en el KDS | 20-11-2026 | sesión 13 (continuación)
+- Modelo usado: Sonnet 5.5, esfuerzo alto.
+- Revisión previa al push: se buscaron en las líneas añadidas del commit 4087ee4 los PINs y los correos de todos los usuarios (resueltos en memoria contra la base, sin imprimirlos): ni los PINs ni los correos están en ningún archivo. Las 2 coincidencias eran un precio de prueba (`kds.cjs`) que casualmente tenía el mismo valor que un PIN; se cambió a 1777. No hizo falta un commit de corrección aparte.
+- Qué se hizo (archivos tocados): `lib/db.ts` (`getOrdenesParaKDS` trae las `pagado` de hoy con ítems sin terminar; `cambiarEstadoItems` devuelve `cocina_lista` y `cocina_lista_antes`), `lib/types.ts`, `lib/app-context.tsx` (`comandasCocinaPagadas`: las pagadas se separan de `comandas`), `components/kds-page.tsx` (las muestra con la etiqueta PAGADA y avisa por `cocina_lista`), `scripts/pruebas/kds.cjs` (13 casos nuevos), `ROADMAP.md` (F37 resuelto, F41), `ARQUITECTURA.md`, `ESTADO_MODULOS.md`. No se tocó `crearPago` ni nada del cobro, ni el sondeo.
+- Pruebas: `tsc --noEmit` y `pnpm build` limpios; `pnpm prueba:humo` 14 de 14; módulo `kds` 67 de 67. Navegador (cocina y cajero): ver ESTADO_MODULOS.md.
+- Decisiones: el filtro vive en el cliente (las pagadas van a otra lista del estado, que solo lee el KDS), porque `getOrdenesParaKDS` alimenta todas las pantallas; el aviso se basa en "todos los ítems listo o entregado antes y después", no en el estado de la orden, que sigue `pagado`.
+- Hallazgo nuevo: **F41** (el KDS muestra todas las pagadas de hoy con ítems sin terminar: 376 tarjetas con los datos de prueba de hoy; conviene decidir un límite o una acción de descarte antes de producción).
+- Efectos en los datos de prueba: una orden de navegador en la Mesa 7 ("prueba prueba sesión 13 navegador F37 20-11-2026", $5.300, pagada con tarjeta, ya terminada por cocina) y los productos y órdenes del módulo `kds`; 1 notificación "lista" y las del módulo. Sin cajas abiertas ni sesiones vigentes; la Mesa 4 y su orden de $36.000 no se tocaron; el servidor del puerto 3011 se detuvo. Nada borrado ni sembrado por SQL (solo el `updated_at` de una orden de prueba del módulo `kds`, filtrada por su marca, para probar "solo las de hoy").
+- Pendiente: revisar y autorizar el push (commit local); `origin/main` sigue en a7e791c.

@@ -18,6 +18,16 @@ import { enPausaPorLimite, registrarLimite, segundosDePausa } from '@/lib/pausa-
 
 type PageType = 'dashboard' | 'mesas' | 'pos' | 'kds' | 'inventario' | 'finanzas' | 'usuarios' | 'pagos' | 'caja' | 'mermas' | 'reportes' | 'configuracion'
 
+/** Lo que devuelve `POST /api/items-orden/estado` sobre la orden (sesión 13). */
+export interface OrdenCambioEstado {
+  id: string
+  estado: string
+  estado_anterior: string
+  /** Todos los ítems quedaron listo o entregado (también en una orden ya pagada). */
+  cocina_lista: boolean
+  cocina_lista_antes: boolean
+}
+
 // POS navigation state
 interface POSNavigationState {
   mesaId: string | null
@@ -30,6 +40,7 @@ const initialState: AppState = {
   productos: [],
   ingredientes: [],
   comandas: [],
+  comandasCocinaPagadas: [],
   pagos: [],
   mermas: [],
   comandasNoPagadas: [],
@@ -71,12 +82,17 @@ function appReducer(state: AppState, action: AppAction): AppState {
       return { ...state, productos: state.productos.filter(p => p.id !== action.payload) }
     case 'SET_COMANDAS':
       return { ...state, comandas: action.payload }
+    case 'SET_COMANDAS_COCINA_PAGADAS':
+      return { ...state, comandasCocinaPagadas: action.payload }
     case 'ADD_COMANDA':
       return { ...state, comandas: [...state.comandas, action.payload] }
     case 'UPDATE_COMANDA':
       return {
         ...state,
         comandas: state.comandas.map(c =>
+          c.id === action.payload.id ? { ...c, ...action.payload } : c
+        ),
+        comandasCocinaPagadas: state.comandasCocinaPagadas.map(c =>
           c.id === action.payload.id ? { ...c, ...action.payload } : c
         ),
       }
@@ -146,6 +162,7 @@ function appReducer(state: AppState, action: AppAction): AppState {
         ...state,
         usuarioActual: null,
         comandas: [],
+        comandasCocinaPagadas: [],
         pagos: [],
         mermas: [],
         comandasNoPagadas: [],
@@ -197,7 +214,7 @@ interface AppContextType {
     ordenId: string,
     itemIds: string[],
     estadoItem: string,
-  ) => Promise<{ id: string; estado: string; estado_anterior: string }>
+  ) => Promise<OrdenCambioEstado>
   eliminarItemOrden: (id: string) => Promise<{ orden_cerrada: boolean }>
   recargarOrdenes: () => Promise<void>
   recargarMesas: () => Promise<void>
@@ -301,7 +318,10 @@ const UUID_RE_COMANDA = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f
 // Comandas del servidor + las pendientes que solo existen en este navegador (id no UUID) y
 // cuya mesa aún no tiene comanda remota. Lo comparten `recargarOrdenes` y el sondeo central.
 function fusionarComandas(ordenes: any[], mesas: any[], comandasActuales: any[]): any[] {
+  // Sesión 13 (F37): las órdenes `pagado` que el servidor trae para el KDS no entran a `comandas`:
+  // POS, Pagos y Mesas ven exactamente lo mismo que antes (ver `comandasCocinaPagadas`).
   const comandas = ordenes
+    .filter((o: any) => o?.estado !== 'pagado')
     .map((o: any) => mapOrdenToComanda(o, mesas))
     .filter((c: any) => c.items.length > 0)
   const mesasConComandaRemota = new Set(comandas.map((c: any) => c.mesaId))
@@ -312,6 +332,14 @@ function fusionarComandas(ordenes: any[], mesas: any[], comandasActuales: any[])
       !mesasConComandaRemota.has(c.mesaId)
   )
   return [...comandasLocalesPendientes, ...comandas]
+}
+
+// Sesión 13 (F37): órdenes ya pagadas (hoy) con ítems que cocina todavía no termina. Solo las usa el KDS.
+function comandasPagadasEnCocina(ordenes: any[], mesas: any[]): any[] {
+  return ordenes
+    .filter((o: any) => o?.estado === 'pagado')
+    .map((o: any) => mapOrdenToComanda(o, mesas))
+    .filter((c: any) => c.items.length > 0)
 }
 
 // Helper to map DB orden to frontend Comanda format
@@ -443,6 +471,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     comandasRef.current = state.comandas
   }, [state.comandas])
+  const comandasCocinaPagadasRef = useRef(state.comandasCocinaPagadas)
+  useEffect(() => {
+    comandasCocinaPagadasRef.current = state.comandasCocinaPagadas
+  }, [state.comandasCocinaPagadas])
 
   // Carga los datos de la app desde Neon. Desde la sesión 3 la API exige
   // sesión, así que se llama después de restaurar la sesión (cookie) o de
@@ -490,10 +522,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           const ordenes = await ordenesRes.json()
           if (Array.isArray(ordenes)) {
             const comandas = ordenes
+              .filter((o: any) => o?.estado !== 'pagado')
               .map((o: any) => mapOrdenToComanda(o, loadedMesas))
               // Never load a comanda with 0 items — it is corrupted/incomplete data
               .filter((c: any) => c.items.length > 0)
             dispatch({ type: 'SET_COMANDAS', payload: comandas })
+            dispatch({ type: 'SET_COMANDAS_COCINA_PAGADAS', payload: comandasPagadasEnCocina(ordenes, loadedMesas) })
 
             // NOTA: ya no auto-liberamos mesas. Una mesa marcada como ocupada
             // en la BD se respeta hasta que el mesero/admin la libere a mano,
@@ -837,6 +871,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
         if (Array.isArray(ordenes)) {
           dispatch({ type: 'SET_COMANDAS', payload: fusionarComandas(ordenes, mesas, comandasRef.current) })
+          dispatch({ type: 'SET_COMANDAS_COCINA_PAGADAS', payload: comandasPagadasEnCocina(ordenes, mesas) })
         }
       }
     } catch (error) {
@@ -900,10 +935,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       if (!res.ok) throw await errorDeRespuesta(res, 'No se pudo cambiar el estado de los ítems')
       const data = (await res.json()) as {
         items: any[]
-        orden: { id: string; estado: string; estado_anterior: string }
+        orden: OrdenCambioEstado
       }
       const cambiados = new Set(data.items.map((i: any) => String(i.id).toLowerCase()))
-      const comanda = comandasRef.current.find((c: any) => c.id === ordenId)
+      const comanda =
+        comandasRef.current.find((c: any) => c.id === ordenId) ??
+        comandasCocinaPagadasRef.current.find((c: any) => c.id === ordenId)
       if (comanda) {
         dispatch({
           type: 'UPDATE_COMANDA',
@@ -1415,6 +1452,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         if (usuarioIdRef.current !== usuarioActualId) return
         if (Array.isArray(datos?.ordenes) && Array.isArray(datos?.mesas)) {
           dispatch({ type: 'SET_COMANDAS', payload: fusionarComandas(datos.ordenes, datos.mesas, comandasRef.current) })
+          dispatch({ type: 'SET_COMANDAS_COCINA_PAGADAS', payload: comandasPagadasEnCocina(datos.ordenes, datos.mesas) })
         }
         // El servidor filtra las notificaciones por el usuario y rol de la sesión; `null` = falló allá.
         if (Array.isArray(datos?.notificaciones)) {

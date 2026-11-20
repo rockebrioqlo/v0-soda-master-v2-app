@@ -2746,9 +2746,17 @@ export const db = {
     return result as Orden[]
   },
 
+  /**
+   * Órdenes que carga la app (KDS, POS, Pagos y Mesas) y que devuelve el sondeo. Sesión 13 (F37): además
+   * de las activas, trae las órdenes `pagado` de HOY (zona America/Santiago, por la hora del cobro) con
+   * algún ítem sin `listo` ni `entregado`: se pagaron por adelantado pero cocina todavía las prepara.
+   * Esas órdenes NO las ve ninguna otra pantalla: `lib/app-context.tsx` las separa en
+   * `state.comandasCocinaPagadas` y solo las muestra el KDS; `comandas` queda igual que antes.
+   */
   async getOrdenesParaKDS(): Promise<Orden[]> {
     await ensureItemPagoSchema()
     await ensureCuentasPersonaSchema()
+    await ensureTimestampTzMigration()
     const sql = getSql()
     const result = await sql`
       SELECT o.*,
@@ -2796,6 +2804,10 @@ export const db = {
       LEFT JOIN soda_master.productos p ON i.producto_id = p.id
       LEFT JOIN soda_master.categorias c ON p.categoria_id = c.id
       WHERE o.estado NOT IN ('pagado', 'cancelado', 'perdida')
+         OR (o.estado = 'pagado'
+             AND (o.updated_at AT TIME ZONE 'America/Santiago')::date = (now() AT TIME ZONE 'America/Santiago')::date
+             AND EXISTS (SELECT 1 FROM soda_master.items_orden x
+                          WHERE x.orden_id = o.id AND COALESCE(x.estado_item, 'pendiente') NOT IN ('listo', 'entregado')))
       GROUP BY o.id
       ORDER BY o.created_at ASC
     `
@@ -3714,7 +3726,15 @@ export const db = {
     origenes: readonly string[]
   }): Promise<{
     items: ItemOrden[]
-    orden: { id: string; estado: string; estado_anterior: string }
+    orden: {
+      id: string
+      estado: string
+      estado_anterior: string
+      /** Todos los ítems de la orden quedaron `listo` o `entregado` (también en una orden `pagado`). */
+      cocina_lista: boolean
+      /** Lo mismo, justo antes de este cambio: `cocina_lista && !cocina_lista_antes` = esta acción la terminó. */
+      cocina_lista_antes: boolean
+    }
   }> {
     await ensureItemEstadoSchema()
     await ensureItemPagoSchema()
@@ -3757,19 +3777,33 @@ export const db = {
                            WHERE id = ANY(${ids}::uuid[])
                              AND NOT (COALESCE(estado_item, 'pendiente') = ANY(${[...input.origenes]}::text[]))),
               'TRANSICION_ITEM_INVALIDA')`,
+        // F37: "cocina terminó" antes y después, con la orden bloqueada. No depende del estado de la
+        // orden (una orden `pagado` conserva su estado), así que sirve para avisar al mesero una sola vez.
+        sql`SELECT COALESCE(BOOL_AND(COALESCE(estado_item, 'pendiente') IN ('listo', 'entregado')), FALSE) AS lista
+            FROM soda_master.items_orden WHERE orden_id = ${orden}::uuid`,
         sql`UPDATE soda_master.items_orden SET estado_item = ${destino}::text
             WHERE id = ANY(${ids}::uuid[]) RETURNING *`,
+        sql`SELECT COALESCE(BOOL_AND(COALESCE(estado_item, 'pendiente') IN ('listo', 'entregado')), FALSE) AS lista
+            FROM soda_master.items_orden WHERE orden_id = ${orden}::uuid`,
         sentenciaRecalcularEstado(sql, orden),
       ])) as any[][]
     } catch (err) {
       traducirErrorTx(err)
     }
-    const filas = res[6] as ItemOrden[]
+    const listaAntes = res[6][0]?.lista === true
+    const filas = res[7] as ItemOrden[]
+    const listaDespues = res[8][0]?.lista === true
     const porId = new Map(filas.map((f) => [String(f.id).toLowerCase(), f]))
-    const rec = res[7][0] as { estado_anterior: string; estado_nuevo: string }
+    const rec = res[9][0] as { estado_anterior: string; estado_nuevo: string }
     return {
       items: ids.map((i) => porId.get(i)!).filter(Boolean),
-      orden: { id: orden, estado: rec.estado_nuevo, estado_anterior: rec.estado_anterior },
+      orden: {
+        id: orden,
+        estado: rec.estado_nuevo,
+        estado_anterior: rec.estado_anterior,
+        cocina_lista: listaDespues,
+        cocina_lista_antes: listaAntes,
+      },
     }
   },
 

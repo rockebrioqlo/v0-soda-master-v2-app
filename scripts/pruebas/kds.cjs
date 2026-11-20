@@ -76,9 +76,9 @@ exports.correr = async function (ctx) {
   const b1 = await bulk(ezio, O2, ids2, 'en_preparacion')
   check('bulk a en_preparacion: 200, 3 ítems y orden en_preparacion (estado_anterior en_cocina)', b1.status === 200 && b1.json.items.length === 3 && b1.json.orden.estado === 'en_preparacion' && b1.json.orden.estado_anterior === 'en_cocina' && (await estadoOrden(O2)) === 'en_preparacion', b1)
   const b2 = await bulk(ezio, O2, ids2, 'listo')
-  check('bulk a listo: la orden pasa a listo y la respuesta trae estado_anterior en_preparacion', b2.status === 200 && b2.json.orden.estado === 'listo' && b2.json.orden.estado_anterior === 'en_preparacion' && (await estadoOrden(O2)) === 'listo', b2)
+  check('bulk a listo: la orden pasa a listo y la respuesta trae estado_anterior en_preparacion y cocina_lista (antes: no)', b2.status === 200 && b2.json.orden.estado === 'listo' && b2.json.orden.estado_anterior === 'en_preparacion' && b2.json.orden.cocina_lista === true && b2.json.orden.cocina_lista_antes === false && (await estadoOrden(O2)) === 'listo', b2)
   const b3 = await bulk(ezio, O2, ids2, 'listo')
-  check('repetir el mismo bulk es idempotente (200, estado_anterior listo → no se vuelve a avisar)', b3.status === 200 && b3.json.orden.estado === 'listo' && b3.json.orden.estado_anterior === 'listo', b3)
+  check('repetir el mismo bulk es idempotente (200, estado_anterior listo y cocina ya lista antes → no se vuelve a avisar)', b3.status === 200 && b3.json.orden.estado === 'listo' && b3.json.orden.estado_anterior === 'listo' && b3.json.orden.cocina_lista === true && b3.json.orden.cocina_lista_antes === true, b3)
   // todo o nada: un ítem entregado no puede volver a listo para cocina → 409 y los demás no cambian
   await cambiar(maria, ids2[0], 'entregado')
   await cambiar(admin, ids2[1], 'pendiente')
@@ -116,8 +116,8 @@ exports.correr = async function (ctx) {
   const eP = await editar(maria, m3.id, { cantidad: 2 })
   check('ítem en_preparacion: mesero cambia cantidad → 409 ITEM_YA_PREPARADO', eP.status === 409 && eP.json.codigo === 'ITEM_YA_PREPARADO', eP)
   check('ítem en_preparacion: notas y modificadores también → 409; el admin tampoco', (await editar(maria, m3.id, { notas_especiales: JSON.stringify({ ingredientesEspeciales: [] }) })).status === 409 && (await editar(maria, m3.id, { modificadores: ['Sin sal'] })).status === 409 && (await editar(admin, m3.id, { cantidad: 3 })).json.codigo === 'ITEM_YA_PREPARADO')
-  const pm = await editar(admin, m3.id, { precio_manual: true, precio_unitario: 1234, motivo: ctx.marca })
-  check('el precio manual del admin no se bloquea por la preparación (200)', pm.status === 200 && Number(pm.json.precio_unitario) === 1234, pm)
+  const pm = await editar(admin, m3.id, { precio_manual: true, precio_unitario: 1777, motivo: ctx.marca })
+  check('el precio manual del admin no se bloquea por la preparación (200)', pm.status === 200 && Number(pm.json.precio_unitario) === 1777, pm)
   await cambiar(ezio, m3.id, 'listo')
   check('ítem listo: editar → 409 ITEM_YA_PREPARADO', (await editar(maria, m3.id, { cantidad: 2 })).json.codigo === 'ITEM_YA_PREPARADO')
   await cambiar(admin, m3.id, 'problema')
@@ -197,7 +197,7 @@ exports.correr = async function (ctx) {
     ok = ok && ests.filter((e) => e === 'listo').length === (destinoB === 'listo' ? 4 : 2)
     if (destinoB === 'listo') {
       // exactamente una de las dos respuestas produjo la transición a listo (quien avisa al mesero)
-      const produjeron = [x, y].filter((z) => z.json.orden.estado === 'listo' && z.json.orden.estado_anterior !== 'listo').length
+      const produjeron = [x, y].filter((z) => z.json.orden.cocina_lista === true && z.json.orden.cocina_lista_antes === false).length
       if (produjeron === 1) unaSolaTransicion++
       ok = ok && (await estadoOrden(Ord)) === 'listo'
     } else {
@@ -227,6 +227,68 @@ exports.correr = async function (ctx) {
     await L.limpiarMesas(ctx, [5])
   }
   check(`3 PATCH simultáneos terminan en listo; un ítem nuevo y un ítem de vuelta a preparación a la vez dejan el estado del peor ítem (${3 - malosB}/3)`, malosB === 0, malosB)
+
+  console.log('\n[kds] F37: orden pagada por adelantado con ítems sin terminar')
+  await L.reponer(ctx, L.BIG)
+  const enSondeoKds = async (ses, id) => {
+    const r = await api(ses, 'GET', '/api/sondeo?secciones=ordenes')
+    return (r.json.ordenes || []).find((o) => o.id === id) || null
+  }
+  const rf = await enviar(maria, { mesa_id: mesa[2], notas: ctx.marca, items: [it(f.pP, 1), it(f.pP, 1)] })
+  const Of = rf.json.orden.id
+  const [f1, f2] = rf.json.items
+  const pagoF = await api(carlos, 'POST', '/api/pagos', { orden_id: Of, metodo: 'tarjeta', monto_esperado: 3000 })
+  check('se paga la orden completa con los dos ítems pendientes: 201 y la orden queda pagado (el cobro no cambió)', pagoF.status === 201 && (await estadoOrden(Of)) === 'pagado', pagoF)
+  const visF = await enSondeoKds(ezio, Of)
+  check('el KDS la sigue recibiendo: el sondeo trae la orden pagada de hoy con sus 2 ítems pendientes', !!visF && visF.estado === 'pagado' && visF.items.length === 2 && visF.items.every((i) => i.estado_item === 'pendiente'), visF && visF.estado)
+  const lista = await api(ezio, 'GET', '/api/ordenes?kds=true')
+  check('GET /api/ordenes?kds=true (carga inicial y recarga) también la trae', Array.isArray(lista.json) && lista.json.some((o) => o.id === Of && o.estado === 'pagado'))
+  const g1 = await bulk(ezio, Of, [f1.id], 'listo')
+  check('cocina marca el primer ítem: 200, la orden sigue pagado y aún no está terminada (sin aviso)', g1.status === 200 && (await estadoOrden(Of)) === 'pagado' && g1.json.orden.estado === 'pagado' && g1.json.orden.cocina_lista === false, g1.json)
+  check('con un ítem pendiente sigue visible en el KDS', !!(await enSondeoKds(ezio, Of)))
+  const g2 = await bulk(ezio, Of, [f2.id], 'listo')
+  check('al marcar el último ítem: 200, cocina_lista true y antes false (una sola notificación), la orden sigue pagado', g2.status === 200 && g2.json.orden.cocina_lista === true && g2.json.orden.cocina_lista_antes === false && g2.json.orden.estado === 'pagado' && (await estadoOrden(Of)) === 'pagado', g2.json)
+  check('y sale del KDS (el sondeo ya no la trae)', (await enSondeoKds(ezio, Of)) === null)
+  const g3 = await bulk(ezio, Of, [f2.id], 'listo')
+  check('repetir la marca no vuelve a avisar (cocina_lista_antes true)', g3.status === 200 && g3.json.orden.cocina_lista === true && g3.json.orden.cocina_lista_antes === true)
+  const otroPago = await api(carlos, 'POST', '/api/pagos', { orden_id: Of, metodo: 'tarjeta', monto_esperado: 3000 })
+  check('Pagos no la ofrece para cobrar: un segundo cobro → 409 y la orden sigue pagado', otroPago.status === 409 && (await estadoOrden(Of)) === 'pagado', otroPago.status)
+  check('las órdenes activas de la mesa no la incluyen (Mesas ve lo mismo que antes)', (await L.activasMesa(ctx, 2)).length === 0)
+  await L.limpiarMesas(ctx, [2])
+
+  const rh = await enviar(maria, { mesa_id: mesa[3], notas: ctx.marca, items: [it(f.pP, 1)] })
+  const Oh = rh.json.orden.id
+  await cambiar(ezio, rh.json.items[0].id, 'listo')
+  await api(carlos, 'POST', '/api/pagos', { orden_id: Oh, metodo: 'tarjeta', monto_esperado: 1500 })
+  check('pagada con todo listo: no aparece en el KDS', (await estadoOrden(Oh)) === 'pagado' && (await enSondeoKds(ezio, Oh)) === null)
+  await L.limpiarMesas(ctx, [3])
+
+  const rv = await enviar(maria, { mesa_id: mesa[5], notas: ctx.marca, items: [it(f.pP, 1)] })
+  const Ov = rv.json.orden.id
+  await api(carlos, 'POST', '/api/pagos', { orden_id: Ov, metodo: 'tarjeta', monto_esperado: 1500 })
+  const vistaHoy = !!(await enSondeoKds(ezio, Ov))
+  await db`UPDATE soda_master.ordenes SET updated_at = now() - interval '2 days' WHERE id = ${Ov}::uuid AND notas LIKE 'prueba %'`
+  check('solo las pagadas de HOY: la misma orden con el cobro de hace 2 días ya no aparece', vistaHoy && (await enSondeoKds(ezio, Ov)) === null)
+  await L.limpiarMesas(ctx, [5])
+
+  console.log('\n[kds] F37: carrera — dos estaciones terminan los dos últimos ítems de una orden pagada (3 rondas)')
+  let malosP = 0, unaSolaP = 0
+  for (let k = 0; k < 3; k++) {
+    const r = await enviar(maria, { mesa_id: mesa[6], notas: ctx.marca, items: [it(f.pP, 1), it(f.pP, 1)] })
+    const Ord = r.json.orden.id
+    const [c1, c2] = r.json.items
+    await api(carlos, 'POST', '/api/pagos', { orden_id: Ord, metodo: 'tarjeta', monto_esperado: 3000 })
+    const [x, y] = await Promise.all([
+      bulk(ezio, Ord, [c1.id], 'listo'),
+      sleep([0, 60, 150][k]).then(() => bulk(estacionB, Ord, [c2.id], 'listo')),
+    ])
+    const produjeron = [x, y].filter((z) => z.json.orden && z.json.orden.cocina_lista === true && z.json.orden.cocina_lista_antes === false).length
+    if (produjeron === 1) unaSolaP++
+    const ok = x.status === 200 && y.status === 200 && produjeron === 1 && (await estadoOrden(Ord)) === 'pagado' && (await enSondeoKds(ezio, Ord)) === null
+    if (!ok) malosP++
+    await L.limpiarMesas(ctx, [6])
+  }
+  check(`una sola respuesta produce el aviso y la orden sigue pagado y fuera del KDS (${3 - malosP}/3, avisos únicos ${unaSolaP}/3)`, malosP === 0 && unaSolaP === 3)
   check('sin ítems huérfanos', (await L.huerfanos(ctx)) === 0)
   if (bar) await api(bar, 'POST', '/api/auth/logout', {}).catch(() => {})
 }
