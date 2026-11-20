@@ -228,3 +228,9 @@
 - Pendiente / siguiente sesión:
   - **Usuario:** revisar y autorizar el push de la sesión 6.5 (1 commit local); después de desplegar, mirar en el log de Vercel que use Node 24.x y que instale con `--frozen-lockfile`.
   - Sesión 7 (A2/B2: asignaciones por persona y pérdidas) según el ROADMAP; el prompt se entrega cuando el usuario lo pida.
+
+- Anexo de la sesión 6.5 (20-11-2026, a pedido del usuario después de la entrega):
+  - **F16 revisado, no hay fuga del hash del PIN.** `getUsuarios` y `getUsuarioById` seleccionan columnas explícitas sin `pin_hash` y `mapUsuario` lo descarta; las 40 rutas GET con admin, cajero, mesero y cocina, más login y `/api/auth/sesion`, dieron 0 hallazgos al buscar hashes bcrypt y campos de PIN (control positivo con un hash real). F16 queda como estaba: los contadores de bloqueo visibles para un mesero; se agregó la nota del riesgo de los PIN de 4 dígitos y de que el filtro es por exclusión.
+  - **C10 agregado al lote de la sesión 14:** el "50.000" del fondo de caja es texto de ejemplo y abre con $0 si no se escribe; mismo patrón en "Efectivo recibido" de Pagos (visto) y en el efectivo contado del cierre (no verificado).
+  - **A4 sube de prioridad:** con el límite de la sesión 4 el KDS se pausa a sí mismo hasta 120 s (`lib/pausa-limite.ts`). Se agregó P6 en "Antes de producción final": no declarar el sistema listo sin la sesión 10 cerrada.
+  - Solo documentación; no se tocó código.
