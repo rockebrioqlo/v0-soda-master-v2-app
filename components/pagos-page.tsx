@@ -870,6 +870,9 @@ export function PagosPage() {
       return true
     } catch (error: any) {
       showToast(error?.message || 'No se pudieron guardar las asignaciones', 'error')
+      // 409: las cuentas cambiaron mientras guardabas (otro guardado, un cobro o
+      // una persona borrada). Se recarga desde la base para no seguir sobre datos viejos.
+      if (error?.status === 409) await recargarOrdenes()
       return false
     } finally {
       setGuardandoAsignaciones(false)
@@ -1050,10 +1053,6 @@ export function PagosPage() {
       const result = await registrarPerdidaApi({
         orden_id: comandaAPagar.id,
         motivo,
-        autorizado_por: usuarioActual.id,
-        autorizado_por_nombre: usuarioActual.nombre,
-        tasa_impuesto: tasaImpuesto,
-        impuesto_habilitado: impuestoHabilitado,
       })
       // Refleja localmente: la orden queda 'perdida'. La comanda
       // desaparece del listado de cobro y la mesa muestra el hint rojo.
@@ -1076,6 +1075,12 @@ export function PagosPage() {
       cargarPerdidas()
     } catch (error: any) {
       showToast(error?.message || 'Error al registrar la pérdida', 'error')
+      // 409: la orden cambió (ya pagada, ya perdida, ítems o descuento distintos).
+      if (error?.status === 409) {
+        setShowPerdidaDialog(false)
+        await recargarOrdenes()
+        cargarPerdidas()
+      }
     } finally {
       setRegistrandoPerdida(false)
     }
@@ -1107,8 +1112,6 @@ export function PagosPage() {
         perdida_id: perdidaSeleccionada.id,
         monto,
         metodo: metodoResolver,
-        resuelto_por_id: usuarioActual.id,
-        resuelto_por_nombre: usuarioActual.nombre,
       })
       showToast(
         `Cobro retroactivo registrado: ${formatCurrency(result.monto)}`,
@@ -1120,6 +1123,11 @@ export function PagosPage() {
       recargarPagos()
     } catch (error: any) {
       showToast(error?.message || 'Error al registrar el cobro retroactivo', 'error')
+      // 409: otra persona ya cobró esta pérdida.
+      if (error?.status === 409) {
+        setShowResolverDialog(false)
+        cargarPerdidas()
+      }
     } finally {
       setResolviendoPerdida(false)
     }

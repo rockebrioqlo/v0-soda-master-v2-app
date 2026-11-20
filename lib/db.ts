@@ -398,7 +398,35 @@ const ERRORES_TX_ORDEN: Record<string, { status: number; mensaje: string }> = {
     mensaje: 'La cocina ya empezó a preparar esta orden: solo el administrador puede borrarla.',
   },
   ITEM_PAGADO: { status: 409, mensaje: 'Este ítem ya fue pagado y no se puede modificar.' },
+  // Sesión 7: asignaciones por persona, pérdidas y cobro retroactivo.
+  ITEM_AJENO: { status: 400, mensaje: 'Alguno de los ítems no pertenece a esta orden.' },
+  PERSONA_AJENA: { status: 400, mensaje: 'Alguna de las personas no pertenece a esta orden.' },
+  PERSONA_ELIMINADA: {
+    status: 409,
+    mensaje: 'Una de las personas ya no existe en esta orden. Se recargó la pantalla: revisa y vuelve a asignar.',
+  },
+  PERSONA_NO_ENCONTRADA: { status: 404, mensaje: 'La persona no existe.' },
+  ITEMS_CAMBIARON: {
+    status: 409,
+    mensaje: 'Las cuentas de la mesa cambiaron mientras guardabas (otro guardado, un cobro o un cambio en los ítems). Se recargó la pantalla: revisa y vuelve a asignar.',
+  },
+  ORDEN_YA_PAGADA: { status: 409, mensaje: 'La orden ya está pagada: no aplica como perro muerto.' },
+  ORDEN_CANCELADA: { status: 409, mensaje: 'La orden está cancelada: no se puede marcar como pérdida.' },
+  PERDIDA_YA_REGISTRADA: { status: 409, mensaje: 'La orden ya está marcada como pérdida.' },
+  SIN_ITEMS_POR_COBRAR: {
+    status: 409,
+    mensaje: 'No quedan ítems por cobrar en esta orden: no aplica como perro muerto.',
+  },
+  ORDEN_CAMBIO: {
+    status: 409,
+    mensaje: 'La orden cambió mientras registrabas la pérdida (ítems o descuento). Se recargó la pantalla: revisa e intenta de nuevo.',
+  },
+  PERDIDA_NO_ENCONTRADA: { status: 404, mensaje: 'La pérdida no existe.' },
+  PERDIDA_YA_RESUELTA: { status: 409, mensaje: 'Esta pérdida ya fue cobrada retroactivamente.' },
 }
+
+/** Estados de una orden que todavía se puede modificar (ni pagada, ni cancelada, ni perdida). */
+const ESTADOS_ORDEN_ACTIVA = ['pendiente', 'en_cocina', 'en_preparacion', 'listo', 'entregado', 'problema']
 
 /** Traduce un aborto `SM409` de `assert_cobro` a `ErrorOrden`; otros errores se relanzan. */
 function traducirErrorTx(err: any, mensajes?: Record<string, string>): never {
@@ -565,6 +593,18 @@ async function ensurePerdidasTable(): Promise<void> {
     CREATE INDEX IF NOT EXISTS perdidas_comanda_resuelto_idx
       ON soda_master.perdidas_comanda (resuelto)
   `
+  // Sesión 7 (B2): una orden se marca como pérdida una sola vez. El bloqueo de
+  // la orden en `registrarPerdida` ya lo garantiza; el índice único es la red
+  // de seguridad. Si hubiera duplicados viejos no se puede crear: se avisa y se
+  // sigue (el bloqueo igual protege los registros nuevos).
+  try {
+    await sql`
+      CREATE UNIQUE INDEX IF NOT EXISTS perdidas_comanda_orden_uk
+        ON soda_master.perdidas_comanda (orden_id)
+    `
+  } catch (err) {
+    console.error('[perdidas] no se pudo crear el índice único perdidas_comanda(orden_id):', err)
+  }
   _perdidasTableReady = true
 }
 
@@ -3385,17 +3425,24 @@ export const db = {
   },
 
   // Pérdidas (perros muertos): cuando un cliente consumió pero se fue sin
-  // pagar. La función toma la orden, calcula el monto que quedaba sin pagar
-  // (suma del subtotal de items no pagados + IVA, sin propina) y deja un
-  // registro. La orden pasa a estado `'perdida'`, lo que la quita del
-  // listado de comandas activas y la diferencia claramente de `'pagado'`.
+  // pagar. La orden pasa a estado `'perdida'`, lo que la quita del listado de
+  // comandas activas y la diferencia claramente de `'pagado'`.
+  //
+  // Sesión 7 (B2): mismo patrón del cobro. Lectura previa fuera de la
+  // transacción (orden, ítems, descuento, configuración), monto calculado en
+  // JS con `calcularCobro` (lo que cobraría Pagos por lo que falta: ítems sin
+  // pagar, descuento de la orden prorrateado y configuración de IVA del
+  // servidor; sin propina) y una sola `sql.transaction` con la orden bloqueada
+  // (`FOR UPDATE`), que verifica con `assert_cobro` que el estado sigue activo
+  // y que ni los ítems ni el descuento cambiaron desde la lectura
+  // (`ORDEN_CAMBIO`). Un segundo registro en paralelo espera el bloqueo y
+  // aborta (`PERDIDA_YA_REGISTRADA`); un cobro total en paralelo gana o pierde
+  // por completo. El índice único `perdidas_comanda(orden_id)` es la última red.
   async registrarPerdida(input: {
     orden_id: string
     motivo: string
-    autorizado_por?: string | null
-    autorizado_por_nombre?: string | null
-    tasa_impuesto?: number
-    impuesto_habilitado?: boolean
+    /** Quien autoriza: el usuario de la sesión (nunca viene del body). */
+    usuario: { id: string; nombre: string }
   }): Promise<{
     id: string
     monto_perdido: number
@@ -3407,91 +3454,138 @@ export const db = {
     await ensurePerdidasTable()
     await ensureItemPagoSchema()
     await ensureOrdenEstadoSchema()
+    await ensurePagoSchema()
     const sql = getSql()
+    const O = input.orden_id
 
-    // Traemos la orden + datos del usuario que la abrió. Ese usuario es
-    // el "responsable" — quien deberá responder por la pérdida hasta que
-    // el cliente, eventualmente, vuelva a pagar lo consumido.
-    const orden = (await sql`
-      SELECT o.id, o.mesa_id, o.estado, o.usuario_id,
-             u.nombre AS usuario_nombre, u.rol AS usuario_rol
-      FROM soda_master.ordenes o
-      LEFT JOIN soda_master.usuarios u ON u.id = o.usuario_id
-      WHERE o.id = ${input.orden_id}
-    `) as Array<{
-      id: string
-      mesa_id: string | null
-      estado: string
-      usuario_id: string | null
-      usuario_nombre: string | null
-      usuario_rol: string | null
-    }>
-    if (orden.length === 0) {
-      throw new Error('Orden no encontrada')
+    // ── 1) Lectura (la transacción la revalida) ──
+    const [ordenRows, itemRows, descRows, cfgRows] = (await Promise.all([
+      sql`
+        SELECT o.id, o.mesa_id, o.estado, o.usuario_id,
+               u.nombre AS usuario_nombre, u.rol AS usuario_rol
+        FROM soda_master.ordenes o
+        LEFT JOIN soda_master.usuarios u ON u.id = o.usuario_id
+        WHERE o.id = ${O}::uuid
+      `,
+      sql`
+        SELECT cantidad, precio_unitario, pagado
+        FROM soda_master.items_orden WHERE orden_id = ${O}::uuid
+      `,
+      sql`
+        SELECT tipo, valor FROM soda_master.descuentos
+        WHERE orden_id = ${O}::uuid ORDER BY created_at DESC LIMIT 1
+      `,
+      sql`
+        SELECT clave, valor, tipo FROM soda_master.configuracion
+        WHERE clave IN ('tasa_impuesto','impuesto_habilitado','propinas_habilitadas','precios_incluyen_iva')
+      `,
+    ])) as any[][]
+
+    const orden = ordenRows[0]
+    if (!orden) throw new ErrorOrden('ORDEN_NO_ENCONTRADA', 404, 'La orden no existe.')
+    if (orden.estado === 'pagado') throw new ErrorOrden('ORDEN_YA_PAGADA', 409, ERRORES_TX_ORDEN.ORDEN_YA_PAGADA.mensaje)
+    if (orden.estado === 'perdida') {
+      throw new ErrorOrden('PERDIDA_YA_REGISTRADA', 409, ERRORES_TX_ORDEN.PERDIDA_YA_REGISTRADA.mensaje)
     }
-    if (orden[0].estado === 'pagado') {
-      throw new Error('La orden ya está pagada, no aplica como perro muerto')
-    }
-    if (orden[0].estado === 'perdida') {
-      throw new Error('La orden ya está marcada como pérdida')
-    }
-    if (orden[0].estado === 'cancelado') {
-      throw new Error('La orden está cancelada, no se puede marcar como pérdida')
+    if (orden.estado === 'cancelado') {
+      throw new ErrorOrden('ORDEN_CANCELADA', 409, ERRORES_TX_ORDEN.ORDEN_CANCELADA.mensaje)
     }
 
-    // Suma de items NO pagados (en pagos parciales previos puede haber
-    // items ya cobrados; esos NO se cuentan como pérdida).
-    const sumRows = (await sql`
-      SELECT
-        COALESCE(SUM(cantidad * precio_unitario), 0)::numeric AS subtotal,
-        COUNT(*)::int AS cant
-      FROM soda_master.items_orden
-      WHERE orden_id = ${input.orden_id} AND pagado = FALSE
-    `) as Array<{ subtotal: string | number; cant: number }>
-    const subtotal = Number(sumRows[0]?.subtotal ?? 0)
-    const cantidad = Number(sumRows[0]?.cant ?? 0)
-    const tasa = input.impuesto_habilitado === false ? 0 : Number(input.tasa_impuesto ?? 0)
-    const monto = subtotal + subtotal * (tasa / 100)
+    const items = (itemRows as any[]).map((r) => ({
+      cantidad: Number(r.cantidad) || 0,
+      precio: Number(r.precio_unitario) || 0,
+      pagado: r.pagado === true,
+    }))
+    const pendientes = items.filter((i) => !i.pagado)
+    if (pendientes.length === 0) {
+      throw new ErrorOrden('SIN_ITEMS_POR_COBRAR', 409, ERRORES_TX_ORDEN.SIN_ITEMS_POR_COBRAR.mensaje)
+    }
+
+    // ── 2) Monto: el que cobraría Pagos por lo que falta (sin propina) ──
+    const cfg: Record<string, any> = {}
+    for (const r of cfgRows as any[]) cfg[r.clave] = parseConfigValor(r.valor, r.tipo)
+    const config: ConfigCobro = {
+      impuestoHabilitado: cfg.impuesto_habilitado === true,
+      tasaImpuesto: Number(cfg.tasa_impuesto) || 0,
+      propinasHabilitadas: cfg.propinas_habilitadas !== false,
+      preciosIncluyenIva: cfg.precios_incluyen_iva !== false,
+    }
+    const desc = (descRows as any[])[0]
+    const descuentoOrden: DescuentoCobro = desc
+      ? { tipo: desc.tipo as TipoDescuentoCobro, valor: Number(desc.valor) || 0 }
+      : { tipo: null, valor: 0 }
+    const subtotalOrden = items.reduce((s, i) => s + i.precio * i.cantidad, 0)
+    const calc = calcularCobro({
+      items: pendientes.map((i) => ({ precio: i.precio, cantidad: i.cantidad })),
+      subtotalOrden,
+      descuento: descuentoOrden,
+      config,
+    })
+    const monto = calc.total
+    const cantidad = pendientes.length
 
     const motivo = (input.motivo || '').toString().trim() || 'Perro muerto'
-    const autorizadoPor = input.autorizado_por || null
-    const autorizadoPorNombre = input.autorizado_por_nombre || null
-    const responsableId = orden[0].usuario_id || null
-    const responsableNombre = orden[0].usuario_nombre || null
-    const responsableRol = orden[0].usuario_rol || null
+    const responsableId = orden.usuario_id ? String(orden.usuario_id) : null
+    const responsableNombre = orden.usuario_nombre || null
+    const responsableRol = orden.usuario_rol || null
+    const responsableLabel = responsableNombre
+      ? ` — responsable ${responsableNombre}${responsableRol ? ` (${responsableRol})` : ''}`
+      : ''
+    // Anotamos en `ordenes.notas` para que cualquiera que abra esa orden vea
+    // por qué se cerró sin pago, quién lo autorizó y quién era el responsable.
+    const notaPerdida = `[PERRO MUERTO] ${motivo} — autorizó ${input.usuario.nombre}${responsableLabel}`
 
-    const inserted = (await sql`
+    // ── 3) Transacción ──
+    const consultas: any[] = [
+      // a) bloqueo de la orden: registros y cobros concurrentes se serializan aquí
+      sql`SELECT id FROM soda_master.ordenes WHERE id = ${O}::uuid FOR UPDATE`,
+      sql`SELECT soda_master.assert_cobro(
+            (SELECT COUNT(*) FROM soda_master.ordenes WHERE id = ${O}::uuid) = 1,
+            'ORDEN_NO_ENCONTRADA')`,
+      // b) la orden sigue activa (con la orden bloqueada: ya vimos lo que confirmó el otro)
+      sql`SELECT soda_master.assert_cobro(
+            (SELECT estado FROM soda_master.ordenes WHERE id = ${O}::uuid) <> 'pagado', 'ORDEN_YA_PAGADA')`,
+      sql`SELECT soda_master.assert_cobro(
+            (SELECT estado FROM soda_master.ordenes WHERE id = ${O}::uuid) <> 'perdida', 'PERDIDA_YA_REGISTRADA')`,
+      sql`SELECT soda_master.assert_cobro(
+            (SELECT estado FROM soda_master.ordenes WHERE id = ${O}::uuid) <> 'cancelado', 'ORDEN_CANCELADA')`,
+      // c) nada cambió desde la lectura (ítems, precios, pagados, descuento)
+      sql`SELECT soda_master.assert_cobro(
+            ABS(COALESCE((SELECT SUM(precio_unitario * cantidad) FROM soda_master.items_orden
+                           WHERE orden_id = ${O}::uuid), 0) - ${subtotalOrden}::numeric) < 0.01
+            AND (SELECT COUNT(*) FROM soda_master.items_orden WHERE orden_id = ${O}::uuid) = ${items.length}::int
+            AND (SELECT COUNT(*) FROM soda_master.items_orden
+                  WHERE orden_id = ${O}::uuid AND pagado = FALSE) = ${pendientes.length}::int
+            AND ABS(COALESCE((SELECT SUM(precio_unitario * cantidad) FROM soda_master.items_orden
+                               WHERE orden_id = ${O}::uuid AND pagado = FALSE), 0)
+                    - ${pendientes.reduce((s, i) => s + i.precio * i.cantidad, 0)}::numeric) < 0.01
+            AND (SELECT tipo FROM soda_master.descuentos WHERE orden_id = ${O}::uuid
+                  ORDER BY created_at DESC LIMIT 1) IS NOT DISTINCT FROM ${descuentoOrden.tipo}::text
+            AND COALESCE((SELECT valor FROM soda_master.descuentos WHERE orden_id = ${O}::uuid
+                           ORDER BY created_at DESC LIMIT 1), 0) = ${descuentoOrden.valor}::numeric,
+            'ORDEN_CAMBIO')`,
+    ]
+    const posInsert = consultas.length
+    consultas.push(sql`
       INSERT INTO soda_master.perdidas_comanda
         (orden_id, mesa_id, monto_perdido, cantidad_items, motivo,
          autorizado_por, autorizado_por_nombre,
          responsable_id, responsable_nombre, responsable_rol)
       VALUES (
-        ${input.orden_id}::uuid,
-        ${orden[0].mesa_id},
+        ${O}::uuid,
+        ${orden.mesa_id ?? null}::uuid,
         ${monto},
         ${cantidad},
         ${motivo},
-        ${autorizadoPor},
-        ${autorizadoPorNombre},
-        ${responsableId},
+        ${input.usuario.id}::uuid,
+        ${input.usuario.nombre},
+        ${responsableId}::uuid,
         ${responsableNombre},
         ${responsableRol}
       )
       RETURNING id
-    `) as Array<{ id: string }>
-
-    // Anotamos en `ordenes.notas` para que cualquiera que abra esa orden
-    // vea por qué se cerró sin pago, quién lo autorizó y quién era el
-    // responsable de la mesa al momento del incidente.
-    const responsableLabel = responsableNombre
-      ? ` — responsable ${responsableNombre}${
-          responsableRol ? ` (${responsableRol})` : ''
-        }`
-      : ''
-    const notaPerdida = `[PERRO MUERTO] ${motivo}${
-      autorizadoPorNombre ? ` — autorizó ${autorizadoPorNombre}` : ''
-    }${responsableLabel}`
-    await sql`
+    `)
+    consultas.push(sql`
       UPDATE soda_master.ordenes
       SET estado = 'perdida',
           notas = CASE
@@ -3499,11 +3593,22 @@ export const db = {
             ELSE notas || E'\n' || ${notaPerdida}
           END,
           updated_at = CURRENT_TIMESTAMP
-      WHERE id = ${input.orden_id}
-    `
+      WHERE id = ${O}::uuid
+    `)
+
+    let resultados: any[][] = []
+    try {
+      resultados = (await sql.transaction(consultas)) as any[][]
+    } catch (err: any) {
+      // Índice único (orden_id): la red de seguridad si algo se saltara el bloqueo.
+      if (err?.code === '23505') {
+        throw new ErrorOrden('PERDIDA_YA_REGISTRADA', 409, ERRORES_TX_ORDEN.PERDIDA_YA_REGISTRADA.mensaje)
+      }
+      traducirErrorTx(err)
+    }
 
     return {
-      id: inserted[0].id,
+      id: resultados[posInsert][0].id,
       monto_perdido: monto,
       cantidad_items: cantidad,
       responsable_id: responsableId,
@@ -3519,6 +3624,11 @@ export const db = {
    * vuelve a marcar como pagada — el `estado='perdida'` queda como
    * histórico de que hubo un incidente, pero financieramente la pérdida
    * desaparece de los reportes (filtrando `resuelto = true`).
+   *
+   * Sesión 7: va en una transacción con la fila de la pérdida bloqueada
+   * (`FOR UPDATE`) y `assert_cobro` de que no esté resuelta; dos cobros
+   * retroactivos en paralelo ya no crean dos pagos. El monto del cliente
+   * sigue sin validarse contra la pérdida (B3, sesión 9).
    */
   async resolverPerdida(input: {
     perdida_id: string
@@ -3533,12 +3643,14 @@ export const db = {
     monto: number
   }> {
     await ensurePerdidasTable()
+    await ensurePagoSchema()
     const sql = getSql()
+    const P = input.perdida_id
 
     const perdidas = (await sql`
       SELECT id, orden_id, monto_perdido, resuelto
       FROM soda_master.perdidas_comanda
-      WHERE id = ${input.perdida_id}
+      WHERE id = ${P}::uuid
     `) as Array<{
       id: string
       orden_id: string
@@ -3546,54 +3658,60 @@ export const db = {
       resuelto: boolean
     }>
     if (perdidas.length === 0) {
-      throw new Error('Pérdida no encontrada')
+      throw new ErrorOrden('PERDIDA_NO_ENCONTRADA', 404, ERRORES_TX_ORDEN.PERDIDA_NO_ENCONTRADA.mensaje)
     }
     if (perdidas[0].resuelto) {
-      throw new Error('Esta pérdida ya fue cobrada retroactivamente')
+      throw new ErrorOrden('PERDIDA_YA_RESUELTA', 409, ERRORES_TX_ORDEN.PERDIDA_YA_RESUELTA.mensaje)
     }
-    const ordenId = perdidas[0].orden_id
+    const ordenId = String(perdidas[0].orden_id)
     const montoOriginal = Number(perdidas[0].monto_perdido) || 0
     const monto =
       input.monto !== undefined && Number.isFinite(Number(input.monto))
         ? Number(input.monto)
         : montoOriginal
     if (monto <= 0) {
-      throw new Error('El monto del cobro retroactivo debe ser mayor que 0')
+      throw new ErrorOrden('MONTO_INVALIDO', 400, 'El monto del cobro retroactivo debe ser mayor que 0')
     }
     const metodo = normalizarMetodoPago(input.metodo ?? 'efectivo')
-    const referencia = input.referencia ?? `retroactivo:${input.perdida_id}`
-
-    const inserted = (await sql`
-      INSERT INTO soda_master.pagos
-        (orden_id, metodo, monto, propina, descuento, dividido_en, vuelto, referencia, aprobado)
-      VALUES (${ordenId}, ${metodo}, ${monto}, 0, 0, 1, NULL, ${referencia}, TRUE)
-      RETURNING *
-    `) as any[]
-    const pagoId = (inserted[0] as any).id
-
-    await sql`
-      UPDATE soda_master.perdidas_comanda
-      SET resuelto = TRUE,
-          resuelto_at = now(),
-          resuelto_por_id = ${input.resuelto_por_id}::uuid,
-          resuelto_por_nombre = ${input.resuelto_por_nombre},
-          pago_id = ${pagoId}::uuid
-      WHERE id = ${input.perdida_id}
-    `
-
+    const referencia = input.referencia ?? `retroactivo:${P}`
+    const pagoId = crypto.randomUUID()
     // Dejamos constancia en `ordenes.notas` para no perder el rastro.
     const nota = `[PERRO MUERTO RESUELTO] cobrado retroactivamente $${monto.toFixed(0)} por ${input.resuelto_por_nombre}`
-    await sql`
-      UPDATE soda_master.ordenes
-      SET notas = CASE
-        WHEN COALESCE(notas, '') = '' THEN ${nota}
-        ELSE notas || E'\n' || ${nota}
-      END,
-      updated_at = CURRENT_TIMESTAMP
-      WHERE id = ${ordenId}
-    `
 
-    return { id: input.perdida_id, pago_id: pagoId, monto }
+    try {
+      await sql.transaction([
+        sql`SELECT id FROM soda_master.perdidas_comanda WHERE id = ${P}::uuid FOR UPDATE`,
+        sql`SELECT soda_master.assert_cobro(
+              (SELECT COUNT(*) FROM soda_master.perdidas_comanda WHERE id = ${P}::uuid) = 1,
+              'PERDIDA_NO_ENCONTRADA')`,
+        sql`SELECT soda_master.assert_cobro(
+              (SELECT resuelto FROM soda_master.perdidas_comanda WHERE id = ${P}::uuid) = FALSE,
+              'PERDIDA_YA_RESUELTA')`,
+        sql`INSERT INTO soda_master.pagos
+              (id, orden_id, metodo, monto, propina, descuento, dividido_en, vuelto, referencia,
+               aprobado, cobrado_por, cobrado_por_nombre)
+            VALUES (${pagoId}::uuid, ${ordenId}::uuid, ${metodo}, ${monto}, 0, 0, 1, NULL, ${referencia},
+                    TRUE, ${input.resuelto_por_id}::uuid, ${input.resuelto_por_nombre})`,
+        sql`UPDATE soda_master.perdidas_comanda
+            SET resuelto = TRUE,
+                resuelto_at = now(),
+                resuelto_por_id = ${input.resuelto_por_id}::uuid,
+                resuelto_por_nombre = ${input.resuelto_por_nombre},
+                pago_id = ${pagoId}::uuid
+            WHERE id = ${P}::uuid`,
+        sql`UPDATE soda_master.ordenes
+            SET notas = CASE
+                  WHEN COALESCE(notas, '') = '' THEN ${nota}
+                  ELSE notas || E'\n' || ${nota}
+                END,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ${ordenId}::uuid`,
+      ])
+    } catch (err) {
+      traducirErrorTx(err)
+    }
+
+    return { id: P, pago_id: pagoId, monto }
   },
 
   async getPerdidas(filtro?: { fecha?: string }): Promise<any[]> {
@@ -3635,29 +3753,41 @@ export const db = {
     `) as any[]
   },
 
+  /**
+   * Crea "Persona N" en una orden activa (sesión 7). Va en una transacción con
+   * la orden bloqueada (`FOR UPDATE`): el siguiente `idx` se calcula con el
+   * bloqueo tomado, así dos cajeros que crean a la vez obtienen Persona 3 y
+   * Persona 4 en vez de un error de índice único. (El `pg_advisory_xact_lock`
+   * que había dentro del CTE no lo referenciaba nada, así que ni se ejecutaba.)
+   */
   async crearCuentaPersona(input: {
     orden_id: string
     nombre?: string | null
   }): Promise<any> {
     await ensureCuentasPersonaSchema()
+    await ensurePagoSchema()
     const sql = getSql()
-    // Calculamos el siguiente idx libre. Lockeamos la orden para evitar
-    // que dos cajeros creen Persona 3 al mismo tiempo.
-    const rows = (await sql`
-      WITH lock AS (
-        SELECT pg_advisory_xact_lock(hashtext(${input.orden_id}::text)::bigint)
-      ),
-      next AS (
-        SELECT COALESCE(MAX(idx), 0) + 1 AS next_idx
-        FROM soda_master.cuentas_persona
-        WHERE orden_id = ${input.orden_id}::uuid
-      )
-      INSERT INTO soda_master.cuentas_persona (orden_id, idx, nombre)
-      SELECT ${input.orden_id}::uuid, next.next_idx, ${input.nombre ?? null}
-      FROM next
-      RETURNING id, orden_id, idx, nombre, created_at
-    `) as any[]
-    return rows[0]
+    const O = input.orden_id
+    let resultados: any[][] = []
+    try {
+      resultados = (await sql.transaction([
+        sql`SELECT id FROM soda_master.ordenes WHERE id = ${O}::uuid FOR UPDATE`,
+        sql`SELECT soda_master.assert_cobro(
+              (SELECT COUNT(*) FROM soda_master.ordenes WHERE id = ${O}::uuid) = 1,
+              'ORDEN_NO_ENCONTRADA')`,
+        sql`SELECT soda_master.assert_cobro(
+              (SELECT estado FROM soda_master.ordenes WHERE id = ${O}::uuid) = ANY(${ESTADOS_ORDEN_ACTIVA}::text[]),
+              'ORDEN_NO_ACTIVA')`,
+        sql`INSERT INTO soda_master.cuentas_persona (orden_id, idx, nombre)
+            SELECT ${O}::uuid, COALESCE(MAX(idx), 0) + 1, ${input.nombre ?? null}::text
+            FROM soda_master.cuentas_persona
+            WHERE orden_id = ${O}::uuid
+            RETURNING id, orden_id, idx, nombre, created_at`,
+      ])) as any[][]
+    } catch (err) {
+      traducirErrorTx(err)
+    }
+    return resultados[resultados.length - 1][0]
   },
 
   async renombrarCuentaPersona(id: string, nombre: string | null): Promise<any> {
@@ -3669,22 +3799,35 @@ export const db = {
       WHERE id = ${id}::uuid
       RETURNING id, orden_id, idx, nombre, created_at
     `) as any[]
+    if (!rows[0]) {
+      throw new ErrorOrden('PERSONA_NO_ENCONTRADA', 404, ERRORES_TX_ORDEN.PERSONA_NO_ENCONTRADA.mensaje)
+    }
     return rows[0]
   },
 
+  /**
+   * Elimina una persona y deja sus ítems compartidos (sesión 7: en una
+   * transacción con la orden bloqueada, para no cruzarse con una asignación
+   * en paralelo y dejar ítems apuntando a una persona que ya no existe).
+   * No cambia las reglas de qué se puede borrar (A3, sesión 9).
+   */
   async eliminarCuentaPersona(id: string): Promise<void> {
     await ensureCuentasPersonaSchema()
     const sql = getSql()
-    // Desasignamos los items de esa persona antes de borrar para que
-    // queden compartidos y no se pierda nada cuando hay FK suelta.
-    await sql`
-      UPDATE soda_master.items_orden
-      SET cuenta_persona_id = NULL
-      WHERE cuenta_persona_id = ${id}::uuid
-    `
-    await sql`
-      DELETE FROM soda_master.cuentas_persona WHERE id = ${id}::uuid
-    `
+    const filas = (await sql`
+      SELECT orden_id FROM soda_master.cuentas_persona WHERE id = ${id}::uuid
+    `) as any[]
+    if (!filas[0]) return // ya no existe (doble clic): nada que hacer
+    const O = String(filas[0].orden_id)
+    await sql.transaction([
+      sql`SELECT id FROM soda_master.ordenes WHERE id = ${O}::uuid FOR UPDATE`,
+      // Desasignamos los items de esa persona antes de borrar para que
+      // queden compartidos y no se pierda nada cuando hay FK suelta.
+      sql`UPDATE soda_master.items_orden
+          SET cuenta_persona_id = NULL
+          WHERE cuenta_persona_id = ${id}::uuid`,
+      sql`DELETE FROM soda_master.cuentas_persona WHERE id = ${id}::uuid`,
+    ])
   },
 
   /**
@@ -3699,8 +3842,15 @@ export const db = {
    *     se clonan filas para los demás (y un sobrante compartido si las
    *     cantidades no suman exactamente).
    *
-   * Items ya pagados no se reasignan (mantiene consistencia con los
-   * reportes históricos de cuánto pagó cada uno).
+   * Sesión 7 (A2, R7): patrón del cobro. Lectura previa (orden, ítems y
+   * personas de ESA orden), plan en JS y una sola `sql.transaction`: bloqueo
+   * de la orden (`FOR UPDATE`) y `assert_cobro` de que la orden sigue activa,
+   * de que las personas destino pertenecen a la orden y de que cada ítem
+   * sigue sin pagar y con la cantidad leída; recién entonces los UPDATE e
+   * INSERT (los clones se copian desde la fila original: incluyen
+   * `precio_manual` y el estado vigente). Si algo cambió (otro guardado, un
+   * cobro, una persona borrada) responde 409 y no toca nada: todo o nada.
+   * Ítems ya pagados no se reasignan (consistencia con los reportes).
    */
   async aplicarAsignacionesCuentas(input: {
     orden_id: string
@@ -3711,104 +3861,134 @@ export const db = {
     }>
   }): Promise<{ ok: true }> {
     await ensureCuentasPersonaSchema()
+    await ensureItemPrecioSchema()
+    await ensurePagoSchema()
     const sql = getSql()
+    const O = input.orden_id
+
     // Agrupar por item; consolidar destinos repetidos.
     const grupos = new Map<string, Map<string, number>>() // itemId -> (destinoKey -> cantidad)
     for (const a of input.asignaciones) {
-      if (!a.item_orden_id || !Number.isFinite(a.cantidad) || a.cantidad <= 0) continue
       const destino = a.cuenta_persona_id || 'NULL'
       if (!grupos.has(a.item_orden_id)) grupos.set(a.item_orden_id, new Map())
       const m = grupos.get(a.item_orden_id)!
       m.set(destino, (m.get(destino) || 0) + a.cantidad)
     }
 
+    // ── 1) Lectura y validación (la transacción la revalida) ──
+    const [ordenRows, itemRows, personaRows] = (await Promise.all([
+      sql`SELECT estado FROM soda_master.ordenes WHERE id = ${O}::uuid`,
+      sql`SELECT id, cantidad, pagado FROM soda_master.items_orden WHERE orden_id = ${O}::uuid`,
+      sql`SELECT id FROM soda_master.cuentas_persona WHERE orden_id = ${O}::uuid`,
+    ])) as any[][]
+    if (!ordenRows[0]) throw new ErrorOrden('ORDEN_NO_ENCONTRADA', 404, ERRORES_TX_ORDEN.ORDEN_NO_ENCONTRADA.mensaje)
+    if (!ESTADOS_ORDEN_ACTIVA.includes(ordenRows[0].estado)) {
+      throw new ErrorOrden('ORDEN_NO_ACTIVA', 409, ERRORES_TX_ORDEN.ORDEN_NO_ACTIVA.mensaje)
+    }
+    const personasDeLaOrden = new Set((personaRows as any[]).map((p) => String(p.id)))
+    const itemsDeLaOrden = new Map((itemRows as any[]).map((i) => [String(i.id), i]))
+    const personasDestino = new Set<string>()
     for (const [itemId, destinos] of grupos.entries()) {
-      const rows = (await sql`
-        SELECT id, orden_id, producto_id, cantidad, precio_unitario, modificadores,
-               notas_especiales, estado_item, pagado, cuenta_persona_id
-        FROM soda_master.items_orden
-        WHERE id = ${itemId}::uuid AND orden_id = ${input.orden_id}::uuid
-        FOR UPDATE
-      `) as any[]
-      const original = rows[0]
-      if (!original) continue
-      if (original.pagado === true) continue
-      const cantidadOriginal = Number(original.cantidad) || 0
-      if (cantidadOriginal <= 0) continue
+      const it = itemsDeLaOrden.get(itemId)
+      if (!it) throw new ErrorOrden('ITEM_AJENO', 400, ERRORES_TX_ORDEN.ITEM_AJENO.mensaje)
+      if (it.pagado === true) throw new ErrorOrden('ITEM_PAGADO', 409, ERRORES_TX_ORDEN.ITEM_PAGADO.mensaje)
+      let pedido = 0
+      for (const [destinoKey, cant] of destinos.entries()) {
+        if (destinoKey !== 'NULL') {
+          if (!personasDeLaOrden.has(destinoKey)) {
+            throw new ErrorOrden('PERSONA_AJENA', 400, ERRORES_TX_ORDEN.PERSONA_AJENA.mensaje)
+          }
+          personasDestino.add(destinoKey)
+        }
+        pedido += cant
+      }
+      // Más unidades que las de la línea: la pantalla está desactualizada.
+      if (pedido > Number(it.cantidad)) {
+        throw new ErrorOrden('ITEMS_CAMBIARON', 409, ERRORES_TX_ORDEN.ITEMS_CAMBIARON.mensaje)
+      }
+    }
 
-      // Lista ordenada de (destino, cantidad) con cantidades ya clampeadas.
+    // ── 2) Transacción ──
+    const consultas: any[] = [
+      sql`SELECT id FROM soda_master.ordenes WHERE id = ${O}::uuid FOR UPDATE`,
+      sql`SELECT soda_master.assert_cobro(
+            (SELECT COUNT(*) FROM soda_master.ordenes WHERE id = ${O}::uuid) = 1,
+            'ORDEN_NO_ENCONTRADA')`,
+      sql`SELECT soda_master.assert_cobro(
+            (SELECT estado FROM soda_master.ordenes WHERE id = ${O}::uuid) = ANY(${ESTADOS_ORDEN_ACTIVA}::text[]),
+            'ORDEN_NO_ACTIVA')`,
+    ]
+    const destinosArr = Array.from(personasDestino)
+    if (destinosArr.length > 0) {
+      consultas.push(sql`SELECT soda_master.assert_cobro(
+            (SELECT COUNT(*) FROM soda_master.cuentas_persona
+              WHERE orden_id = ${O}::uuid AND id = ANY(${destinosArr}::uuid[])) = ${destinosArr.length}::int,
+            'PERSONA_ELIMINADA')`)
+    }
+
+    for (const [itemId, destinos] of grupos.entries()) {
+      const cantidadOriginal = Number(itemsDeLaOrden.get(itemId)!.cantidad) || 0
+      // Lista ordenada de (destino, cantidad); el resto sin asignar queda compartido.
       let restante = cantidadOriginal
       const planificado: Array<{ destino: string | null; cantidad: number }> = []
-      for (const [destinoKey, cantRaw] of destinos.entries()) {
-        if (restante <= 0) break
-        const cant = Math.min(cantRaw, restante)
-        if (cant <= 0) continue
-        planificado.push({
-          destino: destinoKey === 'NULL' ? null : destinoKey,
-          cantidad: cant,
-        })
+      for (const [destinoKey, cant] of destinos.entries()) {
+        planificado.push({ destino: destinoKey === 'NULL' ? null : destinoKey, cantidad: cant })
         restante -= cant
       }
 
-      // Caso trivial: sin asignaciones efectivas.
-      if (planificado.length === 0) continue
+      // El ítem sigue sin pagar y con la cantidad leída (nadie lo cortó, cobró ni editó).
+      consultas.push(
+        sql`SELECT soda_master.assert_cobro(
+              (SELECT COUNT(*) FROM soda_master.items_orden
+                WHERE id = ${itemId}::uuid AND orden_id = ${O}::uuid AND pagado = TRUE) = 0,
+              'ITEM_PAGADO')`,
+        sql`SELECT soda_master.assert_cobro(
+              (SELECT COUNT(*) FROM soda_master.items_orden
+                WHERE id = ${itemId}::uuid AND orden_id = ${O}::uuid
+                  AND pagado = FALSE AND cantidad = ${cantidadOriginal}::int) = 1,
+              'ITEMS_CAMBIARON')`,
+      )
 
       // Caso simple: un sólo destino que cubre la totalidad.
       if (planificado.length === 1 && planificado[0].cantidad >= cantidadOriginal) {
-        await sql`
+        consultas.push(sql`
           UPDATE soda_master.items_orden
-          SET cuenta_persona_id = ${planificado[0].destino}
-          WHERE id = ${original.id}::uuid
-        `
+          SET cuenta_persona_id = ${planificado[0].destino}::uuid
+          WHERE id = ${itemId}::uuid
+        `)
         continue
       }
 
-      // Caso complejo: split. La línea original toma el primer destino
-      // con su cantidad; los demás se clonan a filas nuevas; si sobra,
+      // Caso complejo: split. La línea original toma el primer destino con su
+      // cantidad; los demás se clonan a filas nuevas (copiadas de la original,
+      // con su precio, estado, notas, modificadores y precio manual); si sobra,
       // se crea una línea final compartida (null).
       const [primero, ...resto] = planificado
-      await sql`
+      consultas.push(sql`
         UPDATE soda_master.items_orden
-        SET cantidad = ${primero.cantidad},
-            cuenta_persona_id = ${primero.destino}
-        WHERE id = ${original.id}::uuid
-      `
-      for (const seg of resto) {
-        await sql`
+        SET cantidad = ${primero.cantidad}::int,
+            cuenta_persona_id = ${primero.destino}::uuid
+        WHERE id = ${itemId}::uuid
+      `)
+      const clones = [...resto]
+      if (restante > 0) clones.push({ destino: null, cantidad: restante })
+      for (const seg of clones) {
+        consultas.push(sql`
           INSERT INTO soda_master.items_orden
             (orden_id, producto_id, cantidad, precio_unitario, modificadores,
-             notas_especiales, estado_item, pagado, cuenta_persona_id)
-          VALUES (
-            ${original.orden_id},
-            ${original.producto_id},
-            ${seg.cantidad},
-            ${original.precio_unitario},
-            ${original.modificadores ?? null},
-            ${original.notas_especiales ?? null},
-            ${original.estado_item ?? 'pendiente'},
-            FALSE,
-            ${seg.destino}
-          )
-        `
+             notas_especiales, estado_item, pagado, cuenta_persona_id, precio_manual)
+          SELECT orden_id, producto_id, ${seg.cantidad}::int, precio_unitario, modificadores,
+                 notas_especiales, estado_item, FALSE, ${seg.destino}::uuid, precio_manual
+          FROM soda_master.items_orden
+          WHERE id = ${itemId}::uuid
+        `)
       }
-      if (restante > 0) {
-        await sql`
-          INSERT INTO soda_master.items_orden
-            (orden_id, producto_id, cantidad, precio_unitario, modificadores,
-             notas_especiales, estado_item, pagado, cuenta_persona_id)
-          VALUES (
-            ${original.orden_id},
-            ${original.producto_id},
-            ${restante},
-            ${original.precio_unitario},
-            ${original.modificadores ?? null},
-            ${original.notas_especiales ?? null},
-            ${original.estado_item ?? 'pendiente'},
-            FALSE,
-            NULL
-          )
-        `
-      }
+    }
+
+    try {
+      await sql.transaction(consultas)
+    } catch (err) {
+      traducirErrorTx(err)
     }
     return { ok: true }
   },

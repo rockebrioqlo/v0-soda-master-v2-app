@@ -203,10 +203,6 @@ interface AppContextType {
   registrarPerdidaApi: (payload: {
     orden_id: string
     motivo: string
-    autorizado_por: string
-    autorizado_por_nombre: string
-    tasa_impuesto?: number
-    impuesto_habilitado?: boolean
   }) => Promise<{
     id: string
     monto_perdido: number
@@ -221,8 +217,6 @@ interface AppContextType {
     monto?: number
     metodo?: string
     referencia?: string | null
-    resuelto_por_id: string
-    resuelto_por_nombre: string
   }) => Promise<{ id: string; pago_id: string; monto: number }>
   getPermisosEspecialesApi: (filtro?: {
     usuario_id?: string
@@ -946,20 +940,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const registrarPerdidaApi = useCallback(async (payload: {
     orden_id: string
     motivo: string
-    autorizado_por: string
-    autorizado_por_nombre: string
-    tasa_impuesto?: number
-    impuesto_habilitado?: boolean
   }) => {
+    // Quien autoriza y el monto (IVA y descuento incluidos) los pone el servidor.
     const res = await fetch('/api/perdidas', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
+      body: JSON.stringify({ orden_id: payload.orden_id, motivo: payload.motivo }),
     })
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}))
-      throw new Error(data?.error || 'Error al registrar la pérdida')
-    }
+    if (!res.ok) throw await errorDeRespuesta(res, 'Error al registrar la pérdida')
     return (await res.json()) as {
       id: string
       monto_perdido: number
@@ -1107,10 +1095,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     })
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}))
-      throw new Error(data?.error || 'Error al asignar items')
-    }
+    if (!res.ok) throw await errorDeRespuesta(res, 'Error al asignar items')
   }, [])
 
   const resolverPerdidaApi = useCallback(async (payload: {
@@ -1118,18 +1103,19 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     monto?: number
     metodo?: string
     referencia?: string | null
-    resuelto_por_id: string
-    resuelto_por_nombre: string
   }) => {
+    // Quién cobra lo toma el servidor de la sesión.
     const res = await fetch('/api/perdidas/resolver', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
+      body: JSON.stringify({
+        perdida_id: payload.perdida_id,
+        monto: payload.monto,
+        metodo: payload.metodo,
+        referencia: payload.referencia ?? undefined,
+      }),
     })
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}))
-      throw new Error(data?.error || 'Error al cobrar retroactivamente')
-    }
+    if (!res.ok) throw await errorDeRespuesta(res, 'Error al cobrar retroactivamente')
     return (await res.json()) as { id: string; pago_id: string; monto: number }
   }, [])
 

@@ -1,46 +1,39 @@
 import { db } from '@/lib/db'
+import { requireSesion } from '@/lib/sesion'
+import { leerBody, respuestaDeError } from '@/lib/ordenes-http'
+import { AsignacionesSchema } from '@/lib/cuentas-http'
 
 /**
  * Aplica un conjunto de asignaciones (item_orden -> persona, con cantidad)
- * en una sola transacción. El servidor splittea items si la cantidad
- * asignada es menor que la cantidad actual.
+ * en una sola transacción con la orden bloqueada (sesión 7, A2). El servidor
+ * parte las líneas si la cantidad asignada es menor que la actual y verifica
+ * que la orden esté activa, que las personas sean de ESA orden y que ningún
+ * ítem esté pagado ni haya cambiado desde que se leyó; si algo falla, no
+ * toca nada (400 / 404 / 409 con código).
  *
- * Body:
+ * Body (`.strict()`):
  *   {
- *     orden_id: string,
+ *     orden_id: uuid,
  *     asignaciones: [
- *       { item_orden_id, cantidad, cuenta_persona_id | null }
+ *       { item_orden_id: uuid, cantidad: int, cuenta_persona_id: uuid | null }
  *     ]
  *   }
  */
 export async function POST(request: Request) {
   try {
-    const body = await request.json()
-    const ordenId = body?.orden_id || body?.ordenId
-    if (!ordenId || typeof ordenId !== 'string') {
-      return Response.json({ error: 'orden_id requerido' }, { status: 400 })
-    }
-    const asignacionesRaw = body?.asignaciones
-    if (!Array.isArray(asignacionesRaw)) {
-      return Response.json({ error: 'asignaciones requerido (arreglo)' }, { status: 400 })
-    }
-    const asignaciones = asignacionesRaw
-      .map((a: any) => ({
-        item_orden_id: typeof a?.item_orden_id === 'string' ? a.item_orden_id : '',
-        cantidad: Number(a?.cantidad) || 0,
-        cuenta_persona_id:
-          typeof a?.cuenta_persona_id === 'string' && a.cuenta_persona_id.length > 0
-            ? a.cuenta_persona_id
-            : null,
-      }))
-      .filter((a) => a.item_orden_id && a.cantidad > 0)
+    const s = await requireSesion(request, ['admin', 'mesero', 'cajero'])
+    if (!s.ok) return s.respuesta
+    const v = await leerBody(request, AsignacionesSchema, 'Asignaciones')
+    if (!v.ok) return v.respuesta
     await db.aplicarAsignacionesCuentas({
-      orden_id: ordenId,
-      asignaciones,
+      orden_id: v.datos.orden_id,
+      asignaciones: v.datos.asignaciones,
     })
     return Response.json({ ok: true })
   } catch (error: any) {
+    const r = respuestaDeError(error)
+    if (r) return r
     console.error('POST /api/cuentas-persona/asignaciones error:', error)
-    return Response.json({ error: error?.message || 'Error en servidor' }, { status: 500 })
+    return Response.json({ error: 'Error en servidor' }, { status: 500 })
   }
 }

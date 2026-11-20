@@ -1,5 +1,7 @@
 import { db } from '@/lib/db'
 import { requireSesion } from '@/lib/sesion'
+import { leerBody, respuestaDeError } from '@/lib/ordenes-http'
+import { PerdidaPostSchema } from '@/lib/cuentas-http'
 
 /**
  * Pérdidas ("perros muertos"): clientes que consumieron pero se fueron
@@ -14,51 +16,42 @@ import { requireSesion } from '@/lib/sesion'
 
 export async function GET(request: Request) {
   try {
+    const s = await requireSesion(request, ['admin', 'cajero'])
+    if (!s.ok) return s.respuesta
     const { searchParams } = new URL(request.url)
     const fecha = searchParams.get('fecha') || undefined
     const perdidas = await db.getPerdidas(fecha ? { fecha } : undefined)
     return Response.json(perdidas)
   } catch (error: any) {
     console.error('Get perdidas error:', error)
-    return Response.json({ error: error?.message || 'Error en servidor' }, { status: 500 })
+    return Response.json({ error: 'Error en servidor' }, { status: 500 })
   }
 }
 
+/**
+ * Registrar una pérdida (sesión 7, B2): solo admin (la pantalla ya lo exigía;
+ * ahora también el servidor). Body `.strict()` con `orden_id` y `motivo`:
+ * quien autoriza sale de la sesión y el monto lo calcula el servidor como lo
+ * cobraría Pagos (ítems sin pagar, descuento prorrateado, IVA de la
+ * configuración); `tasa_impuesto`, `impuesto_habilitado` y `autorizado_por*`
+ * ya no se aceptan. Un segundo registro de la misma orden → 409.
+ */
 export async function POST(request: Request) {
   try {
-    const s = await requireSesion(request, ['admin', 'cajero'])
+    const s = await requireSesion(request, ['admin'])
     if (!s.ok) return s.respuesta
-    const body = await request.json()
-    const ordenId = body?.orden_id || body?.ordenId
-    if (!ordenId || typeof ordenId !== 'string') {
-      return Response.json({ error: 'orden_id requerido' }, { status: 400 })
-    }
-    const motivo = (body?.motivo ?? '').toString().trim()
-    if (motivo.length < 3) {
-      return Response.json(
-        { error: 'Debes indicar un motivo (mínimo 3 caracteres)' },
-        { status: 400 },
-      )
-    }
-    // Quien autoriza la pérdida es el admin/cajero de la sesión
-    // (antes llegaba en el body y se podía falsear).
-    const autorizadoPor = s.usuario.id
-    const autorizadoPorNombre = s.usuario.nombre
-
-    const tasaImpuesto = Number(body?.tasa_impuesto ?? 0)
-    const impuestoHabilitado = body?.impuesto_habilitado !== false
-
+    const v = await leerBody(request, PerdidaPostSchema, 'Datos de la pérdida')
+    if (!v.ok) return v.respuesta
     const result = await db.registrarPerdida({
-      orden_id: ordenId,
-      motivo,
-      autorizado_por: autorizadoPor,
-      autorizado_por_nombre: autorizadoPorNombre,
-      tasa_impuesto: Number.isFinite(tasaImpuesto) ? tasaImpuesto : 0,
-      impuesto_habilitado: impuestoHabilitado,
+      orden_id: v.datos.orden_id,
+      motivo: v.datos.motivo,
+      usuario: { id: s.usuario.id, nombre: s.usuario.nombre },
     })
     return Response.json(result, { status: 201 })
   } catch (error: any) {
+    const r = respuestaDeError(error)
+    if (r) return r
     console.error('Register perdida error:', error)
-    return Response.json({ error: error?.message || 'Error en servidor' }, { status: 500 })
+    return Response.json({ error: 'Error en servidor' }, { status: 500 })
   }
 }

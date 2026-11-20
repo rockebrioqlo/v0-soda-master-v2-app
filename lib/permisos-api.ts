@@ -74,7 +74,8 @@ export const REGLAS: readonly Regla[] = [
 
   // ── Cobro y caja ──────────────────────────────────────────────────
   { ruta: r('pagos'), metodos: ['GET', 'POST'], acceso: CAJA },
-  { ruta: r('perdidas'), metodos: ['GET', 'POST'], acceso: CAJA },
+  { ruta: r('perdidas'), metodos: ['GET'], acceso: CAJA },
+  { ruta: r('perdidas'), metodos: ['POST'], acceso: ADMIN }, // registrar un perro muerto: solo admin (sesión 7)
   { ruta: r('perdidas/resolver'), metodos: ['POST'], acceso: CAJA },
   { ruta: r('caja'), metodos: ['GET', 'POST'], acceso: CAJA },
   { ruta: r('caja/(cerrar|movimiento)'), metodos: ['POST'], acceso: CAJA },
