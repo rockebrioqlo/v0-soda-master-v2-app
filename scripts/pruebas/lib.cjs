@@ -213,8 +213,9 @@ async function crearFixtures(ctx) {
 async function reponer(ctx, v = {}) {
   const { f, admin } = ctx
   const d = { A: 10, B: 10, X: 10, O: 10, RP: 3, P: 6, ...v }
+  // Sesión 11: el stock ya no se fija por PATCH; el ajuste deja un movimiento `ajuste` (no entra en K).
   for (const [k, id] of [['A', f.ingA], ['B', f.ingB], ['X', f.ingX], ['O', f.ingO]]) {
-    const r = await api(admin, 'PATCH', '/api/ingredientes/' + id, { stock_actual: d[k] })
+    const r = await api(admin, 'POST', `/api/ingredientes/${id}/ajuste`, { stock_nuevo: d[k], motivo: ctx.marca })
     if (r.status !== 200) throw new Error(`no se pudo reponer el stock (${k}: ${r.status})`)
   }
   await api(admin, 'PATCH', '/api/inventario', { producto_id: f.pRP, stock_actual: d.RP })
@@ -324,6 +325,9 @@ async function limpiar(ctx) {
       for (const id of [ctx.f.pR, ctx.f.pRP, ctx.f.pP, ctx.f.pEsp]) await api(ctx.admin, 'PATCH', '/api/productos/' + id, { activo: false })
       for (const id of [ctx.f.ingA, ctx.f.ingB, ctx.f.ingX, ctx.f.ingO]) await api(ctx.admin, 'PATCH', '/api/ingredientes/' + id, { activo: false })
     }
+    // insumos y productos de módulos que crean los suyos (unidades)
+    for (const id of ctx.limpiezaProd || []) await api(ctx.admin, 'PATCH', '/api/productos/' + id, { activo: false })
+    for (const id of ctx.limpiezaIng || []) await api(ctx.admin, 'PATCH', '/api/ingredientes/' + id, { activo: false })
     const abiertas = await ctx.db`SELECT count(*)::int AS n FROM soda_master.cajas WHERE estado = 'abierta'`
     if (!ctx.cajaAjena && Number(abiertas[0].n) > 0) avisos.push('quedó una caja abierta por la prueba (ciérrala desde Caja)')
     const act = await ctx.db`SELECT m.numero FROM soda_master.ordenes o JOIN soda_master.mesas m ON m.id = o.mesa_id WHERE m.numero = ANY(${MESAS}) AND o.estado NOT IN ('pagado','cancelado','perdida')`

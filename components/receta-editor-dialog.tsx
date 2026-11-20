@@ -62,7 +62,7 @@ function lineaToCategoria(l: LineaForm): Categoria {
 
 function nuevoIngredienteEnCategoria(
   cat: Categoria,
-  ingredientes: { id: string; nombre: string; unidad_medida: string }[],
+  ingredientes: { id: string; nombre: string; unidad_medida: string; rendimiento_pct?: number }[],
 ): LineaForm {
   return {
     ingrediente_id: ingredientes[0]?.id || '',
@@ -87,7 +87,7 @@ export function RecetaEditorDialog({
   const [modoStock, setModoStock] = useState<ModoStock>('producto')
   const [lineas, setLineas] = useState<LineaForm[]>([])
   const [ingredientes, setIngredientes] = useState<
-    { id: string; nombre: string; unidad_medida: string }[]
+    { id: string; nombre: string; unidad_medida: string; rendimiento_pct?: number }[]
   >([])
   const [tab, setTab] = useState<Categoria>('base')
 
@@ -127,8 +127,10 @@ export function RecetaEditorDialog({
   }, [open, productoId])
 
   const ingredientesPorId = useMemo(() => {
-    const m = new Map<string, { nombre: string; unidad: string }>()
-    for (const i of ingredientes) m.set(i.id, { nombre: i.nombre, unidad: i.unidad_medida })
+    const m = new Map<string, { nombre: string; unidad: string; rendimiento: number }>()
+    for (const i of ingredientes) {
+      m.set(i.id, { nombre: i.nombre, unidad: i.unidad_medida, rendimiento: i.rendimiento_pct || 100 })
+    }
     return m
   }, [ingredientes])
 
@@ -235,6 +237,10 @@ export function RecetaEditorDialog({
   const renderLinea = (linea: LineaForm, idx: number) => {
     const ing = ingredientesPorId.get(linea.ingrediente_id)
     const unidad = ing?.unidad || ''
+    // g y ml se miden de a 10; el resto (unidad, porción…) de a 1.
+    const paso = unidad === 'g' || unidad === 'ml' ? 10 : 1
+    const rendimiento = ing?.rendimiento ?? 100
+    const cantNum = Number(linea.cantidad) || 0
     return (
       <div
         key={idx}
@@ -288,7 +294,7 @@ export function RecetaEditorDialog({
                         ? {
                             ...l,
                             cantidad: String(
-                              Math.max(0, (Number(l.cantidad) || 0) - 1),
+                              Math.max(0, Math.round(((Number(l.cantidad) || 0) - paso) * 1000) / 1000),
                             ),
                           }
                         : l,
@@ -324,7 +330,7 @@ export function RecetaEditorDialog({
                       i === idx
                         ? {
                             ...l,
-                            cantidad: String((Number(l.cantidad) || 0) + 1),
+                            cantidad: String(Math.round(((Number(l.cantidad) || 0) + paso) * 1000) / 1000),
                           }
                         : l,
                     ),
@@ -334,6 +340,12 @@ export function RecetaEditorDialog({
                 +
               </Button>
             </div>
+            {rendimiento !== 100 && cantNum > 0 && (
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                Rendimiento {rendimiento} %: por cada unidad vendida salen{' '}
+                {Math.round(((cantNum * 100) / rendimiento) * 1000) / 1000} {unidad} del stock.
+              </p>
+            )}
           </div>
           <div>
             <Label className="text-xs">Nombre visible en POS (opcional)</Label>

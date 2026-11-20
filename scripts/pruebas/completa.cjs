@@ -16,12 +16,15 @@ const MODULOS = {
   cobro: require('./cobro.cjs'),
   asignaciones: require('./asignaciones.cjs'),
   sondeo: require('./sondeo.cjs'),
+  unidades: require('./unidades.cjs'),
 }
+// `unidades` ya corre dentro de `stock` (la sesión 11 toca stock): solo se pide por nombre para correrlo solo.
+const SOLO_POR_NOMBRE = ['unidades']
 
 ;(async () => {
   const t0 = Date.now()
   const arg = process.argv.find((a) => a.startsWith('--modulo='))
-  const pedidos = arg ? arg.slice('--modulo='.length).split(',').map((s) => s.trim()).filter(Boolean) : Object.keys(MODULOS)
+  const pedidos = arg ? arg.slice('--modulo='.length).split(',').map((s) => s.trim()).filter(Boolean) : Object.keys(MODULOS).filter((m) => !SOLO_POR_NOMBRE.includes(m))
   const desconocidos = pedidos.filter((m) => !MODULOS[m])
   if (desconocidos.length) {
     console.error(`Módulo desconocido: ${desconocidos.join(', ')}. Disponibles: ${Object.keys(MODULOS).join(', ')}`)

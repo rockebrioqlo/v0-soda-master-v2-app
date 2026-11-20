@@ -71,7 +71,8 @@ export function MargenesTab() {
           <TrendingUp className="h-5 w-5 text-amber-500" />
           <p className="text-sm text-muted-foreground">
             Margen calculado como <code>precio - costo_receta</code>. El costo viene de los
-            insumos descontados al vender (precio promedio ponderado de compras).
+            insumos descontados al vender (promedio ponderado de compras, por unidad de consumo) e
+            incluye el rendimiento de cada insumo.
           </p>
         </div>
         <Button variant="outline" onClick={load} disabled={loading} className="border-border">

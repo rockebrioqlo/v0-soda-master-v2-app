@@ -446,6 +446,18 @@ const ERRORES_TX_ORDEN: Record<string, { status: number; mensaje: string }> = {
     mensaje: 'Si cobras menos de lo registrado, indica el motivo (mínimo 3 caracteres).',
   },
   CAJA_CERRADA: ERRORES_COBRO.CAJA_CERRADA,
+  // Sesión 11: inventario con unidad de compra y de consumo.
+  INSUMO_NO_ENCONTRADO: { status: 404, mensaje: 'El insumo no existe o está dado de baja.' },
+  CANTIDAD_INVALIDA: {
+    status: 400,
+    mensaje: 'La cantidad convertida a unidad de consumo debe ser mayor que 0 y menor que 1.000.000.000.',
+  },
+  PROVEEDOR_NO_ENCONTRADO: { status: 400, mensaje: 'El proveedor no existe.' },
+  UNIDAD_EN_USO: {
+    status: 409,
+    mensaje:
+      'No se puede cambiar la unidad de consumo de un insumo con stock, recetas o movimientos: no hay conversión automática. Crea un insumo nuevo con la otra unidad.',
+  },
 }
 
 /** Estados de una orden que todavía se puede modificar (ni pagada, ni cancelada, ni perdida). */
@@ -545,6 +557,8 @@ async function ensureOrdenesAtomicasSchema(): Promise<void> {
 type LineaReceta = {
   ingredienteId: string
   cantidad: number
+  /** Rendimiento del insumo en % (sesión 11): 75 → para 150 de receta se descuentan 200. */
+  rendimiento: number
   opcional: boolean
   extra: boolean
   nombre: string
@@ -565,7 +579,8 @@ async function leerDefProductos(ids: string[]): Promise<Map<string, DefProducto>
     `,
     sql`
       SELECT r.producto_id::text AS producto_id, ri.ingrediente_id::text AS ingrediente_id,
-             ri.cantidad, ri.opcional, ri.extra, ri.nombre_display, i.nombre AS ingrediente_nombre
+             ri.cantidad, ri.opcional, ri.extra, ri.nombre_display, i.nombre AS ingrediente_nombre,
+             i.rendimiento_pct
       FROM soda_master.recetas r
       JOIN soda_master.receta_ingredientes ri ON ri.receta_id = r.id
       JOIN soda_master.ingredientes i ON i.id = ri.ingrediente_id
@@ -585,6 +600,7 @@ async function leerDefProductos(ids: string[]): Promise<Map<string, DefProducto>
     mapa.get(l.producto_id)?.lineas.push({
       ingredienteId: l.ingrediente_id,
       cantidad: Number(l.cantidad),
+      rendimiento: Number(l.rendimiento_pct) > 0 ? Number(l.rendimiento_pct) : 100,
       opcional: l.opcional === true,
       extra: l.extra === true,
       nombre: String(l.nombre_display || l.ingrediente_nombre || '').trim().toLowerCase(),
@@ -613,7 +629,10 @@ function necesidadItem(
   if (def.modo === 'receta' || def.modo === 'producto_y_receta') {
     const modsNorm = mods.map((m) => m.trim().toLowerCase())
     for (const l of def.lineas) {
-      const lineQty = l.cantidad * cantidad
+      // Rendimiento (sesión 11): la receta pide cantidad ya procesada; del stock
+      // sale lo crudo. Multiplicar por 100 antes de dividir evita errores de
+      // coma flotante en los casos exactos (150 × 100 / 75 = 200).
+      const lineQty = (l.cantidad * cantidad * 100) / l.rendimiento
       if (l.extra) {
         const sel = extras.find((e) => e.ingrediente_id.toLowerCase() === l.ingredienteId.toLowerCase())
         if (sel) sumar(l.ingredienteId, lineQty * sel.cantidad)
@@ -1404,7 +1423,7 @@ async function ensureRecetasTables(): Promise<void> {
       unidad_medida TEXT NOT NULL DEFAULT 'unidad',
       stock_actual NUMERIC(12,3) NOT NULL DEFAULT 0,
       stock_minimo NUMERIC(12,3) NOT NULL DEFAULT 0,
-      costo_unitario NUMERIC(12,2) NOT NULL DEFAULT 0,
+      costo_unitario NUMERIC(14,4) NOT NULL DEFAULT 0,
       activo BOOLEAN NOT NULL DEFAULT TRUE,
       created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -1474,6 +1493,60 @@ async function ensureRecetasTables(): Promise<void> {
     EXCEPTION WHEN duplicate_object THEN NULL;
     END $$
   `
+  // Sesión 11: los movimientos de un insumo sin producto (compra, entrada, ajuste) no tienen
+  // `producto_id`. La tabla del seed original lo declaraba NOT NULL, y por eso el `crearCompra`
+  // anterior fallaba en su último paso (la compra y el stock ya estaban escritos): 1 compra de la
+  // base de pruebas quedó sin movimiento. Idempotente.
+  await sql`ALTER TABLE soda_master.movimientos_inventario ALTER COLUMN producto_id DROP NOT NULL`
+  // La tabla del seed original guardaba `cantidad` como INTEGER: una cantidad con decimales
+  // (media unidad, 142,857 g por un rendimiento de 70 %) se redondeaba y la devolución, que
+  // usa este registro, devolvía de menos. Se ensancha a NUMERIC(12,3) (los enteros no cambian).
+  await sql`
+    DO $$ BEGIN
+      IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'soda_master' AND table_name = 'movimientos_inventario'
+          AND column_name = 'cantidad' AND data_type <> 'numeric'
+      ) THEN
+        ALTER TABLE soda_master.movimientos_inventario ALTER COLUMN cantidad TYPE NUMERIC(12,3);
+      END IF;
+    END $$
+  `
+  // Sesión 11: unidad de compra y de consumo, factor por defecto y rendimiento.
+  // `unidad_medida` es la unidad de CONSUMO (stock, receta y costo). Los insumos
+  // existentes quedan con factor 1, rendimiento 100% y unidad de compra NULL
+  // (= la misma de consumo), así que se comportan exactamente como antes.
+  await sql`ALTER TABLE soda_master.ingredientes ADD COLUMN IF NOT EXISTS unidad_compra TEXT NULL`
+  await sql`ALTER TABLE soda_master.ingredientes ADD COLUMN IF NOT EXISTS factor_compra NUMERIC(12,4) NOT NULL DEFAULT 1`
+  await sql`ALTER TABLE soda_master.ingredientes ADD COLUMN IF NOT EXISTS rendimiento_pct NUMERIC(6,2) NOT NULL DEFAULT 100`
+  await sql`
+    DO $$ BEGIN
+      ALTER TABLE soda_master.ingredientes
+        ADD CONSTRAINT ingredientes_factor_compra_check CHECK (factor_compra > 0);
+    EXCEPTION WHEN duplicate_object THEN NULL;
+    END $$
+  `
+  await sql`
+    DO $$ BEGIN
+      ALTER TABLE soda_master.ingredientes
+        ADD CONSTRAINT ingredientes_rendimiento_check CHECK (rendimiento_pct >= 1 AND rendimiento_pct <= 300);
+    EXCEPTION WHEN duplicate_object THEN NULL;
+    END $$
+  `
+  // El costo por gramo o mililitro necesita más de 2 decimales. Solo ensancha
+  // (los valores existentes no cambian) y solo si todavía no se hizo.
+  await sql`
+    DO $$ BEGIN
+      IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'soda_master' AND table_name = 'ingredientes'
+          AND column_name = 'costo_unitario'
+          AND (numeric_scale IS DISTINCT FROM 4 OR numeric_precision < 14)
+      ) THEN
+        ALTER TABLE soda_master.ingredientes ALTER COLUMN costo_unitario TYPE NUMERIC(14,4);
+      END IF;
+    END $$
+  `
   _recetasTableReady = true
 }
 
@@ -1524,6 +1597,13 @@ async function ensureComprasTables(): Promise<void> {
       notas TEXT
     )
   `
+  // Sesión 11: lo que realmente trajo cada compra. `factor` = unidades de consumo
+  // por unidad de compra; `cantidad_consumo` = lo que entró al stock. Las
+  // compras anteriores quedan con factor 1 y `cantidad_consumo` NULL (= cantidad).
+  await sql`ALTER TABLE soda_master.compra_items ADD COLUMN IF NOT EXISTS factor NUMERIC(12,4) NOT NULL DEFAULT 1`
+  await sql`ALTER TABLE soda_master.compra_items ADD COLUMN IF NOT EXISTS cantidad_consumo NUMERIC(12,3) NULL`
+  await sql`ALTER TABLE soda_master.compra_items ADD COLUMN IF NOT EXISTS unidad_compra TEXT NULL`
+  await sql`ALTER TABLE soda_master.compra_items ADD COLUMN IF NOT EXISTS unidad_consumo TEXT NULL`
   // Tipo de insumo para separar comida vs insumos del negocio
   await sql`ALTER TABLE soda_master.ingredientes ADD COLUMN IF NOT EXISTS tipo TEXT NOT NULL DEFAULT 'comida'`
   await sql`
@@ -1666,6 +1746,10 @@ function mapIngredienteInsumo(row: any) {
     nombre: row.nombre,
     categoria: row.categoria || 'insumos',
     unidad_medida: row.unidad_medida || 'unidad',
+    // Sesión 11: unidad de compra efectiva (NULL = la misma de consumo).
+    unidad_compra: row.unidad_compra || row.unidad_medida || 'unidad',
+    factor_compra: Number(row.factor_compra) > 0 ? Number(row.factor_compra) : 1,
+    rendimiento_pct: Number(row.rendimiento_pct) > 0 ? Number(row.rendimiento_pct) : 100,
     stock_actual: Number(row.stock_actual) || 0,
     stock_minimo: Number(row.stock_minimo) || 0,
     costo_unitario: Number(row.costo_unitario) || 0,
@@ -5625,6 +5709,9 @@ export const db = {
     nombre: string
     categoria?: string
     unidad_medida?: string
+    unidad_compra?: string | null
+    factor_compra?: number
+    rendimiento_pct?: number
     stock_actual?: number
     stock_minimo?: number
     costo_unitario?: number
@@ -5635,30 +5722,52 @@ export const db = {
     const tipo = input.tipo && ['comida', 'negocio', 'otro'].includes(input.tipo)
       ? input.tipo
       : 'comida'
+    const unidadCompra = input.unidad_compra?.trim() || null
+    // Un stock inicial deja su movimiento `entrada` en la misma sentencia (sesión 11):
+    // el stock solo cambia con un registro en `movimientos_inventario`.
     const rows = await sql`
-      INSERT INTO soda_master.ingredientes
-        (nombre, categoria, unidad_medida, stock_actual, stock_minimo, costo_unitario, tipo)
-      VALUES (
-        ${input.nombre},
-        ${input.categoria || 'insumos'},
-        ${input.unidad_medida || 'unidad'},
-        ${Number(input.stock_actual) || 0},
-        ${Number(input.stock_minimo) || 0},
-        ${Number(input.costo_unitario) || 0},
-        ${tipo}
+      WITH ins AS (
+        INSERT INTO soda_master.ingredientes
+          (nombre, categoria, unidad_medida, unidad_compra, factor_compra, rendimiento_pct,
+           stock_actual, stock_minimo, costo_unitario, tipo)
+        VALUES (
+          ${input.nombre},
+          ${input.categoria || 'insumos'},
+          ${input.unidad_medida || 'unidad'},
+          ${unidadCompra},
+          ${Number(input.factor_compra) > 0 ? Number(input.factor_compra) : 1}::numeric,
+          ${Number(input.rendimiento_pct) > 0 ? Number(input.rendimiento_pct) : 100}::numeric,
+          ${Number(input.stock_actual) || 0}::numeric,
+          ${Number(input.stock_minimo) || 0}::numeric,
+          ${Number(input.costo_unitario) || 0}::numeric,
+          ${tipo}
+        )
+        RETURNING *
+      ), mov AS (
+        INSERT INTO soda_master.movimientos_inventario (ingrediente_id, tipo, cantidad, notas)
+        SELECT id, 'entrada', stock_actual, 'Stock inicial al crear el insumo'
+        FROM ins WHERE stock_actual > 0
       )
-      RETURNING *
+      SELECT * FROM ins
     `
     return mapIngredienteInsumo(rows[0])
   },
 
+  /**
+   * Actualiza los datos de un insumo. El stock NO se cambia aquí (sesión 11): solo
+   * compras, ventas, mermas y `ajustarStockIngrediente` lo mueven, y todas dejan
+   * movimiento. Cambiar la unidad de consumo se rechaza (409 `UNIDAD_EN_USO`) si
+   * el insumo tiene stock, recetas, compras o movimientos: no hay conversión.
+   */
   async actualizarIngrediente(
     id: string,
     updates: Partial<{
       nombre: string
       categoria: string
       unidad_medida: string
-      stock_actual: number
+      unidad_compra: string | null
+      factor_compra: number
+      rendimiento_pct: number
       stock_minimo: number
       costo_unitario: number
       tipo: 'comida' | 'negocio' | 'otro'
@@ -5670,22 +5779,81 @@ export const db = {
     const tipo = updates.tipo && ['comida', 'negocio', 'otro'].includes(updates.tipo)
       ? updates.tipo
       : null
+    const nuevaUnidad = updates.unidad_medida?.trim() || null
+    const tocaUnidadCompra = 'unidad_compra' in updates
     const rows = await sql`
       UPDATE soda_master.ingredientes
       SET
         nombre = COALESCE(${updates.nombre ?? null}, nombre),
         categoria = COALESCE(${updates.categoria ?? null}, categoria),
-        unidad_medida = COALESCE(${updates.unidad_medida ?? null}, unidad_medida),
-        stock_actual = COALESCE(${updates.stock_actual ?? null}, stock_actual),
-        stock_minimo = COALESCE(${updates.stock_minimo ?? null}, stock_minimo),
-        costo_unitario = COALESCE(${updates.costo_unitario ?? null}, costo_unitario),
+        unidad_medida = COALESCE(${nuevaUnidad}::text, unidad_medida),
+        unidad_compra = CASE WHEN ${tocaUnidadCompra}::boolean
+                             THEN ${updates.unidad_compra?.trim() || null}::text ELSE unidad_compra END,
+        factor_compra = COALESCE(${updates.factor_compra ?? null}::numeric, factor_compra),
+        rendimiento_pct = COALESCE(${updates.rendimiento_pct ?? null}::numeric, rendimiento_pct),
+        stock_minimo = COALESCE(${updates.stock_minimo ?? null}::numeric, stock_minimo),
+        costo_unitario = COALESCE(${updates.costo_unitario ?? null}::numeric, costo_unitario),
         tipo = COALESCE(${tipo}, tipo),
         activo = COALESCE(${updates.activo ?? null}, activo),
         updated_at = now()
       WHERE id = ${id}::uuid
+        AND (
+          ${nuevaUnidad}::text IS NULL
+          OR unidad_medida = ${nuevaUnidad}::text
+          OR (
+            stock_actual = 0
+            AND NOT EXISTS (SELECT 1 FROM soda_master.receta_ingredientes ri WHERE ri.ingrediente_id = ingredientes.id)
+            AND NOT EXISTS (SELECT 1 FROM soda_master.compra_items ci WHERE ci.ingrediente_id = ingredientes.id)
+            AND NOT EXISTS (SELECT 1 FROM soda_master.movimientos_inventario mi WHERE mi.ingrediente_id = ingredientes.id)
+          )
+        )
       RETURNING *
     `
-    return rows[0] ? mapIngredienteInsumo(rows[0]) : null
+    if (rows[0]) return mapIngredienteInsumo(rows[0])
+    const existe = await sql`SELECT 1 FROM soda_master.ingredientes WHERE id = ${id}::uuid`
+    if (existe[0]) {
+      throw new ErrorOrden('UNIDAD_EN_USO', 409, ERRORES_TX_ORDEN.UNIDAD_EN_USO.mensaje)
+    }
+    return null
+  },
+
+  /**
+   * Fija el stock de un insumo a un valor (conteo físico) y deja un movimiento
+   * `ajuste` con la diferencia (con signo), el motivo y quién lo hizo. Una sola
+   * sentencia: la fila se bloquea, se lee el stock anterior y se escribe todo.
+   */
+  async ajustarStockIngrediente(input: {
+    ingrediente_id: string
+    stock_nuevo: number
+    motivo: string
+    usuario_nombre: string
+  }) {
+    await ensureComprasTables()
+    const sql = getSql()
+    const nota = `Ajuste manual por ${input.usuario_nombre}: ${input.motivo}`
+    const rows = (await sql`
+      WITH old AS (
+        SELECT id, stock_actual FROM soda_master.ingredientes
+        WHERE id = ${input.ingrediente_id}::uuid AND activo = TRUE
+        FOR UPDATE
+      ), u AS (
+        UPDATE soda_master.ingredientes i
+        SET stock_actual = ${input.stock_nuevo}::numeric, updated_at = now()
+        FROM old WHERE i.id = old.id
+        RETURNING i.id, i.stock_actual
+      ), mov AS (
+        INSERT INTO soda_master.movimientos_inventario (ingrediente_id, tipo, cantidad, notas)
+        SELECT old.id, 'ajuste', u.stock_actual - old.stock_actual, ${nota}::text
+        FROM old JOIN u ON u.id = old.id
+        WHERE u.stock_actual <> old.stock_actual
+      )
+      SELECT old.stock_actual::float AS anterior, u.stock_actual::float AS nuevo
+      FROM old JOIN u ON u.id = old.id
+    `) as any[]
+    if (!rows[0]) {
+      throw new ErrorOrden('INSUMO_NO_ENCONTRADO', 404, ERRORES_TX_ORDEN.INSUMO_NO_ENCONTRADO.mensaje)
+    }
+    return { anterior: Number(rows[0].anterior), nuevo: Number(rows[0].nuevo) }
   },
 
   async getRecetaProducto(productoId: string) {
@@ -5703,7 +5871,7 @@ export const db = {
     let ingredientes: any[] = []
     if (r.id) {
       const lineas = await sql`
-        SELECT ri.*, i.nombre AS ingrediente_nombre, i.unidad_medida
+        SELECT ri.*, i.nombre AS ingrediente_nombre, i.unidad_medida, i.rendimiento_pct
         FROM soda_master.receta_ingredientes ri
         JOIN soda_master.ingredientes i ON i.id = ri.ingrediente_id
         WHERE ri.receta_id = ${r.id}
@@ -5719,6 +5887,7 @@ export const db = {
         costo_adicional: Number(ln.costo_adicional) || 0,
         nombre_display: ln.nombre_display,
         unidad_medida: ln.unidad_medida,
+        rendimiento_pct: Number(ln.rendimiento_pct) > 0 ? Number(ln.rendimiento_pct) : 100,
       }))
     }
     return {
@@ -5929,9 +6098,17 @@ export const db = {
   },
 
   /**
-   * Registra una compra: crea cabecera + ítems, incrementa stock_actual del
-   * insumo y actualiza costo_unitario por promedio ponderado.
-   * `costo_nuevo = (stock_actual*costo_actual + cantidad*precio) / (stock_actual+cantidad)`
+   * Registra una compra (sesión 11, R7): cabecera + ítems + stock + costo promedio
+   * ponderado + movimientos en UNA `sql.transaction`; si algo falla no queda nada.
+   *
+   * Unidades: `cantidad` y `precio_unitario` van en la unidad de COMPRA (2 paquetes a
+   * $9.000). `factor` es cuántas unidades de consumo trajo cada una (por defecto el
+   * del insumo, `factor_compra`; se puede corregir por compra). Entran al stock
+   * `ROUND(cantidad × factor, 3)` unidades de consumo y el costo queda
+   *   costo = ROUND((stock × costo + cantidad × precio) / (stock + entra), 4)
+   * Toda la aritmética se hace en SQL con NUMERIC y sobre la fila ya bloqueada
+   * (`FOR UPDATE`, ingredientes por id ascendente, como la sesión 8): dos compras
+   * del mismo insumo, o una compra y una venta, se serializan sin perder nada.
    */
   async crearCompra(payload: {
     proveedor_id?: string | null
@@ -5945,98 +6122,120 @@ export const db = {
       ingrediente_id: string
       cantidad: number
       precio_unitario: number
+      /** Unidades de consumo por unidad de compra; si falta, el `factor_compra` del insumo. */
+      factor?: number | null
       notas?: string | null
     }>
   }) {
     await ensureComprasTables()
+    await ensurePagoSchema()
     const sql = getSql()
     if (!Array.isArray(payload.items) || payload.items.length === 0) {
-      throw new Error('La compra debe tener al menos un ítem')
+      throw new ErrorOrden('DATOS_INVALIDOS', 400, 'La compra debe tener al menos un ítem')
     }
     for (const it of payload.items) {
-      if (!it.ingrediente_id) throw new Error('Ítem sin ingrediente_id')
-      if (!(Number(it.cantidad) > 0)) throw new Error('Cantidad inválida en ítem')
-      if (!(Number(it.precio_unitario) >= 0)) throw new Error('Precio inválido en ítem')
+      if (!it.ingrediente_id) throw new ErrorOrden('DATOS_INVALIDOS', 400, 'Ítem sin insumo')
+      if (!(Number(it.cantidad) > 0)) throw new ErrorOrden('DATOS_INVALIDOS', 400, 'Cantidad inválida en ítem')
+      if (!(Number(it.precio_unitario) >= 0)) throw new ErrorOrden('DATOS_INVALIDOS', 400, 'Precio inválido en ítem')
+      if (it.factor != null && !(Number(it.factor) > 0)) {
+        throw new ErrorOrden('DATOS_INVALIDOS', 400, 'El factor debe ser mayor que 0')
+      }
     }
-    const subtotal = payload.items.reduce(
-      (s, it) => s + Number(it.cantidad) * Number(it.precio_unitario),
-      0,
-    )
-    const impuesto = Number(payload.impuesto) || 0
-    const total = subtotal + impuesto
-
+    const compraId = crypto.randomUUID()
     const tipoDoc = payload.tipo_documento || 'boleta'
-    const fecha = payload.fecha || new Date().toISOString().slice(0, 10)
+    const impuesto = Number(payload.impuesto) || 0
+    const lineas = JSON.stringify(
+      payload.items.map((it, i) => ({
+        ord: i,
+        ingrediente_id: it.ingrediente_id,
+        cantidad: Number(it.cantidad),
+        precio_unitario: Number(it.precio_unitario),
+        factor: it.factor == null ? null : Number(it.factor),
+        notas: it.notas || null,
+      })),
+    )
+    const ids = Array.from(new Set(payload.items.map((it) => it.ingrediente_id.toLowerCase())))
+    const nota = `Compra ${tipoDoc} ${payload.numero_documento || ''}`.trim()
 
-    const cab = await sql`
-      INSERT INTO soda_master.compras
-        (proveedor_id, tipo_documento, numero_documento, fecha, subtotal, impuesto, total, notas, usuario_id)
-      VALUES (
-        ${payload.proveedor_id || null},
-        ${tipoDoc},
-        ${payload.numero_documento || null},
-        ${fecha},
-        ${subtotal},
-        ${impuesto},
-        ${total},
-        ${payload.notas || null},
-        ${payload.usuario_id || null}
-      )
-      RETURNING *
-    `
-    const compra = cab[0] as any
-
-    for (const it of payload.items) {
-      const subt = Number(it.cantidad) * Number(it.precio_unitario)
-      await sql`
-        INSERT INTO soda_master.compra_items
-          (compra_id, ingrediente_id, cantidad, precio_unitario, subtotal, notas)
-        VALUES (
-          ${compra.id}::uuid,
-          ${it.ingrediente_id}::uuid,
-          ${it.cantidad},
-          ${it.precio_unitario},
-          ${subt},
-          ${it.notas || null}
-        )
-      `
-
-      // Promedio ponderado y stock al toque
-      const ingRows = await sql`
-        SELECT stock_actual, costo_unitario
-        FROM soda_master.ingredientes WHERE id = ${it.ingrediente_id}::uuid
-      `
-      const stockActual = Number((ingRows[0] as any)?.stock_actual) || 0
-      const costoActual = Number((ingRows[0] as any)?.costo_unitario) || 0
-      const cantidad = Number(it.cantidad)
-      const precio = Number(it.precio_unitario)
-      const stockNuevo = stockActual + cantidad
-      const costoNuevo =
-        stockNuevo > 0
-          ? (stockActual * costoActual + cantidad * precio) / stockNuevo
-          : precio
-
-      await sql`
-        UPDATE soda_master.ingredientes
-        SET stock_actual = stock_actual + ${cantidad},
-            costo_unitario = ${costoNuevo},
-            updated_at = now()
-        WHERE id = ${it.ingrediente_id}::uuid
-      `
-      await sql`
-        INSERT INTO soda_master.movimientos_inventario
-          (ingrediente_id, tipo, cantidad, compra_id, notas)
-        VALUES (
-          ${it.ingrediente_id}::uuid,
-          'compra',
-          ${cantidad},
-          ${compra.id}::uuid,
-          ${`Compra ${tipoDoc} ${payload.numero_documento || ''}`.trim()}
-        )
-      `
-    }
-
-    return compra
+    return conReintento(async () => {
+      let res: any[][]
+      try {
+        res = (await sql.transaction([
+          // 1) bloqueo de los insumos, en orden de id (mismo orden que el descuento de stock)
+          sql`SELECT id FROM soda_master.ingredientes WHERE id = ANY(${ids}::uuid[]) ORDER BY id FOR UPDATE`,
+          // 2) validaciones sobre las filas ya bloqueadas
+          sql`
+            WITH l AS (
+              SELECT * FROM jsonb_to_recordset(${lineas}::jsonb)
+                AS x(ord int, ingrediente_id uuid, cantidad numeric, precio_unitario numeric, factor numeric, notas text)
+            ), c AS (
+              SELECT i.activo, ROUND(l.cantidad * COALESCE(l.factor, i.factor_compra), 3) AS q
+              FROM l LEFT JOIN soda_master.ingredientes i ON i.id = l.ingrediente_id
+            )
+            SELECT
+              soda_master.assert_cobro(NOT EXISTS (SELECT 1 FROM c WHERE c.activo IS NOT TRUE), 'INSUMO_NO_ENCONTRADO'),
+              soda_master.assert_cobro(NOT EXISTS (SELECT 1 FROM c WHERE c.q <= 0 OR c.q >= 1000000000), 'CANTIDAD_INVALIDA')`,
+          // 3) cabecera e ítems (la conversión se calcula aquí, en SQL)
+          sql`
+            WITH l AS (
+              SELECT * FROM jsonb_to_recordset(${lineas}::jsonb)
+                AS x(ord int, ingrediente_id uuid, cantidad numeric, precio_unitario numeric, factor numeric, notas text)
+            ), calc AS (
+              SELECT l.ord, l.ingrediente_id, l.cantidad, l.precio_unitario, l.notas,
+                     COALESCE(l.factor, i.factor_compra) AS factor,
+                     ROUND(l.cantidad * COALESCE(l.factor, i.factor_compra), 3) AS q,
+                     ROUND(l.cantidad * l.precio_unitario, 2) AS sub,
+                     COALESCE(i.unidad_compra, i.unidad_medida) AS uc,
+                     i.unidad_medida AS um
+              FROM l JOIN soda_master.ingredientes i ON i.id = l.ingrediente_id
+            ), cab AS (
+              INSERT INTO soda_master.compras
+                (id, proveedor_id, tipo_documento, numero_documento, fecha, subtotal, impuesto, total, notas, usuario_id)
+              SELECT ${compraId}::uuid, ${payload.proveedor_id || null}::uuid, ${tipoDoc}::text,
+                     ${payload.numero_documento || null}::text,
+                     COALESCE(${payload.fecha || null}::date, (now() AT TIME ZONE 'America/Santiago')::date),
+                     SUM(sub), ${impuesto}::numeric, SUM(sub) + ${impuesto}::numeric,
+                     ${payload.notas || null}::text, ${payload.usuario_id || null}::uuid
+              FROM calc
+              RETURNING *
+            ), ins AS (
+              INSERT INTO soda_master.compra_items
+                (compra_id, ingrediente_id, cantidad, precio_unitario, subtotal, notas,
+                 factor, cantidad_consumo, unidad_compra, unidad_consumo)
+              SELECT ${compraId}::uuid, ingrediente_id, cantidad, precio_unitario, sub, notas, factor, q, uc, um
+              FROM calc ORDER BY ord
+            )
+            SELECT * FROM cab`,
+          // 4) stock y costo promedio ponderado, sobre la fila bloqueada (varias líneas del
+          //    mismo insumo se suman: el promedio ponderado es asociativo)
+          sql`
+            WITH agg AS (
+              SELECT ingrediente_id, SUM(cantidad_consumo) AS q, SUM(cantidad * precio_unitario) AS pagado
+              FROM soda_master.compra_items WHERE compra_id = ${compraId}::uuid
+              GROUP BY ingrediente_id
+            )
+            UPDATE soda_master.ingredientes i
+            SET costo_unitario = ROUND((i.stock_actual * i.costo_unitario + agg.pagado) / (i.stock_actual + agg.q), 4),
+                stock_actual = i.stock_actual + agg.q,
+                updated_at = now()
+            FROM agg WHERE i.id = agg.ingrediente_id`,
+          // 5) un movimiento `compra` por línea, en unidad de consumo
+          sql`
+            INSERT INTO soda_master.movimientos_inventario (ingrediente_id, tipo, cantidad, compra_id, notas)
+            SELECT ci.ingrediente_id, 'compra', ci.cantidad_consumo, ci.compra_id, ${nota}::text
+            FROM soda_master.compra_items ci WHERE ci.compra_id = ${compraId}::uuid`,
+        ])) as any[][]
+      } catch (err: any) {
+        if (err?.code === '23503' && `${err?.message}`.includes('proveedor')) {
+          throw new ErrorOrden('PROVEEDOR_NO_ENCONTRADO', 400, ERRORES_TX_ORDEN.PROVEEDOR_NO_ENCONTRADO.mensaje)
+        }
+        if (err?.code === '22003') {
+          throw new ErrorOrden('CANTIDAD_INVALIDA', 400, ERRORES_TX_ORDEN.CANTIDAD_INVALIDA.mensaje)
+        }
+        return traducirErrorTx(err)
+      }
+      return res[2][0] as any
+    })
   },
 
   /**
@@ -6055,7 +6254,7 @@ export const db = {
         COALESCE(p.modo_stock, 'producto') AS modo_stock,
         COALESCE(SUM(
           CASE WHEN ri.opcional = false AND ri.extra = false
-               THEN ri.cantidad * i.costo_unitario ELSE 0 END
+               THEN ri.cantidad * 100 / i.rendimiento_pct * i.costo_unitario ELSE 0 END
         ), 0)::NUMERIC(12,2) AS costo_receta
       FROM soda_master.productos p
       LEFT JOIN soda_master.categorias c ON c.id = p.categoria_id

@@ -1,4 +1,7 @@
 import { db } from '@/lib/db'
+import { requireSesion } from '@/lib/sesion'
+import { IngredientePostSchema } from '@/lib/inventario-http'
+import { leerBody, respuestaDeError } from '@/lib/ordenes-http'
 
 export async function GET() {
   try {
@@ -10,24 +13,19 @@ export async function GET() {
   }
 }
 
+// Sesión 11: body con zod `.strict()`, solo admin. `stock_actual` es el stock inicial
+// (deja un movimiento `entrada`); `unidad_medida` es la unidad de consumo.
 export async function POST(request: Request) {
   try {
-    const body = await request.json()
-    const nombre = String(body?.nombre || '').trim()
-    if (!nombre) {
-      return Response.json({ error: 'nombre requerido' }, { status: 400 })
-    }
-    const row = await db.crearIngrediente({
-      nombre,
-      categoria: body.categoria ? String(body.categoria) : 'insumos',
-      unidad_medida: body.unidad_medida ? String(body.unidad_medida) : 'unidad',
-      stock_actual: Number(body.stock_actual) || 0,
-      stock_minimo: Number(body.stock_minimo) || 0,
-      costo_unitario: Number(body.costo_unitario) || 0,
-      tipo: ['comida', 'negocio', 'otro'].includes(body.tipo) ? body.tipo : 'comida',
-    })
+    const s = await requireSesion(request, ['admin'])
+    if (!s.ok) return s.respuesta
+    const parsed = await leerBody(request, IngredientePostSchema, 'Datos del insumo')
+    if (!parsed.ok) return parsed.respuesta
+    const row = await db.crearIngrediente(parsed.datos)
     return Response.json(row, { status: 201 })
   } catch (error) {
+    const resp = respuestaDeError(error)
+    if (resp) return resp
     console.error('POST ingredientes error:', error)
     return Response.json({ error: 'Error en servidor' }, { status: 500 })
   }

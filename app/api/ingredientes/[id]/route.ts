@@ -1,5 +1,7 @@
 import { db } from '@/lib/db'
 import { esAdminSesion, requireSesion } from '@/lib/sesion'
+import { IngredientePatchSchema } from '@/lib/inventario-http'
+import { leerBody, respuestaDeError } from '@/lib/ordenes-http'
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
@@ -80,29 +82,27 @@ export async function DELETE(request: Request, context: { params: Promise<{ id: 
   }
 }
 
+// Sesión 11: body con zod `.strict()` y solo admin. `stock_actual` ya no se acepta (400):
+// el stock cambia por compras, ventas, mermas y `POST /api/ingredientes/[id]/ajuste`.
+// Cambiar la unidad de consumo de un insumo con stock, recetas o movimientos → 409 UNIDAD_EN_USO.
 export async function PATCH(request: Request, context: { params: Promise<{ id: string }> }) {
   try {
     const { id } = await context.params
     if (!UUID_RE.test(id)) {
-      return Response.json({ error: 'ID inválido' }, { status: 400 })
+      return Response.json({ error: 'ID inválido', codigo: 'DATOS_INVALIDOS' }, { status: 400 })
     }
-    const body = await request.json()
-    const updates: Record<string, unknown> = {}
-    if (body.nombre !== undefined) updates.nombre = String(body.nombre)
-    if (body.categoria !== undefined) updates.categoria = String(body.categoria)
-    if (body.unidad_medida !== undefined) updates.unidad_medida = String(body.unidad_medida)
-    if (body.stock_actual !== undefined) updates.stock_actual = Number(body.stock_actual)
-    if (body.stock_minimo !== undefined) updates.stock_minimo = Number(body.stock_minimo)
-    if (body.costo_unitario !== undefined) updates.costo_unitario = Number(body.costo_unitario)
-    if (body.tipo !== undefined && ['comida', 'negocio', 'otro'].includes(body.tipo)) {
-      updates.tipo = body.tipo
+    const s = await requireSesion(request, ['admin'])
+    if (!s.ok) return s.respuesta
+    const parsed = await leerBody(request, IngredientePatchSchema, 'Datos del insumo')
+    if (!parsed.ok) return parsed.respuesta
+    const row = await db.actualizarIngrediente(id, parsed.datos)
+    if (!row) {
+      return Response.json({ error: 'Ingrediente no encontrado', codigo: 'INSUMO_NO_ENCONTRADO' }, { status: 404 })
     }
-    if (body.activo !== undefined) updates.activo = !!body.activo
-
-    const row = await db.actualizarIngrediente(id, updates as any)
-    if (!row) return Response.json({ error: 'Ingrediente no encontrado' }, { status: 404 })
     return Response.json(row)
   } catch (error) {
+    const resp = respuestaDeError(error)
+    if (resp) return resp
     console.error('PATCH ingrediente error:', error)
     return Response.json({ error: 'Error en servidor' }, { status: 500 })
   }

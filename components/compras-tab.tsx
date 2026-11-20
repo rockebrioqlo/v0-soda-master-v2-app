@@ -23,10 +23,22 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Badge } from '@/components/ui/badge'
 import { Plus, Trash2, FileText, Eye, RefreshCw } from 'lucide-react'
 import { showToast } from '@/components/toast'
-import { formatCurrency } from '@/lib/helpers'
+import { formatCurrency, formatCostoUnitario, formatDecimal } from '@/lib/helpers'
+import { errorDeRespuesta } from '@/lib/api-error'
 
 type Proveedor = { id: string; nombre: string }
-type Insumo = { id: string; nombre: string; unidad_medida: string; costo_unitario: number }
+type Insumo = {
+  id: string
+  nombre: string
+  /** Unidad de consumo (stock, recetas y costo). */
+  unidad_medida: string
+  /** Unidad en que se compra (paquete, caja, kg…). */
+  unidad_compra: string
+  /** Unidades de consumo por unidad de compra, por defecto. */
+  factor_compra: number
+  stock_actual: number
+  costo_unitario: number
+}
 
 type Compra = {
   id: string
@@ -48,17 +60,30 @@ type CompraDetalleItem = {
   cantidad: string | number
   precio_unitario: string | number
   subtotal: string | number
+  // Compras anteriores a la sesión 11: factor 1 y sin estos campos.
+  factor?: string | number | null
+  cantidad_consumo?: string | number | null
+  unidad_compra?: string | null
+  unidad_consumo?: string | null
 }
 
 type CompraDetalle = Compra & { items: CompraDetalleItem[] }
 
 type LineaForm = {
   ingrediente_id: string
+  /** En unidad de compra (paquetes, cajas…). */
   cantidad: string
+  /** Por unidad de compra. */
   precio_unitario: string
+  /** Unidades de consumo por unidad de compra en ESTA compra (se propone el del insumo). */
+  factor: string
 }
 
-const NUEVA_LINEA: LineaForm = { ingrediente_id: '', cantidad: '1', precio_unitario: '0' }
+const NUEVA_LINEA: LineaForm = { ingrediente_id: '', cantidad: '1', precio_unitario: '0', factor: '1' }
+
+/** ¿El insumo se compra en otra unidad que la que se consume? Si no, no se muestra el factor. */
+const tieneConversion = (ins: Insumo | undefined) =>
+  !!ins && (ins.unidad_compra !== ins.unidad_medida || ins.factor_compra !== 1)
 
 export function ComprasTab() {
   const [proveedores, setProveedores] = useState<Proveedor[]>([])
@@ -127,11 +152,20 @@ export function ComprasTab() {
   const guardar = async () => {
     const items = lineas
       .filter((l) => l.ingrediente_id && Number(l.cantidad) > 0)
-      .map((l) => ({
-        ingrediente_id: l.ingrediente_id,
-        cantidad: Number(l.cantidad),
-        precio_unitario: Number(l.precio_unitario) || 0,
-      }))
+      .map((l) => {
+        const ins = insumos.find((i) => i.id === l.ingrediente_id)
+        return {
+          ingrediente_id: l.ingrediente_id,
+          cantidad: Number(l.cantidad),
+          precio_unitario: Number(l.precio_unitario) || 0,
+          // Solo se manda el factor cuando el insumo tiene conversión; si no, el servidor usa el del insumo.
+          ...(tieneConversion(ins) ? { factor: Number(l.factor) } : {}),
+        }
+      })
+    if (items.some((it) => 'factor' in it && !(Number(it.factor) > 0))) {
+      showToast('El factor debe ser mayor que 0', 'error')
+      return
+    }
     if (items.length === 0) {
       showToast('Agrega al menos un insumo con cantidad', 'error')
       return
@@ -151,10 +185,7 @@ export function ComprasTab() {
           items,
         }),
       })
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}))
-        throw new Error(err?.error || 'Error al registrar compra')
-      }
+      if (!res.ok) throw await errorDeRespuesta(res, 'Error al registrar compra')
       showToast('Compra registrada — stock e insumo actualizados', 'success')
       setShowDialog(false)
       await reload()
@@ -316,6 +347,9 @@ export function ComprasTab() {
               {lineas.map((l, idx) => {
                 const ins = insumos.find((i) => i.id === l.ingrediente_id)
                 const sub = (Number(l.cantidad) || 0) * (Number(l.precio_unitario) || 0)
+                const factor = Number(l.factor) || 0
+                const entra = Math.round((Number(l.cantidad) || 0) * factor * 1000) / 1000
+                const factorCorregido = !!ins && factor > 0 && factor !== ins.factor_compra
                 return (
                   <div key={idx} className="grid grid-cols-12 items-end gap-2">
                     <div className="col-span-5">
@@ -323,11 +357,13 @@ export function ComprasTab() {
                         value={l.ingrediente_id}
                         onValueChange={(v) => {
                           const next = [...lineas]
-                          next[idx] = { ...l, ingrediente_id: v }
-                          // Sugerir último precio si tenía costo > 0
                           const pre = insumos.find((i) => i.id === v)
+                          next[idx] = { ...l, ingrediente_id: v, factor: String(pre?.factor_compra ?? 1) }
+                          // Sugerir precio por unidad de COMPRA = costo por unidad de consumo × factor
                           if (pre && Number(next[idx].precio_unitario) === 0 && pre.costo_unitario > 0) {
-                            next[idx].precio_unitario = String(pre.costo_unitario)
+                            next[idx].precio_unitario = String(
+                              Math.round(pre.costo_unitario * pre.factor_compra * 100) / 100,
+                            )
                           }
                           setLineas(next)
                         }}
@@ -338,7 +374,11 @@ export function ComprasTab() {
                         <SelectContent>
                           {insumos.map((i) => (
                             <SelectItem key={i.id} value={i.id}>
-                              {i.nombre} ({i.unidad_medida})
+                              {i.nombre} (
+                              {tieneConversion(i)
+                                ? `${i.unidad_compra} de ${formatDecimal(i.factor_compra, 4)} ${i.unidad_medida}`
+                                : i.unidad_medida}
+                              )
                             </SelectItem>
                           ))}
                         </SelectContent>
@@ -349,7 +389,8 @@ export function ComprasTab() {
                         type="number"
                         min="0"
                         step="0.001"
-                        placeholder="Cant."
+                        placeholder={ins ? `Cant. (${ins.unidad_compra})` : 'Cant.'}
+                        title={ins ? `Cantidad en ${ins.unidad_compra}` : undefined}
                         value={l.cantidad}
                         onChange={(e) => {
                           const next = [...lineas]
@@ -363,7 +404,8 @@ export function ComprasTab() {
                         type="number"
                         min="0"
                         step="0.01"
-                        placeholder="Precio unit."
+                        placeholder={ins ? `Precio por ${ins.unidad_compra}` : 'Precio unit.'}
+                        title={ins ? `Precio por ${ins.unidad_compra}` : undefined}
                         value={l.precio_unitario}
                         onChange={(e) => {
                           const next = [...lineas]
@@ -384,6 +426,48 @@ export function ComprasTab() {
                         <Trash2 className="h-4 w-4 text-red-500" />
                       </Button>
                     </div>
+                    {ins && tieneConversion(ins) && (
+                      <div className="col-span-12 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md bg-muted/40 px-2 py-1.5 text-xs">
+                        <label className="flex items-center gap-1.5 text-muted-foreground">
+                          Trajo
+                          <Input
+                            type="number"
+                            min="0"
+                            step="0.0001"
+                            aria-label={`${ins.unidad_medida} por ${ins.unidad_compra}`}
+                            className={
+                              'h-7 w-24 text-right ' +
+                              (factorCorregido ? 'border-amber-500 text-amber-500' : '')
+                            }
+                            value={l.factor}
+                            onChange={(e) => {
+                              const next = [...lineas]
+                              next[idx] = { ...l, factor: e.target.value }
+                              setLineas(next)
+                            }}
+                          />
+                          {ins.unidad_medida} por {ins.unidad_compra}
+                        </label>
+                        {factorCorregido && (
+                          <Badge variant="outline" className="border-amber-500 text-amber-500">
+                            Corregido: {formatDecimal(factor, 4)} en vez de {formatDecimal(ins.factor_compra, 4)}
+                          </Badge>
+                        )}
+                        <span className="text-muted-foreground">
+                          Entran{' '}
+                          <strong className="text-foreground">
+                            {formatDecimal(entra, 3)} {ins.unidad_medida}
+                          </strong>{' '}
+                          al stock
+                          {factor > 0 && Number(l.precio_unitario) > 0 && (
+                            <>
+                              {' '}
+                              · {formatCostoUnitario(Number(l.precio_unitario) / factor)} por {ins.unidad_medida}
+                            </>
+                          )}
+                        </span>
+                      </div>
+                    )}
                   </div>
                 )
               })}
@@ -462,7 +546,15 @@ export function ComprasTab() {
                         {it.ingrediente_nombre}{' '}
                         <span className="text-xs text-muted-foreground">({it.unidad_medida})</span>
                       </TableCell>
-                      <TableCell className="text-right">{Number(it.cantidad)}</TableCell>
+                      <TableCell className="text-right">
+                        {Number(it.cantidad)}
+                        {it.cantidad_consumo != null && Number(it.factor) !== 1 && (
+                          <span className="block text-xs text-muted-foreground">
+                            {it.unidad_compra || ''} × {formatDecimal(Number(it.factor), 4)} ={' '}
+                            {formatDecimal(Number(it.cantidad_consumo), 3)} {it.unidad_consumo || it.unidad_medida}
+                          </span>
+                        )}
+                      </TableCell>
                       <TableCell className="text-right">
                         {formatCurrency(Number(it.precio_unitario))}
                       </TableCell>

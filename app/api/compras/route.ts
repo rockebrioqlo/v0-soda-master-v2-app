@@ -1,5 +1,7 @@
 import { db } from '@/lib/db'
 import { requireSesion } from '@/lib/sesion'
+import { CompraPostSchema } from '@/lib/inventario-http'
+import { leerBody, respuestaDeError } from '@/lib/ordenes-http'
 
 export async function GET(request: Request) {
   try {
@@ -17,37 +19,31 @@ export async function GET(request: Request) {
   }
 }
 
+// Sesión 11: body con zod `.strict()`, solo admin, usuario de la sesión. `cantidad` y
+// `precio_unitario` van en la unidad de compra; `factor` (opcional) corrige las unidades de
+// consumo que trajo cada una (si falta, el factor por defecto del insumo).
 export async function POST(request: Request) {
   try {
     const s = await requireSesion(request, ['admin'])
     if (!s.ok) return s.respuesta
-    const body = await request.json()
-    if (!Array.isArray(body?.items) || body.items.length === 0) {
-      return Response.json({ error: 'items requeridos' }, { status: 400 })
-    }
-    const tipo = body.tipo_documento
-    const tipoValido = ['boleta', 'factura', 'nota', 'otro'].includes(String(tipo))
+    const parsed = await leerBody(request, CompraPostSchema, 'Datos de la compra')
+    if (!parsed.ok) return parsed.respuesta
+    const d = parsed.datos
     const compra = await db.crearCompra({
-      proveedor_id: body.proveedor_id || null,
-      tipo_documento: tipoValido ? tipo : 'boleta',
-      numero_documento: body.numero_documento ? String(body.numero_documento) : null,
-      fecha: body.fecha ? String(body.fecha) : null,
-      impuesto: Number(body.impuesto) || 0,
-      notas: body.notas ? String(body.notas) : null,
+      proveedor_id: d.proveedor_id || null,
+      tipo_documento: d.tipo_documento,
+      numero_documento: d.numero_documento || null,
+      fecha: d.fecha || null,
+      impuesto: d.impuesto ?? 0,
+      notas: d.notas || null,
       usuario_id: s.usuario.id, // de la sesión, no del body
-      items: body.items.map((it: any) => ({
-        ingrediente_id: String(it.ingrediente_id),
-        cantidad: Number(it.cantidad),
-        precio_unitario: Number(it.precio_unitario),
-        notas: it.notas ? String(it.notas) : null,
-      })),
+      items: d.items,
     })
     return Response.json(compra, { status: 201 })
   } catch (error) {
+    const resp = respuestaDeError(error)
+    if (resp) return resp
     console.error('POST compras error:', error)
-    return Response.json(
-      { error: error instanceof Error ? error.message : 'Error en servidor' },
-      { status: 500 },
-    )
+    return Response.json({ error: 'Error en servidor' }, { status: 500 })
   }
 }

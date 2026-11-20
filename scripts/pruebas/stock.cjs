@@ -179,4 +179,7 @@ exports.correr = async function (ctx) {
     await L.limpiarMesas(ctx, [10])
   }
   check('enviar ítems vs borrar la orden: sin huérfanos ni stock a medias', malo2 === 0, malo2)
+
+  // Sesión 11: unidad de compra y de consumo, factor por compra, rendimiento y ajuste de stock.
+  await require('./unidades.cjs').correr(ctx)
 }

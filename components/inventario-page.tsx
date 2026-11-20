@@ -30,7 +30,15 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { cn } from '@/lib/utils'
-import { formatCurrency } from '@/lib/helpers'
+import {
+  formatCurrency,
+  formatDecimal,
+  formatCostoUnitario,
+  factorSugerido,
+  UNIDADES_CONSUMO,
+  UNIDADES_COMPRA_SUGERIDAS,
+} from '@/lib/helpers'
+import { errorDeRespuesta } from '@/lib/api-error'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import {
   Edit,
@@ -74,7 +82,14 @@ interface InsumoRow {
   id: string
   nombre: string
   categoria: string
+  /** Unidad de consumo: en ella se cuenta el stock, se mide la receta y se calcula el costo. */
   unidad_medida: string
+  /** Unidad en que se compra (igual a la de consumo si no hay conversión). */
+  unidad_compra: string
+  /** Unidades de consumo por unidad de compra, por defecto. */
+  factor_compra: number
+  /** 100 = sin merma; 75 = de lo crudo solo rinde el 75 % procesado. */
+  rendimiento_pct: number
   stock_actual: number
   stock_minimo: number
   costo_unitario: number
@@ -148,11 +163,19 @@ export function InventarioPage() {
     nombre: '',
     categoria: 'insumos',
     unidad_medida: 'unidad',
+    unidad_compra: 'unidad',
+    factor_compra: '1',
+    rendimiento_pct: '100',
     stock_actual: '0',
     stock_minimo: '0',
     costo_unitario: '0',
     tipo: 'comida' as 'comida' | 'negocio' | 'otro',
   })
+  // Ajuste manual de stock de un insumo (conteo físico): deja un movimiento `ajuste`.
+  const [ajusteTarget, setAjusteTarget] = useState<InsumoRow | null>(null)
+  const [ajusteStock, setAjusteStock] = useState('')
+  const [ajusteMotivo, setAjusteMotivo] = useState('')
+  const [ajustando, setAjustando] = useState(false)
   const [filtroTipoInsumo, setFiltroTipoInsumo] = useState<'all' | 'comida' | 'negocio' | 'otro'>(
     'all',
   )
@@ -237,17 +260,31 @@ export function InventarioPage() {
   }
 
   const handleSaveInsumo = async () => {
-    const payload = {
+    const factor = Number(insumoForm.factor_compra)
+    const rendimiento = Number(insumoForm.rendimiento_pct)
+    const base = {
       nombre: insumoForm.nombre.trim(),
       categoria: insumoForm.categoria,
       unidad_medida: insumoForm.unidad_medida,
-      stock_actual: Number(insumoForm.stock_actual) || 0,
+      unidad_compra: insumoForm.unidad_compra.trim() || null,
+      factor_compra: factor,
+      rendimiento_pct: rendimiento,
       stock_minimo: Number(insumoForm.stock_minimo) || 0,
       costo_unitario: Number(insumoForm.costo_unitario) || 0,
       tipo: insumoForm.tipo,
     }
-    if (!payload.nombre) {
+    // El stock solo se fija al crear (stock inicial); después se ajusta con "Ajustar stock".
+    const payload = editingInsumo ? base : { ...base, stock_actual: Number(insumoForm.stock_actual) || 0 }
+    if (!base.nombre) {
       showToast('Nombre requerido', 'error')
+      return
+    }
+    if (!(factor > 0)) {
+      showToast('El factor debe ser mayor que 0', 'error')
+      return
+    }
+    if (!(rendimiento >= 1 && rendimiento <= 300)) {
+      showToast('El rendimiento debe estar entre 1 y 300 %', 'error')
       return
     }
     try {
@@ -262,13 +299,44 @@ export function InventarioPage() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload),
           })
-      if (!res.ok) throw new Error('Error al guardar')
+      if (!res.ok) throw await errorDeRespuesta(res, 'Error al guardar el insumo')
       showToast(editingInsumo ? 'Insumo actualizado' : 'Insumo creado', 'success')
       setShowInsumoDialog(false)
       setEditingInsumo(null)
       await loadInsumos()
-    } catch {
-      showToast('Error al guardar insumo', 'error')
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : 'Error al guardar insumo', 'error')
+    }
+  }
+
+  const handleAjustarStock = async () => {
+    if (!ajusteTarget) return
+    const nuevo = Number(ajusteStock)
+    if (ajusteStock.trim() === '' || !Number.isFinite(nuevo) || nuevo < 0) {
+      showToast('Indica el stock contado (0 o más)', 'error')
+      return
+    }
+    if (ajusteMotivo.trim().length < 3) {
+      showToast('Indica el motivo del ajuste (mínimo 3 caracteres)', 'error')
+      return
+    }
+    setAjustando(true)
+    try {
+      const res = await fetch(`/api/ingredientes/${ajusteTarget.id}/ajuste`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ stock_nuevo: nuevo, motivo: ajusteMotivo.trim() }),
+      })
+      if (!res.ok) throw await errorDeRespuesta(res, 'No se pudo ajustar el stock')
+      showToast('Stock ajustado y registrado en movimientos', 'success')
+      setAjusteTarget(null)
+      setShowInsumoDialog(false)
+      setEditingInsumo(null)
+      await loadInsumos()
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : 'No se pudo ajustar el stock', 'error')
+    } finally {
+      setAjustando(false)
     }
   }
 
@@ -754,6 +822,9 @@ export function InventarioPage() {
                   nombre: '',
                   categoria: 'insumos',
                   unidad_medida: 'unidad',
+                  unidad_compra: 'unidad',
+                  factor_compra: '1',
+                  rendimiento_pct: '100',
                   stock_actual: '0',
                   stock_minimo: '0',
                   costo_unitario: '0',
@@ -785,10 +856,12 @@ export function InventarioPage() {
                           <TableHead>Insumo</TableHead>
                           <TableHead>Tipo</TableHead>
                           <TableHead>Categoría</TableHead>
-                          <TableHead>Unidad</TableHead>
+                          <TableHead>Consumo</TableHead>
+                          <TableHead>Compra</TableHead>
+                          <TableHead className="text-right">Rend.</TableHead>
                           <TableHead className="text-right">Stock</TableHead>
                           <TableHead className="text-right">Mín.</TableHead>
-                          <TableHead className="text-right">Costo</TableHead>
+                          <TableHead className="text-right">Costo / unidad</TableHead>
                           <TableHead className="text-right">Acciones</TableHead>
                         </TableRow>
                       </TableHeader>
@@ -803,12 +876,21 @@ export function InventarioPage() {
                             </TableCell>
                             <TableCell>{ing.categoria}</TableCell>
                             <TableCell>{ing.unidad_medida}</TableCell>
-                            <TableCell className="text-right">{ing.stock_actual}</TableCell>
-                            <TableCell className="text-right text-muted-foreground">
-                              {ing.stock_minimo}
+                            <TableCell className="text-muted-foreground">
+                              {ing.unidad_compra !== ing.unidad_medida || ing.factor_compra !== 1
+                                ? `${ing.unidad_compra} × ${formatDecimal(ing.factor_compra, 4)}`
+                                : '—'}
                             </TableCell>
                             <TableCell className="text-right text-muted-foreground">
-                              {formatCurrency(ing.costo_unitario)}
+                              {ing.rendimiento_pct !== 100 ? `${formatDecimal(ing.rendimiento_pct, 2)} %` : '—'}
+                            </TableCell>
+                            <TableCell className="text-right">{formatDecimal(ing.stock_actual, 3)}</TableCell>
+                            <TableCell className="text-right text-muted-foreground">
+                              {formatDecimal(ing.stock_minimo, 3)}
+                            </TableCell>
+                            <TableCell className="text-right text-muted-foreground">
+                              {formatCostoUnitario(ing.costo_unitario)}
+                              <span className="text-xs"> / {ing.unidad_medida}</span>
                             </TableCell>
                             <TableCell className="text-right">
                               <div className="flex justify-end gap-1">
@@ -822,6 +904,9 @@ export function InventarioPage() {
                                       nombre: ing.nombre,
                                       categoria: ing.categoria,
                                       unidad_medida: ing.unidad_medida,
+                                      unidad_compra: ing.unidad_compra,
+                                      factor_compra: String(ing.factor_compra),
+                                      rendimiento_pct: String(ing.rendimiento_pct),
                                       stock_actual: String(ing.stock_actual),
                                       stock_minimo: String(ing.stock_minimo),
                                       costo_unitario: String(ing.costo_unitario),
@@ -921,30 +1006,143 @@ export function InventarioPage() {
                 onChange={(e) => setInsumoForm({ ...insumoForm, categoria: e.target.value })}
               />
             </div>
-            <Input
-              placeholder="Unidad (unidad, kg, litro...)"
-              value={insumoForm.unidad_medida}
-              onChange={(e) => setInsumoForm({ ...insumoForm, unidad_medida: e.target.value })}
-            />
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="text-xs text-muted-foreground">
+                  Unidad de consumo (stock y recetas)
+                </label>
+                <Select
+                  value={insumoForm.unidad_medida}
+                  onValueChange={(v) => {
+                    const sug = factorSugerido(insumoForm.unidad_compra, v)
+                    setInsumoForm({
+                      ...insumoForm,
+                      unidad_medida: v,
+                      ...(sug !== null ? { factor_compra: String(sug) } : {}),
+                    })
+                  }}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {Array.from(new Set<string>([...UNIDADES_CONSUMO, insumoForm.unidad_medida])).map((u) => (
+                      <SelectItem key={u} value={u}>
+                        {u}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <label className="text-xs text-muted-foreground">Se compra en</label>
+                <Input
+                  list="unidades-compra"
+                  placeholder="paquete, caja, kg…"
+                  value={insumoForm.unidad_compra}
+                  onChange={(e) => {
+                    const sug = factorSugerido(e.target.value, insumoForm.unidad_medida)
+                    setInsumoForm({
+                      ...insumoForm,
+                      unidad_compra: e.target.value,
+                      ...(sug !== null ? { factor_compra: String(sug) } : {}),
+                    })
+                  }}
+                />
+                <datalist id="unidades-compra">
+                  {UNIDADES_COMPRA_SUGERIDAS.map((u) => (
+                    <option key={u} value={u} />
+                  ))}
+                </datalist>
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="text-xs text-muted-foreground">
+                  {insumoForm.unidad_medida} por {insumoForm.unidad_compra || 'unidad de compra'} (factor)
+                </label>
+                <Input
+                  type="number"
+                  min="0"
+                  step="0.0001"
+                  value={insumoForm.factor_compra}
+                  onChange={(e) => setInsumoForm({ ...insumoForm, factor_compra: e.target.value })}
+                />
+                <p className="mt-0.5 text-[11px] text-muted-foreground">
+                  Se propone en cada compra y se puede corregir con lo que realmente trajo.
+                </p>
+              </div>
+              <div>
+                <label className="text-xs text-muted-foreground">Rendimiento (%)</label>
+                <Input
+                  type="number"
+                  min="1"
+                  max="300"
+                  step="0.01"
+                  value={insumoForm.rendimiento_pct}
+                  onChange={(e) => setInsumoForm({ ...insumoForm, rendimiento_pct: e.target.value })}
+                />
+                <p className="mt-0.5 text-[11px] text-muted-foreground">
+                  100 = sin merma. Con 75, una receta de 150 descuenta 200 del stock.
+                </p>
+              </div>
+            </div>
             <div className="grid grid-cols-3 gap-2">
-              <Input
-                type="number"
-                placeholder="Stock"
-                value={insumoForm.stock_actual}
-                onChange={(e) => setInsumoForm({ ...insumoForm, stock_actual: e.target.value })}
-              />
-              <Input
-                type="number"
-                placeholder="Mínimo"
-                value={insumoForm.stock_minimo}
-                onChange={(e) => setInsumoForm({ ...insumoForm, stock_minimo: e.target.value })}
-              />
-              <Input
-                type="number"
-                placeholder="Costo unit."
-                value={insumoForm.costo_unitario}
-                onChange={(e) => setInsumoForm({ ...insumoForm, costo_unitario: e.target.value })}
-              />
+              {editingInsumo ? (
+                <div className="flex flex-col justify-end">
+                  <label className="text-xs text-muted-foreground">Stock actual</label>
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-medium">
+                      {formatDecimal(editingInsumo.stock_actual, 3)} {editingInsumo.unidad_medida}
+                    </span>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() => {
+                        setAjusteTarget(editingInsumo)
+                        setAjusteStock(String(editingInsumo.stock_actual))
+                        setAjusteMotivo('')
+                      }}
+                    >
+                      Ajustar
+                    </Button>
+                  </div>
+                </div>
+              ) : (
+                <div>
+                  <label className="text-xs text-muted-foreground">Stock inicial</label>
+                  <Input
+                    type="number"
+                    min="0"
+                    step="0.001"
+                    value={insumoForm.stock_actual}
+                    onChange={(e) => setInsumoForm({ ...insumoForm, stock_actual: e.target.value })}
+                  />
+                </div>
+              )}
+              <div>
+                <label className="text-xs text-muted-foreground">Mínimo</label>
+                <Input
+                  type="number"
+                  min="0"
+                  step="0.001"
+                  value={insumoForm.stock_minimo}
+                  onChange={(e) => setInsumoForm({ ...insumoForm, stock_minimo: e.target.value })}
+                />
+              </div>
+              <div>
+                <label className="text-xs text-muted-foreground">
+                  Costo por {insumoForm.unidad_medida}
+                </label>
+                <Input
+                  type="number"
+                  min="0"
+                  step="0.0001"
+                  value={insumoForm.costo_unitario}
+                  onChange={(e) => setInsumoForm({ ...insumoForm, costo_unitario: e.target.value })}
+                />
+              </div>
             </div>
           </div>
           <DialogFooter>
@@ -952,6 +1150,47 @@ export function InventarioPage() {
               Cancelar
             </Button>
             <Button onClick={handleSaveInsumo}>Guardar</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Ajuste manual de stock de un insumo (deja un movimiento `ajuste`) */}
+      <Dialog open={!!ajusteTarget} onOpenChange={(o) => !o && setAjusteTarget(null)}>
+        <DialogContent className="border-border bg-card">
+          <DialogHeader>
+            <DialogTitle>Ajustar stock: {ajusteTarget?.nombre}</DialogTitle>
+            <DialogDescription>
+              Stock contado en {ajusteTarget?.unidad_medida}. Queda registrado en movimientos con tu
+              nombre y el motivo.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-3 py-2">
+            <div>
+              <label className="text-xs text-muted-foreground">
+                Stock actual: {formatDecimal(ajusteTarget?.stock_actual ?? 0, 3)} {ajusteTarget?.unidad_medida}
+              </label>
+              <Input
+                type="number"
+                min="0"
+                step="0.001"
+                placeholder="Stock contado"
+                value={ajusteStock}
+                onChange={(e) => setAjusteStock(e.target.value)}
+              />
+            </div>
+            <Input
+              placeholder="Motivo (conteo físico, corrección…)"
+              value={ajusteMotivo}
+              onChange={(e) => setAjusteMotivo(e.target.value)}
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setAjusteTarget(null)} disabled={ajustando}>
+              Cancelar
+            </Button>
+            <Button onClick={handleAjustarStock} disabled={ajustando}>
+              {ajustando ? 'Guardando...' : 'Ajustar stock'}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

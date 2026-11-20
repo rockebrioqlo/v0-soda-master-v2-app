@@ -13,6 +13,38 @@ export function formatNumber(num: number): string {
   return new Intl.NumberFormat('es-CL').format(num)
 }
 
+/** Cantidad con hasta `max` decimales (stock y cantidades de insumos: 3). */
+export function formatDecimal(num: number, max = 3): string {
+  return new Intl.NumberFormat('es-CL', { maximumFractionDigits: max }).format(num)
+}
+
+/** Costo por unidad de consumo: CLP con hasta 4 decimales ($0,45 por gramo no se ve como $0). */
+export function formatCostoUnitario(amount: number): string {
+  return new Intl.NumberFormat('es-CL', {
+    style: 'currency',
+    currency: 'CLP',
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 4,
+  }).format(amount)
+}
+
+/** Unidades de consumo y de compra que ofrece el formulario de insumos. */
+export const UNIDADES_CONSUMO = ['unidad', 'porción', 'g', 'ml'] as const
+export const UNIDADES_COMPRA_SUGERIDAS = [
+  'paquete', 'caja', 'bolsa', 'saco', 'kg', 'litro', 'botella', 'bidón', 'docena', 'pack', 'rollo', 'unidad',
+]
+
+/** Factor sugerido al elegir las dos unidades (kg → g, litro → ml, docena → unidad). */
+export function factorSugerido(compra: string, consumo: string): number | null {
+  const c = compra.trim().toLowerCase()
+  const u = consumo.trim().toLowerCase()
+  if (c === 'kg' && u === 'g') return 1000
+  if ((c === 'litro' || c === 'l' || c === 'lt') && u === 'ml') return 1000
+  if (c === 'docena' && u === 'unidad') return 12
+  if (c === u) return 1
+  return null
+}
+
 export function formatDate(timestamp: number): string {
   return new Intl.DateTimeFormat('es-CL', {
     dateStyle: 'short',
