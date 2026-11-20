@@ -6,7 +6,9 @@ import {
   ItemPostSchema,
   leerBody,
   respuestaDeError,
+  respuestaDestinoItemProhibido,
 } from '@/lib/ordenes-http'
+import { origenesPermitidos } from '@/lib/items-reglas'
 
 export async function GET(request: Request) {
   try {
@@ -65,9 +67,18 @@ export async function PATCH(request: Request) {
     }
     // Sin `precio_manual`, el precio que mande el navegador no cuenta.
     if (updates.precio_manual === undefined) delete updates.precio_unitario
+    // Sesión 13 (F11): matriz de estados por rol. Un rol que no puede pedir ese destino → 403; el
+    // estado actual del ítem se verifica dentro de la transacción (409 TRANSICION_ITEM_INVALIDA).
+    let origenesEstado: string[] | undefined
+    if (updates.estado_item !== undefined) {
+      const origenes = origenesPermitidos(s.usuario.roles, updates.estado_item)
+      if (!origenes) return respuestaDestinoItemProhibido(updates.estado_item)
+      origenesEstado = origenes
+    }
     const item = await db.actualizarItemOrden(id, updates, {
       esAdmin: esAdminSesion(s.usuario),
       usuario: { id: s.usuario.id, nombre: s.usuario.nombre, rol: s.usuario.rol },
+      origenesEstado,
     })
     return Response.json(item)
   } catch (error) {

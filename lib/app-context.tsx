@@ -193,6 +193,11 @@ interface AppContextType {
   enviarComandaApi: (payload: any) => Promise<{ orden: any; items: any[] }>
   crearItemOrden: (item: any) => Promise<any>
   actualizarItemOrden: (id: string, updates: any) => Promise<any>
+  cambiarEstadoItemsApi: (
+    ordenId: string,
+    itemIds: string[],
+    estadoItem: string,
+  ) => Promise<{ id: string; estado: string; estado_anterior: string }>
   eliminarItemOrden: (id: string) => Promise<{ orden_cerrada: boolean }>
   recargarOrdenes: () => Promise<void>
   recargarMesas: () => Promise<void>
@@ -881,6 +886,41 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     return await res.json().catch(() => null)
   }, [])
 
+  // Sesión 13 (B5, B6): varios ítems de UNA orden a un estado, en una sola petición todo o nada.
+  // El servidor deja el estado de la orden según el peor de sus ítems y lo devuelve junto con el
+  // estado anterior. No hay actualización optimista: la comanda local cambia solo con la respuesta;
+  // si la petición falla, quien llama recarga el estado real.
+  const cambiarEstadoItemsApi = useCallback(
+    async (ordenId: string, itemIds: string[], estadoItem: string) => {
+      const res = await fetch('/api/items-orden/estado', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orden_id: ordenId, item_ids: itemIds, estado_item: estadoItem }),
+      })
+      if (!res.ok) throw await errorDeRespuesta(res, 'No se pudo cambiar el estado de los ítems')
+      const data = (await res.json()) as {
+        items: any[]
+        orden: { id: string; estado: string; estado_anterior: string }
+      }
+      const cambiados = new Set(data.items.map((i: any) => String(i.id).toLowerCase()))
+      const comanda = comandasRef.current.find((c: any) => c.id === ordenId)
+      if (comanda) {
+        dispatch({
+          type: 'UPDATE_COMANDA',
+          payload: {
+            id: ordenId,
+            estado: data.orden.estado,
+            items: comanda.items.map((it: any) =>
+              cambiados.has(String(it.id).toLowerCase()) ? { ...it, estado: estadoItem } : it,
+            ),
+          } as any,
+        })
+      }
+      return data.orden
+    },
+    [],
+  )
+
   const eliminarItemOrden = useCallback(async (id: string) => {
     const res = await fetch('/api/items-orden', {
       method: 'DELETE',
@@ -1473,6 +1513,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       enviarComandaApi,
       crearItemOrden,
       actualizarItemOrden,
+      cambiarEstadoItemsApi,
       eliminarItemOrden,
       recargarOrdenes,
       recargarMesas,

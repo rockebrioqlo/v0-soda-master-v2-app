@@ -9,6 +9,7 @@ import { cn } from '@/lib/utils'
 import { formatTime, getElapsedTime } from '@/lib/helpers'
 import { Check, ChefHat, Wine, Clock, AlertCircle, Zap, RefreshCw, Printer, History } from 'lucide-react'
 import { showToast } from '@/components/toast'
+import { mensajeAccionable } from '@/lib/api-error'
 import type { Comanda, ItemComanda } from '@/lib/types'
 import { PrintPreviewDialog } from '@/components/print-preview-dialog'
 import { KDSHistorialDialog } from '@/components/kds-historial-dialog'
@@ -19,7 +20,7 @@ import {
 } from '@/lib/print-ticket'
 
 export function KDSPage() {
-  const { state, updateOrden, actualizarItemOrden, recargarOrdenes, crearNotificacionApi } = useApp()
+  const { state, cambiarEstadoItemsApi, recargarOrdenes, crearNotificacionApi } = useApp()
   const { comandas, usuarioActual, productos, configuracion } = state
   const [isLoading, setIsLoading] = useState(false)
   const [, setTick] = useState(0)
@@ -57,8 +58,10 @@ export function KDSPage() {
   // Filter comandas that are still being prepared in cocina/bar.
   // Once the comanda transitions to 'listo' or 'entregado' it is the mesero's
   // responsibility (delivery widget in POS), so the KDS drops it.
+  // Sesión 13 (B5): una comanda con un ítem en 'problema' sigue en el KDS (la orden queda en
+  // 'problema' como aviso al mesero, pero cocina y bar siguen con el resto y pueden resolver el ítem).
   const comandasActivas = comandas.filter(
-    (c) => c.estado === 'en_cocina' || c.estado === 'en_preparacion'
+    (c) => c.estado === 'en_cocina' || c.estado === 'en_preparacion' || c.estado === 'problema'
   )
 
   const CATEGORIAS_BAR = ['bebidas', 'cervezas', 'jugos_bebidas', 'tragos']
@@ -90,68 +93,55 @@ export function KDSPage() {
   const comandasCocina = getComandasForSection(isCocinaItem)
   const comandasBar = getComandasForSection(isBarItem)
 
+  // Sesión 13 (B5, B6): una sola petición por acción (`POST /api/items-orden/estado`, todo o nada).
+  // El estado de la orden lo calcula el servidor según el peor estado de sus ítems; aquí no se
+  // calcula nada. No hay actualización optimista: la comanda cambia con la respuesta. Si falla
+  // (409 porque otra estación o el mesero cambió el ítem, 429, red), se avisa con el mensaje real
+  // y se recarga el estado verdadero; la función nunca lanza, así el botón siempre se libera.
   const handleMarkReady = async (comandaId: string, estado: string, itemIds: string[]) => {
     const comanda = comandas.find((c) => c.id === comandaId)
     if (!comanda) return
+    const itemIdsSet = new Set(itemIds)
+    const itemsAfectados = comanda.items.filter((it) => itemIdsSet.has(it.id))
+    try {
+      const orden = await cambiarEstadoItemsApi(comandaId, itemIds, estado)
 
-    if (estado === 'problema') {
-      await Promise.all(itemIds.map((itemId) => actualizarItemOrden(itemId, { estado_item: 'problema' })))
-      await updateOrden(comandaId, { estado: 'problema' })
-      showToast(`Comanda ${comanda.mesaNombre} con problema - notificando al mesero`, 'error')
-      // Notificación persistente al mesero que tomó la orden. El polling
-      // del lado del mesero (otro dispositivo) la recogerá y mostrará el
-      // toast aunque esté en otra pantalla.
-      if (comanda.usuarioId) {
-        void crearNotificacionApi({
-          tipo: 'problema',
-          orden_id: comandaId,
-          mesa_nombre: comanda.mesaNombre,
-          mensaje: `Problema en orden de ${comanda.mesaNombre}. Revisar en POS.`,
-          destinatario_usuario_id: comanda.usuarioId,
-        })
+      if (estado === 'problema') {
+        showToast(`Comanda ${comanda.mesaNombre} con problema - notificando al mesero`, 'error')
+        // Notificación persistente al mesero que tomó la orden. El polling
+        // del lado del mesero (otro dispositivo) la recogerá y mostrará el
+        // toast aunque esté en otra pantalla.
+        if (comanda.usuarioId) {
+          void crearNotificacionApi({
+            tipo: 'problema',
+            orden_id: comandaId,
+            mesa_nombre: comanda.mesaNombre,
+            mensaje: `Problema en orden de ${comanda.mesaNombre}. Revisar en POS.`,
+            destinatario_usuario_id: comanda.usuarioId,
+          })
+        }
+        return
       }
-    } else {
-      await Promise.all(itemIds.map((itemId) => actualizarItemOrden(itemId, { estado_item: estado })))
-      const itemIdsSet = new Set(itemIds)
-      const itemsActualizados = comanda.items.map((item) =>
-        itemIdsSet.has(item.id) ? { ...item, estado: estado as ItemComanda['estado'] } : item
-      )
-      const todosListos = itemsActualizados.length > 0 && itemsActualizados.every((item) => item.estado === 'listo')
-      // El estado de la ORDEN refleja lo "mas avanzado" de sus items pero
-      // sin saltarse: si marcamos sólo uno como listo, la orden sigue en
-      // 'en_preparacion' y nadie en el KDS la pierde de vista. Recién
-      // cuando TODOS quedaron listos, la orden pasa a 'listo' y sale del
-      // KDS hacia el widget de entregas.
-      const estadoOrden = estado === 'listo'
-        ? (todosListos ? 'listo' : 'en_preparacion')
-        : estado
-      await updateOrden(comandaId, { estado: estadoOrden })
-      await recargarOrdenes()
 
+      const ordenLista = orden.estado === 'listo'
       // Toast con contexto: si fue un solo ítem, mencionamos su nombre.
       // Si fueron varios (bulk), avisamos cuántos.
-      const itemsAfectados = comanda.items.filter((it) => itemIdsSet.has(it.id))
       const accion =
         estado === 'en_preparacion'
           ? 'en preparación'
           : estado === 'listo'
-            ? todosListos
+            ? ordenLista
               ? 'lista para entregar'
               : 'listo'
             : estado
-      let detalle: string
-      if (itemsAfectados.length === 1) {
-        const it = itemsAfectados[0]
-        detalle = `${it.productoNombre}`
-      } else {
-        detalle = `${itemsAfectados.length} items`
-      }
+      const detalle =
+        itemsAfectados.length === 1 ? `${itemsAfectados[0].productoNombre}` : `${itemsAfectados.length} items`
       showToast(`${comanda.mesaNombre} • ${detalle} — ${accion}`, 'success')
 
-      // Cuando toda la comanda quedó lista, avisar al mesero para que la
-      // retire. Esto cierra el ciclo cocina↔mesero sin requerir que el
-      // mesero esté mirando el KDS.
-      if (estado === 'listo' && todosListos && comanda.usuarioId) {
+      // Avisar al mesero SOLO si esta acción fue la que dejó la orden lista: el servidor devuelve
+      // el estado anterior, así dos estaciones que terminan casi a la vez no avisan dos veces ni
+      // ninguna (el cálculo con la copia local de cada pantalla fallaba en esa carrera).
+      if (ordenLista && orden.estado_anterior !== 'listo' && comanda.usuarioId) {
         void crearNotificacionApi({
           tipo: 'listo',
           orden_id: comandaId,
@@ -160,6 +150,10 @@ export function KDSPage() {
           destinatario_usuario_id: comanda.usuarioId,
         })
       }
+    } catch (error) {
+      console.error('Error cambiando el estado de los ítems:', error)
+      showToast(mensajeAccionable(error, 'No se pudo actualizar el pedido'), 'error')
+      await recargarOrdenes()
     }
   }
 
@@ -572,7 +566,7 @@ function ComandaCard({
                       size="sm"
                       className="min-h-[40px] text-xs font-semibold"
                       onClick={() => handleItemStateChange(item.id, 'problema')}
-                      disabled={isItemUpdating}
+                      disabled={isItemUpdating || item.estado === 'problema'}
                     >
                       <AlertCircle className="mr-1 h-3 w-3" />
                       Problema

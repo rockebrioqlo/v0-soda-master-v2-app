@@ -6,6 +6,7 @@
 import { z, ZodError } from 'zod'
 import { ErrorItemOrden, ErrorOrden } from '@/lib/db'
 import { DESTINOS_PATCH } from '@/lib/ordenes-reglas'
+import { ESTADOS_ITEM } from '@/lib/items-reglas'
 
 const uuid = z.string().uuid()
 
@@ -95,7 +96,7 @@ export const ItemPatchSchema = z
   .object({
     id: uuid,
     cantidad: z.number().int().min(1).max(999).optional(),
-    estado_item: z.enum(['pendiente', 'en_preparacion', 'listo', 'entregado', 'problema']).optional(),
+    estado_item: z.enum(ESTADOS_ITEM).optional(),
     notas_especiales: z.string().max(4000).nullable().optional(),
     modificadores: z.array(z.string().max(120)).max(50).optional(),
     // Ignorado salvo con `precio_manual` (solo admin).
@@ -114,6 +115,15 @@ export const ItemPatchSchema = z
       }
     }
   })
+
+/** `POST /api/items-orden/estado` (sesión 13): varios ítems de UNA orden al mismo estado, todo o nada. */
+export const ItemsEstadoSchema = z
+  .object({
+    orden_id: uuid,
+    item_ids: z.array(uuid).min(1).max(50),
+    estado_item: z.enum(ESTADOS_ITEM),
+  })
+  .strict()
 
 /** Lee el body JSON y lo valida; devuelve los datos o la respuesta 400 lista. */
 export async function leerBody<T extends z.ZodTypeAny>(
@@ -148,6 +158,14 @@ export function validarBody<T extends z.ZodTypeAny>(
       { status: 400 },
     ),
   }
+}
+
+/** 403 de la matriz de estados de ítem (F11): el rol no puede pedir ese destino. */
+export function respuestaDestinoItemProhibido(destino: string): Response {
+  return Response.json(
+    { error: `Tu rol no puede pasar un ítem a "${destino}".`, codigo: 'ROL_SIN_PERMISO' },
+    { status: 403 },
+  )
 }
 
 /** Convierte un error de negocio en su respuesta HTTP; devuelve null si no lo es. */

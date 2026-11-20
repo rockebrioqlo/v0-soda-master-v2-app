@@ -620,8 +620,14 @@ export function POSPage() {
   // selección actual del ítem. No se permite editar ítems ya listos o
   // entregados (no tiene sentido cambiar algo que ya salió a la mesa).
   const handleEditItem = (item: ItemComanda) => {
-    if (item.estado === 'listo' || item.estado === 'entregado') {
-      showToast('Este ítem ya está listo/entregado y no puede editarse', 'error')
+    // Sesión 13 (F11): el servidor también lo exige (409 ITEM_YA_PREPARADO) desde que cocina empieza.
+    if (item.estado === 'en_preparacion' || item.estado === 'listo' || item.estado === 'entregado') {
+      showToast(
+        item.estado === 'en_preparacion'
+          ? 'Cocina ya está preparando este ítem y no puede editarse'
+          : 'Este ítem ya está listo/entregado y no puede editarse',
+        'error',
+      )
       return
     }
     const producto = productos.find((p) => p.id === item.productoId)

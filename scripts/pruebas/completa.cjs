@@ -1,9 +1,9 @@
 /**
  * `pnpm prueba:completa` — todas las baterías de las sesiones 5 a 8: cobro, órdenes, permisos,
- * asignaciones y pérdidas, stock, y el sondeo agrupado (sesión 10). Las carreras son de 3 rondas como máximo.
+ * asignaciones y pérdidas, stock, el sondeo agrupado (sesión 10) y el KDS con el estado de la orden y la matriz de ítems por rol (sesión 13). Las carreras son de 3 rondas como máximo.
  *
  * Para correr solo una parte (p. ej. si una sesión tocó cobro, caja o stock):
- *   pnpm prueba:completa --modulo=stock          (también: cobro, ordenes, permisos, asignaciones, sondeo)
+ *   pnpm prueba:completa --modulo=stock          (también: cobro, ordenes, permisos, asignaciones, sondeo, kds)
  *   pnpm prueba:completa --modulo=cobro,stock
  * Requiere el servidor levantado (ver lib.cjs). Todo lo creado queda marcado "prueba prueba:completa <fecha>".
  */
@@ -17,6 +17,7 @@ const MODULOS = {
   asignaciones: require('./asignaciones.cjs'),
   sondeo: require('./sondeo.cjs'),
   unidades: require('./unidades.cjs'),
+  kds: require('./kds.cjs'),
 }
 // `unidades` ya corre dentro de `stock` (la sesión 11 toca stock): solo se pide por nombre para correrlo solo.
 const SOLO_POR_NOMBRE = ['unidades']

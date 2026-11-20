@@ -65,6 +65,7 @@ export const REGLAS: readonly Regla[] = [
   { ruta: r('ordenes'), metodos: ['PATCH'], acceso: SALON_Y_COCINA },
   { ruta: r(`ordenes/${ID}`), metodos: ['PATCH'], acceso: SALON_Y_COCINA },
   { ruta: r('items-orden'), metodos: ['PATCH'], acceso: SALON_Y_COCINA },
+  { ruta: r('items-orden/estado'), metodos: ['POST'], acceso: SALON_Y_COCINA }, // varios ítems de una orden a un estado, todo o nada (sesión 13); la matriz por rol está en lib/items-reglas.ts
   { ruta: r('ordenes'), metodos: ['POST', 'DELETE'], acceso: SALON },
   { ruta: r('ordenes/enviar'), metodos: ['POST'], acceso: SALON }, // orden + ítems en una transacción (sesión 8)
   { ruta: r('items-orden'), metodos: ['POST', 'DELETE'], acceso: SALON },

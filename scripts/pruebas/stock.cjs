@@ -114,11 +114,11 @@ exports.correr = async function (ctx) {
   const y1 = (await enviar(maria, { orden_id: rd.json.orden.id, items: [it(f.pR, 3)] })).json.items[0]
   await api(ezio, 'PATCH', '/api/items-orden', { id: y1.id, estado_item: 'en_preparacion' })
   const sy0 = await L.stocks(ctx)
-  await api(maria, 'PATCH', '/api/items-orden', { id: y1.id, cantidad: 1 })
+  // Sesión 13 (F11): con la cocina preparando, el ítem ya no se edita (antes bajar no devolvía y subir descontaba la diferencia).
+  const eb = await api(maria, 'PATCH', '/api/items-orden', { id: y1.id, cantidad: 1 })
+  const es = await api(maria, 'PATCH', '/api/items-orden', { id: y1.id, cantidad: 4 })
   const sy1 = await L.stocks(ctx)
-  await api(maria, 'PATCH', '/api/items-orden', { id: y1.id, cantidad: 4 })
-  const sy2 = await L.stocks(ctx)
-  check('ítem en preparación: bajar no devuelve; subir descuenta solo lo que falta sobre lo ya consumido', sy1.A === sy0.A && sy2.A === sy1.A - 1 && sy2.B === sy1.B - 2 && eq(await L.K(ctx), kc2), [sy0, sy1, sy2])
+  check('ítem en preparación: bajar o subir la cantidad → 409 ITEM_YA_PREPARADO y el stock no se mueve', eb.status === 409 && es.status === 409 && eb.json.codigo === 'ITEM_YA_PREPARADO' && eq(sy1, sy0) && eq(await L.K(ctx), kc2), [eb.status, es.status, sy0, sy1])
   await L.limpiarMesas(ctx, [5])
   await L.reponer(ctx)
   const kb = await L.K(ctx)

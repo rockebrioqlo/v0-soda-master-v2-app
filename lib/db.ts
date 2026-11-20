@@ -12,6 +12,7 @@ import {
   type TipoDescuentoCobro,
 } from './cobro'
 import { ORIGENES_VALIDOS, esEstadoTerminal, type DestinoPatch } from './ordenes-reglas'
+import { ESTADOS_ITEM, ESTADOS_ITEM_EDITABLES, type EstadoItem } from './items-reglas'
 import { formatCurrency } from './helpers'
 
 // Lazy initialization to avoid build-time errors
@@ -451,6 +452,15 @@ const ERRORES_TX_ORDEN: Record<string, { status: number; mensaje: string }> = {
     status: 409,
     mensaje: 'La orden ya tiene cobros; usa un descuento de monto fijo',
   },
+  // Sesión 13: estado de los ítems y de la orden (B5, F11).
+  TRANSICION_ITEM_INVALIDA: {
+    status: 409,
+    mensaje: 'El ítem cambió de estado mientras tanto y ya no se puede pasar a ese estado. Se recargó la pantalla.',
+  },
+  ITEM_YA_PREPARADO: {
+    status: 409,
+    mensaje: 'Cocina ya empezó a preparar este ítem: no se puede cambiar su cantidad, extras ni notas. Bórralo y agrégalo de nuevo si hace falta.',
+  },
   // Sesión 11: inventario con unidad de compra y de consumo.
   INSUMO_NO_ENCONTRADO: { status: 404, mensaje: 'El insumo no existe o está dado de baja.' },
   CANTIDAD_INVALIDA: {
@@ -467,6 +477,74 @@ const ERRORES_TX_ORDEN: Record<string, { status: number; mensaje: string }> = {
 
 /** Estados de una orden que todavía se puede modificar (ni pagada, ni cancelada, ni perdida). */
 const ESTADOS_ORDEN_ACTIVA = ['pendiente', 'en_cocina', 'en_preparacion', 'listo', 'entregado', 'problema']
+
+let _estadoOrdenFnReady = false
+
+/**
+ * Sesión 13 (B5): `soda_master.recalcular_estado_orden(orden)` deja el estado de la orden según el
+ * peor estado de sus ítems (ver `lib/items-reglas.ts`) y devuelve `(estado_anterior, estado_nuevo)`.
+ * Es una función SQL para poder usarla DENTRO de `sql.transaction([...])` (el driver HTTP no deja
+ * decidir en JS entre statements): cualquier operación que cambie un ítem o el conjunto de ítems la
+ * agrega a su lote, con la orden ya bloqueada, y así todas calculan igual. Idempotente.
+ */
+async function ensureEstadoOrdenFuncion(): Promise<void> {
+  if (_estadoOrdenFnReady) return
+  await ensurePagoSchema()
+  const sql = getSql()
+  try {
+    await sql`
+      CREATE OR REPLACE FUNCTION soda_master.recalcular_estado_orden(p_orden uuid)
+      RETURNS TABLE(estado_anterior text, estado_nuevo text) LANGUAGE plpgsql AS $fn$
+      DECLARE
+        v_actual text;
+        v_nuevo text;
+      BEGIN
+        SELECT o.estado INTO v_actual FROM soda_master.ordenes o WHERE o.id = p_orden;
+        IF v_actual IS NULL THEN
+          RETURN;
+        END IF;
+        v_nuevo := v_actual;
+        IF v_actual IN ('en_cocina', 'en_preparacion', 'listo', 'entregado', 'problema') THEN
+          SELECT CASE
+                   WHEN COUNT(*) = 0 THEN NULL
+                   WHEN BOOL_OR(i.estado_item = 'problema') THEN 'problema'
+                   WHEN BOOL_OR(i.estado_item = 'en_preparacion') THEN 'en_preparacion'
+                   WHEN BOOL_OR(COALESCE(i.estado_item, 'pendiente') = 'pendiente') THEN 'en_cocina'
+                   WHEN BOOL_AND(i.estado_item = 'entregado') THEN 'entregado'
+                   ELSE 'listo'
+                 END
+            INTO v_nuevo
+            FROM soda_master.items_orden i WHERE i.orden_id = p_orden;
+          IF v_nuevo IS NULL THEN
+            v_nuevo := v_actual;
+          END IF;
+          IF v_nuevo <> v_actual THEN
+            UPDATE soda_master.ordenes SET estado = v_nuevo, updated_at = CURRENT_TIMESTAMP
+             WHERE id = p_orden;
+          END IF;
+        END IF;
+        estado_anterior := v_actual;
+        estado_nuevo := v_nuevo;
+        RETURN NEXT;
+      END
+      $fn$
+    `
+  } catch (err) {
+    // Dos instancias creándola a la vez: si ya existe, está bien.
+    const rows = (await sql`
+      SELECT 1 AS ok FROM pg_proc p
+      JOIN pg_namespace n ON n.oid = p.pronamespace
+      WHERE n.nspname = 'soda_master' AND p.proname = 'recalcular_estado_orden'
+    `) as any[]
+    if (rows.length === 0) throw err
+  }
+  _estadoOrdenFnReady = true
+}
+
+/** Statement que recalcula el estado de la orden (va DESPUÉS de bloquearla y de cambiar ítems). */
+function sentenciaRecalcularEstado(sql: Sql, ordenId: string) {
+  return sql`SELECT estado_anterior, estado_nuevo FROM soda_master.recalcular_estado_orden(${ordenId}::uuid)`
+}
 
 /** Traduce un aborto `SM409` de `assert_cobro` a `ErrorOrden`; otros errores se relanzan. */
 function traducirErrorTx(err: any, mensajes?: Record<string, string>): never {
@@ -3156,6 +3234,7 @@ export const db = {
   }): Promise<{ orden: Orden; items: ItemOrden[] }> {
     await ensureRecetasTables()
     await ensureOrdenesAtomicasSchema()
+    await ensureEstadoOrdenFuncion()
     const sql = getSql()
     if (Boolean(input.mesa_id) === Boolean(input.orden_id)) {
       throw new ErrorOrden('DATOS_INVALIDOS', 400, 'Indica la mesa (orden nueva) o la orden (agregar ítems), solo una.')
@@ -3273,7 +3352,6 @@ export const db = {
       if (filasMov.length > 0) {
         consultas.push(sentenciaMovimientos(sql, 'venta', ordenId, filasMov, 'Venta item'))
       }
-      const idxOrden = consultas.length
       consultas.push(sql`
         UPDATE soda_master.ordenes
         SET subtotal = ${calc.subtotal}, impuesto = ${calc.impuesto}, total = ${calc.total},
@@ -3281,8 +3359,12 @@ export const db = {
             enviado_a_cocina = CASE WHEN ${enviar}::boolean THEN TRUE ELSE enviado_a_cocina END,
             hora_envio = CASE WHEN ${enviar}::boolean THEN COALESCE(hora_envio, CURRENT_TIMESTAMP) ELSE hora_envio END,
             updated_at = CURRENT_TIMESTAMP
-        WHERE id = ${ordenId}::uuid
-        RETURNING *`)
+        WHERE id = ${ordenId}::uuid`)
+      // Sesión 13 (B5): con ítems nuevos pendientes, la orden vuelve a `en_cocina` (o conserva
+      // `problema` / `en_preparacion` si hay ítems en ese estado) y reaparece en el KDS.
+      consultas.push(sentenciaRecalcularEstado(sql, ordenId))
+      const idxOrden = consultas.length
+      consultas.push(sql`SELECT * FROM soda_master.ordenes WHERE id = ${ordenId}::uuid`)
       let res: any[][]
       try {
         res = (await sql.transaction(consultas)) as any[][]
@@ -3353,11 +3435,17 @@ export const db = {
       precio_manual?: boolean
       motivo?: string
     },
-    opts: { esAdmin?: boolean; usuario?: { id: string; nombre: string; rol: string } } = {},
+    opts: {
+      esAdmin?: boolean
+      usuario?: { id: string; nombre: string; rol: string }
+      /** Estados desde los que el rol puede pasar el ítem al `estado_item` pedido (matriz F11). */
+      origenesEstado?: readonly string[]
+    } = {},
   ) {
     await ensureItemEstadoSchema()
     await ensureItemPagoSchema()
     await ensureItemPrecioSchema()
+    await ensureEstadoOrdenFuncion()
     const sql = getSql()
 
     if (updates.precio_manual !== undefined && !opts.esAdmin) {
@@ -3376,12 +3464,17 @@ export const db = {
 
     let itemActualizado: ItemOrden | undefined
     if (!tocaMonto) {
-      const result = (await sql`
-        UPDATE soda_master.items_orden
-        SET estado_item = COALESCE(${updates.estado_item ?? null}::text, estado_item)
-        WHERE id = ${id}::uuid
-        RETURNING *
-      `) as any[]
+      if (updates.estado_item !== undefined) {
+        // Sesión 13: el cambio de estado (KDS, entrega) y el recálculo del estado de la orden van en
+        // una sola transacción con la orden bloqueada; es la misma función del POST bulk.
+        const r = await this.cambiarEstadoItems({
+          item_ids: [id],
+          estado_item: updates.estado_item as EstadoItem,
+          origenes: opts.origenesEstado ?? ESTADOS_ITEM,
+        })
+        return r.items[0]
+      }
+      const result = (await sql`SELECT * FROM soda_master.items_orden WHERE id = ${id}::uuid`) as any[]
       itemActualizado = result[0] as ItemOrden | undefined
       if (!itemActualizado) throw new ErrorItemOrden('ITEM_NO_ENCONTRADO', 404, 'El ítem no existe.')
     } else {
@@ -3524,6 +3617,19 @@ export const db = {
                       = ${redondear3(sumaRegistro)}::numeric,
                   'ORDEN_MODIFICADA')`,
           ]
+          // Sesión 13 (F11): cantidad, extras, notas y modificadores solo mientras cocina no empezó.
+          if (updates.cantidad !== undefined || tieneMods || tieneNotas) {
+            consultas.push(sql`SELECT soda_master.assert_cobro(
+                  COALESCE((SELECT estado_item FROM soda_master.items_orden WHERE id = ${id}::uuid), 'pendiente')
+                    = ANY(${[...ESTADOS_ITEM_EDITABLES]}::text[]),
+                  'ITEM_YA_PREPARADO')`)
+          }
+          if (updates.estado_item !== undefined) {
+            consultas.push(sql`SELECT soda_master.assert_cobro(
+                  COALESCE((SELECT estado_item FROM soda_master.items_orden WHERE id = ${id}::uuid), 'pendiente')
+                    = ANY(${[...(opts.origenesEstado ?? ESTADOS_ITEM)]}::text[]),
+                  'TRANSICION_ITEM_INVALIDA')`)
+          }
           if (hayDevolucion) {
             // La devolución solo vale si la cocina sigue sin tocar el ítem.
             consultas.push(sql`SELECT soda_master.assert_cobro(
@@ -3553,6 +3659,7 @@ export const db = {
           consultas.push(sql`UPDATE soda_master.ordenes
               SET subtotal = ${calc.subtotal}, impuesto = ${calc.impuesto}, total = ${calc.total}
               WHERE id = ${O}::uuid`)
+          if (updates.estado_item !== undefined) consultas.push(sentenciaRecalcularEstado(sql, O))
           try {
             return { res: (await sql.transaction(consultas)) as any[][], idx }
           } catch (err) {
@@ -3583,43 +3690,87 @@ export const db = {
       }
     }
 
-    // Sincronización del estado de la orden con el de sus items. Esto evita
-    // carreras del lado del cliente cuando el mesero marca múltiples items
-    // como entregados en rápida sucesión: el server es la única fuente de
-    // verdad de la transición listo → entregado de la orden completa.
-    if (itemActualizado?.orden_id && typeof updates.estado_item === 'string') {
-      await ensureOrdenEstadoSchema()
-      const items = (await sql`
-        SELECT estado_item FROM soda_master.items_orden
-        WHERE orden_id = ${itemActualizado.orden_id}
-      `) as Array<{ estado_item: string }>
-      if (items.length > 0) {
-        const todosEntregados = items.every((r) => r.estado_item === 'entregado')
-        const todosListos = items.every(
-          (r) => r.estado_item === 'listo' || r.estado_item === 'entregado',
-        )
-        const algunoProblema = items.some((r) => r.estado_item === 'problema')
-        const algunoEnPrep = items.some((r) => r.estado_item === 'en_preparacion')
-
-        let nuevoEstadoOrden: string | null = null
-        if (algunoProblema) nuevoEstadoOrden = 'problema'
-        else if (todosEntregados) nuevoEstadoOrden = 'entregado'
-        else if (todosListos) nuevoEstadoOrden = 'listo'
-        else if (algunoEnPrep) nuevoEstadoOrden = 'en_preparacion'
-
-        if (nuevoEstadoOrden) {
-          await sql`
-            UPDATE soda_master.ordenes
-            SET estado = ${nuevoEstadoOrden}, updated_at = CURRENT_TIMESTAMP
-            WHERE id = ${itemActualizado.orden_id}
-              AND estado NOT IN ('pagado','cancelado','perdida')
-              AND estado IS DISTINCT FROM ${nuevoEstadoOrden}
-          `
-        }
-      }
-    }
-
+    // Sesión 13 (B5): el estado de la orden ya se recalculó DENTRO de la transacción
+    // (`sentenciaRecalcularEstado`), con la orden bloqueada; ya no hay una segunda lectura aparte.
     return itemActualizado as ItemOrden
+  },
+
+  /**
+   * Cambia el `estado_item` de uno o varios ítems de UNA orden y recalcula el estado de la orden
+   * (sesión 13: B5, F11). Todo o nada, en una sola `sql.transaction`: bloqueo de la orden
+   * (`FOR UPDATE`), `assert_cobro` de orden activa (cocina y salón pueden mover ítems de una orden
+   * ya pagada mientras no esté cancelada ni perdida), de que los ítems existan y sean de esa orden
+   * y de que cada uno esté en un estado de origen válido para el rol (matriz de
+   * `lib/items-reglas.ts`; el mismo estado destino es idempotente), el `UPDATE` y
+   * `recalcular_estado_orden`. Dos estaciones sobre la misma orden se serializan en el bloqueo, así
+   * que el estado final siempre sale de TODOS los ítems. Lo usan `PATCH /api/items-orden` (un ítem)
+   * y `POST /api/items-orden/estado` (varios).
+   * Devuelve los ítems y `{ estado, estado_anterior }` de la orden.
+   */
+  async cambiarEstadoItems(input: {
+    orden_id?: string
+    item_ids: string[]
+    estado_item: EstadoItem
+    origenes: readonly string[]
+  }): Promise<{
+    items: ItemOrden[]
+    orden: { id: string; estado: string; estado_anterior: string }
+  }> {
+    await ensureItemEstadoSchema()
+    await ensureItemPagoSchema()
+    await ensureEstadoOrdenFuncion()
+    const sql = getSql()
+    const ids = Array.from(new Set(input.item_ids.map((i) => i.toLowerCase())))
+    let O = input.orden_id
+    if (!O) {
+      const f = (await sql`
+        SELECT orden_id FROM soda_master.items_orden WHERE id = ${ids[0]}::uuid
+      `) as any[]
+      if (!f[0]) throw new ErrorItemOrden('ITEM_NO_ENCONTRADO', 404, 'El ítem no existe.')
+      O = String(f[0].orden_id)
+    }
+    const orden = O
+    const n = ids.length
+    const destino = input.estado_item
+    // Una orden `pagado` (cobrada por adelantado) sigue admitiendo cambios de estado de cocina y
+    // entrega mientras no esté cancelada ni perdida.
+    const ordenAdmite = [...ESTADOS_ORDEN_ACTIVA, 'pagado']
+    let res: any[][]
+    try {
+      res = (await sql.transaction([
+        sql`SELECT id FROM soda_master.ordenes WHERE id = ${orden}::uuid FOR UPDATE`,
+        sql`SELECT soda_master.assert_cobro(
+              (SELECT COUNT(*) FROM soda_master.ordenes WHERE id = ${orden}::uuid) = 1,
+              'ORDEN_NO_ENCONTRADA')`,
+        sql`SELECT soda_master.assert_cobro(
+              (SELECT estado FROM soda_master.ordenes WHERE id = ${orden}::uuid) = ANY(${ordenAdmite}::text[]),
+              'ORDEN_NO_ACTIVA')`,
+        sql`SELECT soda_master.assert_cobro(
+              (SELECT COUNT(*) FROM soda_master.items_orden WHERE id = ANY(${ids}::uuid[])) = ${n}::int,
+              'ITEM_NO_ENCONTRADO')`,
+        sql`SELECT soda_master.assert_cobro(
+              (SELECT COUNT(*) FROM soda_master.items_orden
+                WHERE id = ANY(${ids}::uuid[]) AND orden_id = ${orden}::uuid) = ${n}::int,
+              'ITEM_AJENO')`,
+        sql`SELECT soda_master.assert_cobro(
+              NOT EXISTS (SELECT 1 FROM soda_master.items_orden
+                           WHERE id = ANY(${ids}::uuid[])
+                             AND NOT (COALESCE(estado_item, 'pendiente') = ANY(${[...input.origenes]}::text[]))),
+              'TRANSICION_ITEM_INVALIDA')`,
+        sql`UPDATE soda_master.items_orden SET estado_item = ${destino}::text
+            WHERE id = ANY(${ids}::uuid[]) RETURNING *`,
+        sentenciaRecalcularEstado(sql, orden),
+      ])) as any[][]
+    } catch (err) {
+      traducirErrorTx(err)
+    }
+    const filas = res[6] as ItemOrden[]
+    const porId = new Map(filas.map((f) => [String(f.id).toLowerCase(), f]))
+    const rec = res[7][0] as { estado_anterior: string; estado_nuevo: string }
+    return {
+      items: ids.map((i) => porId.get(i)!).filter(Boolean),
+      orden: { id: orden, estado: rec.estado_nuevo, estado_anterior: rec.estado_anterior },
+    }
   },
 
   /**
@@ -3641,6 +3792,7 @@ export const db = {
     await ensureItemPagoSchema()
     await ensurePagoSchema()
     await ensureOrdenesAtomicasSchema()
+    await ensureEstadoOrdenFuncion()
     const sql = getSql()
     const filas = (await sql`
       SELECT orden_id FROM soda_master.items_orden WHERE id = ${id}::uuid
@@ -3677,6 +3829,9 @@ export const db = {
           sql`UPDATE soda_master.ordenes
               SET subtotal = ${calc.subtotal}, impuesto = ${calc.impuesto}, total = ${calc.total}
               WHERE id = ${O}::uuid`,
+          // Sesión 13 (B5): sin el ítem borrado, la orden toma el estado de los que quedan
+          // (por ejemplo [listo, pendiente] sin el pendiente → `listo`). Sin ítems no cambia.
+          sentenciaRecalcularEstado(sql, O),
           // F20: si no queda nada por pagar y hubo cobros, la orden se cierra (mismo criterio
           // que el paso h de `crearPago`; la orden sigue bloqueada, así que ve lo confirmado)
           // B4/F25: al cerrarse así, `ordenes.total` queda como lo realmente cobrado (Σ pagos):
