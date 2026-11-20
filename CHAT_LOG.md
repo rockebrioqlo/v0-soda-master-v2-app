@@ -234,3 +234,4 @@
   - **C10 agregado al lote de la sesión 14:** el "50.000" del fondo de caja es texto de ejemplo y abre con $0 si no se escribe; mismo patrón en "Efectivo recibido" de Pagos (visto) y en el efectivo contado del cierre (no verificado).
   - **A4 sube de prioridad:** con el límite de la sesión 4 el KDS se pausa a sí mismo hasta 120 s (`lib/pausa-limite.ts`). Se agregó P6 en "Antes de producción final": no declarar el sistema listo sin la sesión 10 cerrada.
   - Solo documentación; no se tocó código.
+  - **C11 agregado al lote de la sesión 14 (pedido del usuario):** `mapUsuario` pasa de lista de exclusión a lista blanca, y `pinHash`/`pin_hash` salen del tipo público `Usuario`. F16 ya no dice "mantener los `SELECT` con columnas explícitas". No se tocó código en esta sesión.
