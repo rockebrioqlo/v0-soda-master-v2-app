@@ -259,13 +259,14 @@ Tareas que se dejan a propósito para el final, por decisión del usuario.
 | P2 | **Vaciar datos antes de salir a producción:** script que borre los datos de prueba (órdenes, pagos, caja, mermas, notificaciones, etc.) **sin borrar las tablas**, y deje lo que el local necesita (configuración, usuarios reales, productos y recetas definitivos, según se decida). Ejecutarlo solo con confirmación explícita del usuario. | Sonnet 5.5 |
 | P3 | **Primer admin en una base de producción vacía, sin PINs demo:** `POST /api/seed` crea 5 usuarios con PINs conocidos (1234, 2222…), así que no sirve para producción. Crear un camino propio (por ejemplo un script local `pnpm crear-admin` que pida email, nombre y PIN por consola, valide el PIN y lo guarde con bcrypt, y se niegue a correr si ya existe un admin). Los productos, mesas y recetas reales se cargan después desde la app. **Regla:** el seed (y este script) en producción solo se corre desde local contra la base de producción, con `DATABASE_URL` de producción en `.env.local` y `PERMITIR_SEED=true` solo mientras dure; en Vercel producción las rutas de seed están bloqueadas siempre (`VERCEL_ENV=production`) y `PERMITIR_SEED` nunca se configura en Vercel. Anotado en sesión 2; no ejecutado. **Antes de pasar a producción con el cliente es obligatorio configurar `ACCESOS_RAPIDOS=false` en Vercel** (sesión 3: los accesos rápidos del login salen de `GET /api/auth/accesos-rapidos`, que con esa variable devuelve una lista vacía y la pantalla oculta el bloque). No ejecutado. | Sonnet 5.5 |
 | P4 | **Reglas de Vercel WAF para el límite por IP y de peticiones anónimas** (las crea el usuario en el dashboard; reglas y números en `README.md`, "Rate limiting"): 60/min anónimas, 1.500/min por IP con sesión, 300/min rutas públicas, 120/min login. Probarlas primero en modo Log. | Usuario |
+| P5 | **Credenciales de Neon y Vercel (a cargo del usuario, solo al salir a producción):** rotar la contraseña de Neon, borrar `variables.txt` y revisar la variable `POSTGRES_URL` marcada "Needs Attention" en Vercel (la app usa `DATABASE_URL`). Durante el desarrollo no se toca. | Usuario |
 
 ---
 
 ## 6. Pendientes del usuario
 
 - ~~Entregar `DATABASE_URL` de Neon~~ ✅ (sesión 1, `.env.local` creado).
-- Borrar `variables.txt` y, recomendado, rotar la contraseña de Neon.
+- Credenciales de Neon y `variables.txt`: se atienden al salir a producción (P5), no ahora.
 - Confirmar si el cliente de prueba sigue usando la app en producción (afecta cuándo se cierran las rutas abiertas). Las rutas de seed quedan cerradas en cuanto se haga merge de la sesión 2 a `main`.
 - Decidir si el objetivo es un POS para un local o un SaaS multi-tenant.
 - ~~**Decidir el IVA en la boleta (sesión 5)**~~ ✅ **Decidido por el usuario (19-11-2026): precios con IVA incluido.** Hoy los precios de la carta se tratan como IVA incluido (el total es el precio menos el descuento, que es lo que mostraba la boleta). Si el IVA debe sumarse sobre el precio, se cambia con `precios_incluyen_iva = false` en `configuracion` (sin código). Ver F7.
