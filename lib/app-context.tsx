@@ -13,6 +13,7 @@ import {
   initialConfiguracion,
 } from './initial-data'
 import { showToast } from '@/components/toast'
+import { errorDeRespuesta } from '@/lib/api-error'
 import { enPausaPorLimite, registrarLimite, segundosDePausa } from '@/lib/pausa-limite'
 
 type PageType = 'dashboard' | 'mesas' | 'pos' | 'kds' | 'inventario' | 'finanzas' | 'usuarios' | 'pagos' | 'caja' | 'mermas' | 'reportes' | 'configuracion'
@@ -190,7 +191,7 @@ interface AppContextType {
   updateOrden: (id: string, updates: any) => Promise<void>
   enviarOrdenACocina: (ordenId: string) => Promise<void>
   crearItemOrden: (item: any) => Promise<any>
-  actualizarItemOrden: (id: string, updates: any) => Promise<void>
+  actualizarItemOrden: (id: string, updates: any) => Promise<any>
   eliminarItemOrden: (id: string) => Promise<void>
   recargarOrdenes: () => Promise<void>
   recargarMesas: () => Promise<void>
@@ -730,28 +731,18 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     }
   }, [])
 
+  // Falla con `ErrorApi` (mensaje real, estado y código del servidor): quien
+  // llama decide el aviso (el POS muestra uno accionable si falta el permiso).
   const crearOrden = useCallback(async (orden: any) => {
-    try {
-      const res = await fetch('/api/ordenes', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(orden),
-      })
-      if (res.ok) {
-        const newOrden = await res.json()
-        // Don't dispatch ADD_COMANDA here — pos-page.tsx manages comanda state
-        // after getting back the Neon id and doing UPDATE_COMANDA itself
-        return newOrden
-      }
-      const err = await res.json().catch(() => ({}))
-      throw new Error(err?.error || 'Error al crear orden')
-    } catch (error) {
-      console.error('Error creating orden:', error)
-      if (error instanceof Error) {
-        showToast(error.message, 'error')
-      }
-      throw error
-    }
+    const res = await fetch('/api/ordenes', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(orden),
+    })
+    if (!res.ok) throw await errorDeRespuesta(res, 'Error al crear orden')
+    // Don't dispatch ADD_COMANDA here — pos-page.tsx manages comanda state
+    // after getting back the Neon id and doing UPDATE_COMANDA itself
+    return await res.json()
   }, [])
 
   const updateOrden = useCallback(async (id: string, updates: any) => {
@@ -761,10 +752,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       body: JSON.stringify({ id, ...updates }),
     })
     if (!res.ok) {
-      const data = await res.json().catch(() => ({}))
-      const msg = data?.error || `Error ${res.status} actualizando orden`
-      console.error('Error updating orden:', msg, data)
-      throw new Error(msg)
+      const err = await errorDeRespuesta(res, 'No se pudo actualizar la orden')
+      console.error('Error updating orden:', err.message)
+      throw err
     }
     dispatch({
       type: 'UPDATE_COMANDA',
@@ -779,13 +769,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ id: ordenId, action: 'enviar_cocina' }),
       })
-      if (res.ok) {
-        const orden = await res.json()
-        dispatch({ type: 'UPDATE_COMANDA', payload: orden })
-        showToast('Orden enviada a cocina', 'success')
-      }
+      if (!res.ok) throw await errorDeRespuesta(res, 'No se pudo enviar la orden a cocina')
+      const orden = await res.json()
+      dispatch({ type: 'UPDATE_COMANDA', payload: orden })
+      showToast('Orden enviada a cocina', 'success')
     } catch (error) {
       console.error('Error sending to kitchen:', error)
+      showToast(error instanceof Error ? error.message : 'No se pudo enviar la orden a cocina', 'error')
     }
   }, [])
 
@@ -820,25 +810,16 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     }
   }, [state.comandas])
 
+  // Devuelve el ítem tal como quedó en la base: `precio_unitario` es el que
+  // calculó el servidor (el navegador ya no manda precio).
   const crearItemOrden = useCallback(async (item: any) => {
-    try {
-      const res = await fetch('/api/items-orden', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(item),
-      })
-      if (res.ok) {
-        return await res.json()
-      }
-      const err = await res.json().catch(() => ({}))
-      throw new Error(err?.error || 'Error al crear item')
-    } catch (error) {
-      console.error('Error creating item:', error)
-      if (error instanceof Error) {
-        showToast(error.message, 'error')
-      }
-      throw error
-    }
+    const res = await fetch('/api/items-orden', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(item),
+    })
+    if (!res.ok) throw await errorDeRespuesta(res, 'Error al crear item')
+    return await res.json()
   }, [])
 
   const actualizarItemOrden = useCallback(async (id: string, updates: any) => {
@@ -848,23 +829,21 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       body: JSON.stringify({ id, ...updates }),
     })
     if (!res.ok) {
-      const data = await res.json().catch(() => ({}))
-      const msg = data?.error || `Error ${res.status} actualizando ítem`
-      console.error('Error updating item:', msg, data)
-      throw new Error(msg)
+      const err = await errorDeRespuesta(res, 'No se pudo actualizar el ítem')
+      console.error('Error updating item:', err.message)
+      throw err
     }
+    // El ítem como quedó en la base (con el precio calculado por el servidor).
+    return await res.json().catch(() => null)
   }, [])
 
   const eliminarItemOrden = useCallback(async (id: string) => {
-    try {
-      await fetch('/api/items-orden', {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id }),
-      })
-    } catch (error) {
-      console.error('Error deleting item:', error)
-    }
+    const res = await fetch('/api/items-orden', {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id }),
+    })
+    if (!res.ok) throw await errorDeRespuesta(res, 'No se pudo eliminar el ítem')
   }, [])
 
   const recargarUsuarios = useCallback(async () => {

@@ -1,5 +1,7 @@
 import { db } from '@/lib/db'
-import { requireSesion } from '@/lib/sesion'
+import { esAdminSesion, requireSesion } from '@/lib/sesion'
+import { manejarPatchOrden } from '@/lib/ordenes-patch'
+import { IdSchema, OrdenPostSchema, leerBody, respuestaDeError } from '@/lib/ordenes-http'
 
 export async function GET(request: Request) {
   try {
@@ -43,49 +45,47 @@ export async function POST(request: Request) {
   try {
     const s = await requireSesion(request, ['admin', 'mesero', 'cajero'])
     if (!s.ok) return s.respuesta
-    const orden = await request.json()
+    const parsed = await leerBody(request, OrdenPostSchema, 'Datos de la orden')
+    if (!parsed.ok) return parsed.respuesta
     // Quien abre la comanda es el usuario de la sesión: crearOrden usa este
-    // id para decidir si un cajero puede abrir mesa (apertura_mesa).
-    const newOrden = await db.crearOrden({ ...orden, usuario_id: s.usuario.id })
+    // id para decidir si un cajero puede abrir mesa (apertura_mesa). Los
+    // montos arrancan en 0 y los calcula el servidor al agregar ítems.
+    const newOrden = await db.crearOrden({
+      mesa_id: parsed.datos.mesa_id,
+      usuario_id: s.usuario.id,
+      estado: parsed.datos.estado,
+      notas: parsed.datos.notas,
+    })
     return Response.json(newOrden)
   } catch (error) {
+    const resp = respuestaDeError(error)
+    if (resp) return resp
     console.error('Create orden error:', error)
-    if (error instanceof Error && error.message.includes('comanda activa')) {
-      return Response.json({ error: error.message }, { status: 409 })
-    }
     return Response.json({ error: 'Error en servidor' }, { status: 500 })
   }
 }
 
+// Allowlist de campos, rol y transición de estado: ver lib/ordenes-patch.ts.
 export async function PATCH(request: Request) {
-  try {
-    const { id, action, ...updates } = await request.json()
-    if (!id) {
-      return Response.json({ error: 'ID requerido' }, { status: 400 })
-    }
-    
-    if (action === 'enviar_cocina') {
-      const orden = await db.enviarOrdenACocina(id)
-      return Response.json(orden)
-    }
-    
-    const orden = await db.actualizarOrden(id, updates)
-    return Response.json(orden)
-  } catch (error) {
-    console.error('Update orden error:', error)
-    return Response.json({ error: 'Error en servidor' }, { status: 500 })
-  }
+  return manejarPatchOrden(request)
 }
 
 export async function DELETE(request: Request) {
   try {
-    const { id } = await request.json()
-    if (!id) {
-      return Response.json({ error: 'ID requerido' }, { status: 400 })
-    }
-    await db.eliminarOrden(id)
+    const s = await requireSesion(request, ['admin', 'mesero', 'cajero'])
+    if (!s.ok) return s.respuesta
+    const parsed = await leerBody(request, IdSchema, 'Datos de la orden')
+    if (!parsed.ok) return parsed.respuesta
+    await db.eliminarOrden(parsed.datos.id, {
+      id: s.usuario.id,
+      nombre: s.usuario.nombre,
+      rol: s.usuario.rol,
+      esAdmin: esAdminSesion(s.usuario),
+    })
     return Response.json({ success: true })
   } catch (error) {
+    const resp = respuestaDeError(error)
+    if (resp) return resp
     console.error('Delete orden error:', error)
     return Response.json({ error: 'Error en servidor' }, { status: 500 })
   }

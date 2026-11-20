@@ -11,6 +11,7 @@ import {
   type PropinaCobro,
   type TipoDescuentoCobro,
 } from './cobro'
+import { ORIGENES_VALIDOS, esEstadoTerminal, type DestinoPatch } from './ordenes-reglas'
 
 // Lazy initialization to avoid build-time errors
 let _sql: NeonQueryFunction<false, false> | null = null
@@ -359,6 +360,70 @@ export class ErrorItemOrden extends Error {
     this.codigo = codigo
     this.status = status
   }
+}
+
+/**
+ * Error de negocio de órdenes (sesión 6): lleva el estado HTTP y un código
+ * estable para que la interfaz pueda mostrar un mensaje accionable.
+ */
+export class ErrorOrden extends Error {
+  codigo: string
+  status: number
+  constructor(codigo: string, status: number, mensaje: string) {
+    super(mensaje)
+    this.name = 'ErrorOrden'
+    this.codigo = codigo
+    this.status = status
+  }
+}
+
+/** Códigos que `assert_cobro` puede abortar dentro de las transacciones de órdenes e ítems. */
+const ERRORES_TX_ORDEN: Record<string, { status: number; mensaje: string }> = {
+  ORDEN_NO_ENCONTRADA: { status: 404, mensaje: 'La orden no existe.' },
+  ITEM_NO_ENCONTRADO: { status: 404, mensaje: 'El ítem no existe.' },
+  ORDEN_NO_ACTIVA: {
+    status: 409,
+    mensaje: 'La orden ya no está activa (pagada, cancelada o perdida) y no se puede modificar.',
+  },
+  ORDEN_CON_ITEMS_PAGADOS: {
+    status: 409,
+    mensaje: 'La orden tiene ítems pagados: no se puede cancelar ni borrar.',
+  },
+  ORDEN_AJENA: {
+    status: 403,
+    mensaje: 'Solo el administrador puede borrar una orden abierta por otra persona.',
+  },
+  ORDEN_CON_ITEMS_AVANZADOS: {
+    status: 409,
+    mensaje: 'La cocina ya empezó a preparar esta orden: solo el administrador puede borrarla.',
+  },
+  ITEM_PAGADO: { status: 409, mensaje: 'Este ítem ya fue pagado y no se puede modificar.' },
+}
+
+/** Traduce un aborto `SM409` de `assert_cobro` a `ErrorOrden`; otros errores se relanzan. */
+function traducirErrorTx(err: any, mensajes?: Record<string, string>): never {
+  const texto = `${err?.message ?? ''} ${err?.code ?? ''}`
+  if (err?.code === 'SM409' || texto.includes('SM409')) {
+    const codigo = Object.keys(ERRORES_TX_ORDEN).find((c) => texto.includes(c))
+    if (codigo) {
+      const def = ERRORES_TX_ORDEN[codigo]
+      throw new ErrorOrden(codigo, def.status, mensajes?.[codigo] ?? def.mensaje)
+    }
+  }
+  throw err
+}
+
+let _itemPrecioReady = false
+
+/** `items_orden.precio_manual`: el admin fijó el precio a mano (no se recalcula al editar extras). */
+async function ensureItemPrecioSchema(): Promise<void> {
+  if (_itemPrecioReady) return
+  const sql = getSql()
+  await sql`
+    ALTER TABLE soda_master.items_orden
+    ADD COLUMN IF NOT EXISTS precio_manual BOOLEAN NOT NULL DEFAULT FALSE
+  `
+  _itemPrecioReady = true
 }
 
 /** Error de negocio del cobro: la ruta lo traduce a su estado HTTP. */
@@ -1038,6 +1103,27 @@ function mapIngredienteInsumo(row: any) {
     costo_unitario: Number(row.costo_unitario) || 0,
     tipo: row.tipo || 'comida',
     activo: row.activo !== false,
+  }
+}
+
+/**
+ * Reescribe `ingredientesEspeciales` del JSON de `notas_especiales` con los
+ * nombres y costos de la base (sesión 6): lo que muestran POS, cocina y
+ * boleta no puede traer un costo inventado por el navegador. Si las notas no
+ * son un objeto JSON se devuelven tal cual.
+ */
+function normalizarMetadataExtras(
+  notas: string | null | undefined,
+  extras: Array<{ id: string; nombre: string; costoAdicional: number }>,
+): string | null | undefined {
+  if (typeof notas !== 'string' || !notas.trim().startsWith('{')) return notas
+  try {
+    const meta = JSON.parse(notas)
+    if (!meta || typeof meta !== 'object' || Array.isArray(meta)) return notas
+    meta.ingredientesEspeciales = extras
+    return JSON.stringify(meta)
+  } catch {
+    return notas
   }
 }
 
@@ -1779,9 +1865,24 @@ export const db = {
   },
 
   // Órdenes
-  async crearOrden(orden: Omit<Orden, 'id' | 'created_at' | 'updated_at' | 'numero_orden'>) {
+  async crearOrden(orden: {
+    mesa_id: string
+    /** Siempre el usuario de la sesión (la ruta lo pone; nunca viene del body). */
+    usuario_id: string
+    estado?: 'pendiente' | 'en_cocina'
+    notas?: string | null
+  }) {
     const sql = getSql()
-    const enviado = Boolean((orden as any).enviado_a_cocina)
+    const estadoInicial = orden.estado === 'pendiente' ? 'pendiente' : 'en_cocina'
+    // `enviado_a_cocina` y `hora_envio` los decide el servidor según el estado.
+    const enviado = estadoInicial === 'en_cocina'
+
+    const mesaRows = (await sql`
+      SELECT 1 FROM soda_master.mesas WHERE id = ${orden.mesa_id}::uuid
+    `) as any[]
+    if (mesaRows.length === 0) {
+      throw new ErrorOrden('MESA_NO_ENCONTRADA', 404, 'La mesa no existe.')
+    }
 
     // Control de acceso por rol: meseros/administradores/admins pueden
     // abrir mesa sin restricción. Para que un CAJERO pueda hacerlo
@@ -1807,8 +1908,10 @@ export const db = {
       if (rol === 'cajero' && !tieneRolApertura) {
         const permitido = await this.tienePermisoEspecial(orden.usuario_id, 'apertura_mesa')
         if (!permitido) {
-          throw new Error(
-            'El cajero no tiene un permiso vigente para abrir mesas. Pedile al administrador que se lo otorgue (o configure rol adicional permanente).',
+          throw new ErrorOrden(
+            'PERMISO_APERTURA_MESA',
+            403,
+            'El cajero no tiene un permiso vigente para abrir mesas. Pídele al administrador que le otorgue un permiso temporal (o un rol adicional de mesero permanente).',
           )
         }
       }
@@ -1852,11 +1955,11 @@ export const db = {
       SELECT
         ${orden.mesa_id},
         ${orden.usuario_id},
-        ${orden.estado},
-        ${orden.subtotal},
-        ${orden.impuesto},
-        ${orden.total},
-        ${orden.notas},
+        ${estadoInicial},
+        0,
+        0,
+        0,
+        ${orden.notas ?? ''},
         ${enviado},
         ${enviado ? new Date().toISOString() : null}
       FROM lock_mesa
@@ -1864,7 +1967,7 @@ export const db = {
       RETURNING *
     `
     if (!result[0]) {
-      throw new Error('Ya existe una comanda activa para esta mesa')
+      throw new ErrorOrden('COMANDA_ACTIVA', 409, 'Ya existe una comanda activa para esta mesa')
     }
     return result[0] as Orden
   },
@@ -2098,65 +2201,335 @@ export const db = {
     return result as Orden[]
   },
 
-  async actualizarOrden(id: string, updates: Partial<Orden>) {
+  /**
+   * Cambios de una orden desde el navegador (sesión 6: R3/A7). La ruta ya
+   * validó el body (zod) y que el rol pueda pedir ese destino; aquí se hace
+   * cumplir que la transición sea válida DESDE el estado actual, dentro del
+   * propio UPDATE (atómico). `enviado_a_cocina` y `hora_envio` los decide el
+   * servidor. Los montos no se tocan aquí: salen de `recalcularTotalesOrden`.
+   */
+  async actualizarOrden(
+    id: string,
+    cambios: { estado?: DestinoPatch; notas?: string },
+    usuario: { id: string; nombre: string; rol: string },
+  ) {
     await ensureOrdenEstadoSchema()
+    if (cambios.estado === 'cancelado') {
+      return this.cancelarOrden(id, cambios.notas ?? '', usuario)
+    }
     const sql = getSql()
-    const result = await sql`
-      UPDATE soda_master.ordenes 
-      SET estado = COALESCE(${updates.estado}, estado),
-          subtotal = COALESCE(${updates.subtotal}, subtotal),
-          impuesto = COALESCE(${updates.impuesto}, impuesto),
-          total = COALESCE(${updates.total}, total),
-          notas = COALESCE(${updates.notas}, notas),
-          enviado_a_cocina = COALESCE(${updates.enviado_a_cocina}, enviado_a_cocina),
-          hora_envio = COALESCE(${updates.hora_envio}, hora_envio),
+    const hacia = cambios.estado ?? null
+    const notas = cambios.notas ?? null
+    const origenes = hacia
+      ? [...ORIGENES_VALIDOS[hacia]]
+      : ['pendiente', 'en_cocina', 'en_preparacion', 'listo', 'entregado', 'problema']
+    const result = (await sql`
+      UPDATE soda_master.ordenes
+      SET estado = COALESCE(${hacia}::text, estado),
+          notas = COALESCE(${notas}::text, notas),
+          enviado_a_cocina = CASE WHEN ${hacia}::text = 'en_cocina' THEN TRUE ELSE enviado_a_cocina END,
+          hora_envio = CASE WHEN ${hacia}::text = 'en_cocina'
+                            THEN COALESCE(hora_envio, CURRENT_TIMESTAMP) ELSE hora_envio END,
           updated_at = CURRENT_TIMESTAMP
-      WHERE id = ${id}
+      WHERE id = ${id}::uuid AND estado = ANY(${origenes}::text[])
       RETURNING *
-    `
-    return result[0] as Orden
+    `) as any[]
+    if (result[0]) return result[0] as Orden
+
+    const actual = (await sql`
+      SELECT estado FROM soda_master.ordenes WHERE id = ${id}::uuid
+    `) as any[]
+    if (!actual[0]) throw new ErrorOrden('ORDEN_NO_ENCONTRADA', 404, 'La orden no existe.')
+    if (!hacia || esEstadoTerminal(actual[0].estado)) {
+      throw new ErrorOrden(
+        'ORDEN_NO_ACTIVA',
+        409,
+        `La orden está ${actual[0].estado} y no se puede modificar.`,
+      )
+    }
+    throw new ErrorOrden(
+      'TRANSICION_INVALIDA',
+      409,
+      `No se puede pasar una orden de "${actual[0].estado}" a "${hacia}".`,
+    )
   },
 
-  async enviarOrdenACocina(id: string) {
+  /**
+   * Cancelar una orden (solo admin, la ruta lo exige). Va en una transacción
+   * con el mismo patrón del cobro: se bloquea la fila de la orden (FOR UPDATE)
+   * y recién entonces se verifican estado e ítems pagados. Un cobro parcial
+   * concurrente hace commit antes o después, nunca "en medio": nunca queda
+   * una orden cancelada con ítems pagados.
+   */
+  async cancelarOrden(
+    id: string,
+    motivo: string,
+    usuario: { id: string; nombre: string; rol: string },
+  ) {
+    await ensureItemPagoSchema()
+    await ensureOrdenEstadoSchema()
+    await ensurePagoSchema()
     const sql = getSql()
-    const result = await sql`
-      UPDATE soda_master.ordenes 
-      SET estado = 'en_cocina',
-          enviado_a_cocina = true,
-          hora_envio = CURRENT_TIMESTAMP,
-          updated_at = CURRENT_TIMESTAMP
-      WHERE id = ${id}
-      RETURNING *
-    `
-    return result[0] as Orden
+    const O = id
+    const origenes = [...ORIGENES_VALIDOS.cancelado]
+    let resultados: any[][] = []
+    try {
+      resultados = (await sql.transaction([
+        sql`SELECT id FROM soda_master.ordenes WHERE id = ${O}::uuid FOR UPDATE`,
+        sql`SELECT soda_master.assert_cobro(
+              (SELECT COUNT(*) FROM soda_master.ordenes WHERE id = ${O}::uuid) = 1,
+              'ORDEN_NO_ENCONTRADA')`,
+        sql`SELECT soda_master.assert_cobro(
+              (SELECT estado FROM soda_master.ordenes WHERE id = ${O}::uuid) = ANY(${origenes}::text[]),
+              'ORDEN_NO_ACTIVA')`,
+        sql`SELECT soda_master.assert_cobro(
+              NOT EXISTS (SELECT 1 FROM soda_master.items_orden WHERE orden_id = ${O}::uuid AND pagado = TRUE),
+              'ORDEN_CON_ITEMS_PAGADOS')`,
+        sql`UPDATE soda_master.ordenes
+            SET estado = 'cancelado', notas = ${motivo}, updated_at = CURRENT_TIMESTAMP
+            WHERE id = ${O}::uuid
+            RETURNING *`,
+      ])) as any[][]
+    } catch (err) {
+      traducirErrorTx(err, {
+        ORDEN_CON_ITEMS_PAGADOS: 'La orden tiene ítems pagados: no se puede cancelar.',
+      })
+    }
+    const orden = resultados[resultados.length - 1][0] as Orden
+    await this.registrarAuditoriaAdmin({
+      usuario_id: usuario.id,
+      usuario_nombre: usuario.nombre,
+      usuario_rol: usuario.rol,
+      accion: 'cancelar_orden',
+      entidad: 'orden',
+      entidad_id: id,
+      detalles: { motivo },
+    }).catch((e) => console.error('[auditoria] cancelar_orden:', e))
+    return orden
   },
 
-  async eliminarOrden(id: string) {
+  /**
+   * Borrar una orden con sus ítems. Transacción con bloqueo de la orden:
+   * nunca se borra una orden con ítems pagados ni una orden histórica
+   * (pagada, cancelada o perdida), tampoco el admin. Un mesero o cajero solo
+   * borra una orden que abrió él mismo y cuyos ítems siguen en 'pendiente'
+   * (el rollback del POS cuando falla el envío a cocina).
+   */
+  async eliminarOrden(
+    id: string,
+    usuario: { id: string; nombre: string; rol: string; esAdmin: boolean },
+  ) {
+    await ensureItemPagoSchema()
+    await ensurePagoSchema()
     const sql = getSql()
-    await sql`DELETE FROM soda_master.items_orden WHERE orden_id = ${id}`
-    await sql`DELETE FROM soda_master.ordenes WHERE id = ${id}`
+    const O = id
+    const origenes = [...ORIGENES_VALIDOS.cancelado]
+    const consultas: any[] = [
+      sql`SELECT id FROM soda_master.ordenes WHERE id = ${O}::uuid FOR UPDATE`,
+      sql`SELECT soda_master.assert_cobro(
+            (SELECT COUNT(*) FROM soda_master.ordenes WHERE id = ${O}::uuid) = 1,
+            'ORDEN_NO_ENCONTRADA')`,
+      sql`SELECT soda_master.assert_cobro(
+            (SELECT estado FROM soda_master.ordenes WHERE id = ${O}::uuid) = ANY(${origenes}::text[]),
+            'ORDEN_NO_ACTIVA')`,
+      sql`SELECT soda_master.assert_cobro(
+            NOT EXISTS (SELECT 1 FROM soda_master.items_orden WHERE orden_id = ${O}::uuid AND pagado = TRUE),
+            'ORDEN_CON_ITEMS_PAGADOS')`,
+    ]
+    if (!usuario.esAdmin) {
+      consultas.push(
+        sql`SELECT soda_master.assert_cobro(
+              (SELECT usuario_id FROM soda_master.ordenes WHERE id = ${O}::uuid) = ${usuario.id}::uuid,
+              'ORDEN_AJENA')`,
+        sql`SELECT soda_master.assert_cobro(
+              NOT EXISTS (SELECT 1 FROM soda_master.items_orden
+                           WHERE orden_id = ${O}::uuid AND estado_item <> 'pendiente'),
+              'ORDEN_CON_ITEMS_AVANZADOS')`,
+      )
+    }
+    consultas.push(
+      sql`DELETE FROM soda_master.items_orden WHERE orden_id = ${O}::uuid`,
+      // `descuentos.orden_id` no tiene ON DELETE CASCADE: sin esto, una orden con descuento no se podía borrar.
+      sql`DELETE FROM soda_master.descuentos WHERE orden_id = ${O}::uuid`,
+      sql`DELETE FROM soda_master.ordenes WHERE id = ${O}::uuid`,
+    )
+    try {
+      await sql.transaction(consultas)
+    } catch (err) {
+      traducirErrorTx(err)
+    }
+    if (usuario.esAdmin) {
+      await this.registrarAuditoriaAdmin({
+        usuario_id: usuario.id,
+        usuario_nombre: usuario.nombre,
+        usuario_rol: usuario.rol,
+        accion: 'eliminar_orden',
+        entidad: 'orden',
+        entidad_id: id,
+      }).catch((e) => console.error('[auditoria] eliminar_orden:', e))
+    }
     return { success: true }
   },
 
+  /**
+   * Recalcula subtotal, impuesto y total de la orden desde sus ítems, el
+   * descuento vigente y la configuración (sesión 6). Mismas reglas que el
+   * cobro (`calcularCobro`): subtotal = suma bruta de ítems; total = con el
+   * descuento aplicado y sin propina; impuesto = IVA (desglosado si los
+   * precios lo incluyen). El navegador ya no manda ninguno de los tres.
+   * Se llama tras crear/editar/eliminar un ítem y al aplicar un descuento.
+   */
+  async recalcularTotalesOrden(ordenId: string) {
+    const sql = getSql()
+    const [itemRows, descRows, cfgRows] = (await Promise.all([
+      sql`SELECT cantidad, precio_unitario FROM soda_master.items_orden WHERE orden_id = ${ordenId}::uuid`,
+      sql`
+        SELECT tipo, valor FROM soda_master.descuentos
+        WHERE orden_id = ${ordenId}::uuid ORDER BY created_at DESC LIMIT 1
+      `,
+      sql`
+        SELECT clave, valor, tipo FROM soda_master.configuracion
+        WHERE clave IN ('tasa_impuesto','impuesto_habilitado','propinas_habilitadas','precios_incluyen_iva')
+      `,
+    ])) as any[][]
+    const cfg: Record<string, any> = {}
+    for (const r of cfgRows) cfg[r.clave] = parseConfigValor(r.valor, r.tipo)
+    const items = itemRows.map((r) => ({
+      precio: Number(r.precio_unitario) || 0,
+      cantidad: Number(r.cantidad) || 0,
+    }))
+    const desc = descRows[0]
+    const calc = calcularCobro({
+      items,
+      subtotalOrden: items.reduce((s, i) => s + i.precio * i.cantidad, 0),
+      descuento: desc
+        ? { tipo: desc.tipo as TipoDescuentoCobro, valor: Number(desc.valor) || 0 }
+        : { tipo: null, valor: 0 },
+      config: {
+        impuestoHabilitado: cfg.impuesto_habilitado === true,
+        tasaImpuesto: Number(cfg.tasa_impuesto) || 0,
+        propinasHabilitadas: cfg.propinas_habilitadas !== false,
+        preciosIncluyenIva: cfg.precios_incluyen_iva !== false,
+      },
+    })
+    await sql`
+      UPDATE soda_master.ordenes
+      SET subtotal = ${calc.subtotal}, impuesto = ${calc.impuesto}, total = ${calc.total}
+      WHERE id = ${ordenId}::uuid
+    `
+    return calc
+  },
+
+  /**
+   * Precio de un ítem calculado por el servidor (sesión 6, F8):
+   * `productos.precio` + Σ costo_adicional × cantidad de cada extra. Un extra
+   * es una línea `extra` de la receta activa del producto o un producto
+   * marcado como ingrediente especial; con su costo de la base, nunca el que
+   * mande el navegador. Un extra desconocido se rechaza (400). Variantes: el
+   * modelo de datos no las tiene (una "variante" real es un producto clonado
+   * con su propio precio), así que el precio base es el del producto.
+   */
+  async calcularPrecioItem(
+    productoId: string,
+    extras: { ingrediente_id: string; cantidad: number }[],
+  ): Promise<{
+    precio: number
+    extras: Array<{ id: string; nombre: string; costoAdicional: number }>
+  }> {
+    const sql = getSql()
+    const prod = (await sql`
+      SELECT precio FROM soda_master.productos WHERE id = ${productoId}::uuid
+    `) as any[]
+    if (!prod[0]) throw new ErrorOrden('PRODUCTO_NO_ENCONTRADO', 404, 'Producto no encontrado')
+    let precio = Number(prod[0].precio) || 0
+    const resueltos: Array<{ id: string; nombre: string; costoAdicional: number }> = []
+    if (extras.length > 0) {
+      const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+      const ids = Array.from(new Set(extras.map((e) => e.ingrediente_id)))
+      if (ids.some((id) => !UUID.test(id))) {
+        throw new ErrorOrden('EXTRA_INVALIDO', 400, 'Extra no válido para este producto.')
+      }
+      const [lineas, especiales] = (await Promise.all([
+        sql`
+          SELECT ri.ingrediente_id::text AS id, ri.costo_adicional,
+                 COALESCE(NULLIF(TRIM(ri.nombre_display), ''), i.nombre) AS nombre
+          FROM soda_master.receta_ingredientes ri
+          JOIN soda_master.recetas r ON r.id = ri.receta_id
+          JOIN soda_master.ingredientes i ON i.id = ri.ingrediente_id
+          WHERE r.producto_id = ${productoId}::uuid AND r.activo = true
+            AND ri.extra = true AND i.activo = true
+            AND ri.ingrediente_id = ANY(${ids}::uuid[])
+        `,
+        sql`
+          SELECT id::text AS id, nombre, costo_adicional
+          FROM soda_master.productos
+          WHERE id = ANY(${ids}::uuid[]) AND es_ingrediente_especial = true AND activo = true
+        `,
+      ])) as any[][]
+      const porId = new Map<string, { nombre: string; costo: number }>()
+      for (const e of especiales) {
+        porId.set(e.id, { nombre: e.nombre, costo: Number(e.costo_adicional) || 0 })
+      }
+      // Las líneas de receta mandan sobre un producto especial con el mismo id (no deberían coincidir).
+      for (const l of lineas) {
+        porId.set(l.id, { nombre: l.nombre, costo: Number(l.costo_adicional) || 0 })
+      }
+      for (const e of extras) {
+        const def = porId.get(e.ingrediente_id)
+        if (!def) throw new ErrorOrden('EXTRA_INVALIDO', 400, 'Extra no válido para este producto.')
+        precio += def.costo * (e.cantidad > 0 ? e.cantidad : 1)
+        if (!resueltos.some((r) => r.id === e.ingrediente_id)) {
+          resueltos.push({ id: e.ingrediente_id, nombre: def.nombre, costoAdicional: def.costo })
+        }
+      }
+    }
+    return { precio: Math.round(precio * 100) / 100, extras: resueltos }
+  },
+
   // Items de orden
-  async crearItemOrden(item: Omit<ItemOrden, 'id' | 'created_at'> & {
+  async crearItemOrden(item: {
+    orden_id: string
+    producto_id: string
+    cantidad: number
+    modificadores?: string[]
     seleccion_modificadores?: string[]
     extras_ingredientes?: { ingrediente_id: string; cantidad?: number }[]
+    notas_especiales?: string | null
   }) {
     await ensureRecetasTables()
+    await ensureItemPagoSchema()
+    await ensureItemPrecioSchema()
+    await ensurePagoSchema()
     const sql = getSql()
     const cantidad = Number(item.cantidad)
     if (!Number.isFinite(cantidad) || cantidad <= 0) {
-      throw new Error('Cantidad inválida')
+      throw new ErrorOrden('CANTIDAD_INVALIDA', 400, 'Cantidad inválida')
+    }
+
+    // La orden debe existir y seguir activa (no se agregan ítems a una orden pagada o cancelada).
+    const ordenRows = (await sql`
+      SELECT estado FROM soda_master.ordenes WHERE id = ${item.orden_id}::uuid
+    `) as any[]
+    if (!ordenRows[0]) throw new ErrorOrden('ORDEN_NO_ENCONTRADA', 404, 'La orden no existe.')
+    if (esEstadoTerminal(ordenRows[0].estado)) {
+      throw new ErrorOrden(
+        'ORDEN_NO_ACTIVA',
+        409,
+        `La orden está ${ordenRows[0].estado}: no se pueden agregar ítems.`,
+      )
     }
 
     const prodRows = await sql`
       SELECT COALESCE(modo_stock, 'producto') AS modo_stock, nombre
-      FROM soda_master.productos WHERE id = ${item.producto_id} LIMIT 1
+      FROM soda_master.productos WHERE id = ${item.producto_id}::uuid LIMIT 1
     `
-    if (!prodRows[0]) throw new Error('Producto no encontrado')
+    if (!prodRows[0]) throw new ErrorOrden('PRODUCTO_NO_ENCONTRADO', 404, 'Producto no encontrado')
     const modoStock = String((prodRows[0] as any).modo_stock || 'producto')
     const { mods, extras } = parseSeleccionItem(item)
+
+    // Precio del servidor: lo que se cobra sale de la base, no del navegador.
+    const calculo = await this.calcularPrecioItem(item.producto_id, extras)
+    const notasNormalizadas = normalizarMetadataExtras(item.notas_especiales, calculo.extras)
 
     const deductMap = new Map<string, number>()
     const addDeduct = (ingredienteId: string, qty: number) => {
@@ -2177,7 +2550,6 @@ export const db = {
           WHERE ri.receta_id = ${(recetaRows[0] as any).id} AND i.activo = true
         `
         const modsNorm = mods.map((m) => m.trim().toLowerCase())
-        const extraIds = new Set(extras.map((e) => e.ingrediente_id))
 
         for (const line of lineas as any[]) {
           const lineQty = Number(line.cantidad) * cantidad
@@ -2207,7 +2579,11 @@ export const db = {
         const nombre = (check[0] as any).nombre
         const unidad = (check[0] as any).unidad_medida || 'unidad'
         const faltan = Math.ceil((qty - stockActual) * 1000) / 1000
-        throw new Error(`Stock insuficiente: ${nombre} (faltan ${faltan} ${unidad})`)
+        throw new ErrorOrden(
+          'STOCK_INSUFICIENTE',
+          400,
+          `Stock insuficiente: ${nombre} (faltan ${faltan} ${unidad})`,
+        )
       }
     }
 
@@ -2217,6 +2593,25 @@ export const db = {
         SET stock_actual = stock_actual - ${qty}, updated_at = now()
         WHERE id = ${ingredienteId}::uuid
       `
+    }
+
+    let descontoProducto = false
+    // Deshace los descuentos de stock si el ítem finalmente no se crea.
+    const restaurarStock = async () => {
+      for (const [ingredienteId, qty] of deductMap) {
+        await sql`
+          UPDATE soda_master.ingredientes
+          SET stock_actual = stock_actual + ${qty}, updated_at = now()
+          WHERE id = ${ingredienteId}::uuid
+        `.catch((e) => console.error('[items] restaurar ingrediente:', e))
+      }
+      if (descontoProducto) {
+        await sql`
+          UPDATE soda_master.inventario
+          SET stock_actual = stock_actual + ${cantidad}, updated_at = CURRENT_TIMESTAMP
+          WHERE producto_id = ${item.producto_id}
+        `.catch((e) => console.error('[items] restaurar producto:', e))
+      }
     }
 
     if (modoStock === 'producto' || modoStock === 'producto_y_receta') {
@@ -2229,17 +2624,34 @@ export const db = {
         RETURNING stock_actual
       `
       if (stockRows.length === 0) {
-        throw new Error('Stock insuficiente para enviar el producto')
+        await restaurarStock()
+        throw new ErrorOrden('STOCK_INSUFICIENTE', 400, 'Stock insuficiente para enviar el producto')
       }
+      descontoProducto = true
     }
 
     const modificadoresJson = JSON.stringify(item.modificadores ?? mods)
-    const result = await sql`
-      INSERT INTO soda_master.items_orden (orden_id, producto_id, cantidad, precio_unitario, modificadores, notas_especiales, estado_item)
-      VALUES (${item.orden_id}, ${item.producto_id}, ${cantidad}, ${item.precio_unitario}, ${modificadoresJson}, ${item.notas_especiales ?? null}, 'pendiente')
-      RETURNING *
-    `
-    const inserted = result[0] as any
+    const O = item.orden_id
+    let inserted: any
+    try {
+      // Con la orden bloqueada: si se cobró o canceló mientras tanto, no se agrega el ítem.
+      const res = (await sql.transaction([
+        sql`SELECT id FROM soda_master.ordenes WHERE id = ${O}::uuid FOR UPDATE`,
+        sql`SELECT soda_master.assert_cobro(
+              (SELECT estado FROM soda_master.ordenes WHERE id = ${O}::uuid)
+                = ANY(${['pendiente', 'en_cocina', 'en_preparacion', 'listo', 'entregado', 'problema']}::text[]),
+              'ORDEN_NO_ACTIVA')`,
+        sql`INSERT INTO soda_master.items_orden
+              (orden_id, producto_id, cantidad, precio_unitario, modificadores, notas_especiales, estado_item)
+            VALUES (${O}::uuid, ${item.producto_id}::uuid, ${cantidad}, ${calculo.precio},
+                    ${modificadoresJson}, ${notasNormalizadas ?? null}, 'pendiente')
+            RETURNING *`,
+      ])) as any[][]
+      inserted = res[2][0]
+    } catch (err) {
+      await restaurarStock()
+      traducirErrorTx(err)
+    }
 
     for (const [ingredienteId, qty] of deductMap) {
       await sql`
@@ -2257,6 +2669,7 @@ export const db = {
       `
     }
 
+    await this.recalcularTotalesOrden(item.orden_id)
     return inserted as ItemOrden
   },
 
@@ -2270,76 +2683,150 @@ export const db = {
     return result as ItemOrden[]
   },
 
+  /**
+   * Edición de un ítem (sesión 5: candado de cobro; sesión 6: precio del servidor).
+   *
+   *  - Solo `estado_item` (KDS, entrega): un UPDATE simple; puede avanzar aunque
+   *    el ítem ya esté pagado (se puede pagar por adelantado).
+   *  - Cantidad, extras (`notas_especiales`) o modificadores: van en una
+   *    transacción con la orden bloqueada (FOR UPDATE) y recién entonces se
+   *    verifica que el ítem no esté pagado: un cobro concurrente gana o pierde
+   *    por completo, nunca en medio.
+   *  - El precio NUNCA viene del navegador: se recalcula desde el producto y
+   *    los extras. Un `precio_unitario` sin `precio_manual` se ignora. Solo el
+   *    admin fija un precio a mano (`precio_manual: true` + motivo), con
+   *    registro en `auditoria_admin`; mientras el ítem tenga precio manual, las
+   *    ediciones de extras no lo recalculan (`precio_manual: false` lo devuelve
+   *    al cálculo automático).
+   */
   async actualizarItemOrden(
     id: string,
-    updates: Partial<ItemOrden> & { modificadores?: unknown; precio_unitario?: number },
-    opts: { esAdmin?: boolean } = {},
+    updates: {
+      cantidad?: number
+      estado_item?: string
+      notas_especiales?: string | null
+      modificadores?: string[]
+      precio_unitario?: number
+      precio_manual?: boolean
+      motivo?: string
+    },
+    opts: { esAdmin?: boolean; usuario?: { id: string; nombre: string; rol: string } } = {},
   ) {
     await ensureItemEstadoSchema()
     await ensureItemPagoSchema()
+    await ensureItemPrecioSchema()
     const sql = getSql()
 
-    // Candado de cobro (sesión 5): lo que se cobra sale de estos campos, así
-    // que un ítem ya pagado no se toca (409) y solo el admin cambia el precio
-    // (403). El estado de cocina (estado_item) sí puede avanzar en un ítem
-    // pagado: pagar por adelantado no frena la preparación.
+    if (updates.precio_manual !== undefined && !opts.esAdmin) {
+      throw new ErrorItemOrden(
+        'PRECIO_SOLO_ADMIN',
+        403,
+        'Solo el administrador puede fijar o quitar el precio manual de un ítem.',
+      )
+    }
+
     const tocaMonto =
       updates.cantidad !== undefined ||
-      updates.precio_unitario !== undefined ||
       updates.modificadores !== undefined ||
-      updates.notas_especiales !== undefined
-    if (tocaMonto) {
-      const actual = (await sql`
-        SELECT pagado, precio_unitario FROM soda_master.items_orden WHERE id = ${id}::uuid
-      `) as any[]
-      if (!actual[0]) throw new ErrorItemOrden('ITEM_NO_ENCONTRADO', 404, 'El ítem no existe.')
-      if (actual[0].pagado === true) {
-        throw new ErrorItemOrden(
-          'ITEM_PAGADO',
-          409,
-          'Este ítem ya fue pagado y no se puede modificar.',
-        )
-      }
-      if (
-        updates.precio_unitario !== undefined &&
-        updates.precio_unitario !== null &&
-        Number(updates.precio_unitario) !== Number(actual[0].precio_unitario) &&
-        !opts.esAdmin
-      ) {
-        throw new ErrorItemOrden(
-          'PRECIO_SOLO_ADMIN',
-          403,
-          'Solo el administrador puede cambiar el precio de un ítem.',
-        )
-      }
-    }
+      updates.notas_especiales !== undefined ||
+      updates.precio_manual !== undefined
 
-    // `modificadores` es una columna jsonb. La actualizamos por separado
-    // para evitar un desajuste de tipos text/jsonb dentro de COALESCE.
-    // Esto permite corregir/editar los ingredientes de un ítem incluso
-    // cuando ya fue enviado a cocina/bar (contratiempo o cambio del cliente).
-    if (updates.modificadores !== undefined) {
-      const modificadoresJson = JSON.stringify(updates.modificadores ?? [])
-      await sql`
+    let itemActualizado: ItemOrden | undefined
+    if (!tocaMonto) {
+      const result = (await sql`
         UPDATE soda_master.items_orden
-        SET modificadores = ${modificadoresJson}::jsonb
-        WHERE id = ${id} AND pagado = FALSE
-      `
-    }
+        SET estado_item = COALESCE(${updates.estado_item ?? null}::text, estado_item)
+        WHERE id = ${id}::uuid
+        RETURNING *
+      `) as any[]
+      itemActualizado = result[0] as ItemOrden | undefined
+      if (!itemActualizado) throw new ErrorItemOrden('ITEM_NO_ENCONTRADO', 404, 'El ítem no existe.')
+    } else {
+      await ensurePagoSchema()
+      const actualRows = (await sql`
+        SELECT orden_id, producto_id, pagado, precio_unitario, notas_especiales, precio_manual
+        FROM soda_master.items_orden WHERE id = ${id}::uuid
+      `) as any[]
+      const actual = actualRows[0]
+      if (!actual) throw new ErrorItemOrden('ITEM_NO_ENCONTRADO', 404, 'El ítem no existe.')
+      if (actual.pagado === true) {
+        throw new ErrorItemOrden('ITEM_PAGADO', 409, 'Este ítem ya fue pagado y no se puede modificar.')
+      }
 
-    const result = await sql`
-      UPDATE soda_master.items_orden 
-      SET cantidad = COALESCE(${updates.cantidad}, cantidad),
-          estado_item = COALESCE(${updates.estado_item}, estado_item),
-          notas_especiales = COALESCE(${updates.notas_especiales}, notas_especiales),
-          precio_unitario = COALESCE(${updates.precio_unitario}, precio_unitario)
-      WHERE id = ${id} AND (pagado = FALSE OR ${!tocaMonto})
-      RETURNING *
-    `
-    const itemActualizado = result[0] as ItemOrden | undefined
-    if (tocaMonto && !itemActualizado) {
-      // Lo pagó otro cobro entre la lectura y la escritura.
-      throw new ErrorItemOrden('ITEM_PAGADO', 409, 'Este ítem ya fue pagado y no se puede modificar.')
+      // ── Precio del ítem ──
+      let precioNuevo = Number(actual.precio_unitario)
+      let manual = actual.precio_manual === true
+      let notasFinal: string | null | undefined = updates.notas_especiales
+      if (updates.precio_manual === true) {
+        precioNuevo = Number(updates.precio_unitario)
+        manual = true
+      } else if (updates.precio_manual === false || (!manual && updates.notas_especiales !== undefined)) {
+        const fuente = updates.notas_especiales !== undefined ? updates.notas_especiales : actual.notas_especiales
+        const { extras } = parseSeleccionItem({ notas_especiales: fuente })
+        const calculo = await this.calcularPrecioItem(String(actual.producto_id), extras)
+        precioNuevo = calculo.precio
+        manual = false
+        if (updates.notas_especiales !== undefined) {
+          notasFinal = normalizarMetadataExtras(updates.notas_especiales, calculo.extras)
+        }
+      } else if (updates.notas_especiales !== undefined) {
+        // Precio manual vigente: el precio se conserva; el JSON de extras se deja con costos de la base.
+        const { extras } = parseSeleccionItem({ notas_especiales: updates.notas_especiales })
+        const calculo = await this.calcularPrecioItem(String(actual.producto_id), extras)
+        notasFinal = normalizarMetadataExtras(updates.notas_especiales, calculo.extras)
+      }
+
+      const O = String(actual.orden_id)
+      const origenes = ['pendiente', 'en_cocina', 'en_preparacion', 'listo', 'entregado', 'problema']
+      const tieneNotas = updates.notas_especiales !== undefined
+      const tieneMods = updates.modificadores !== undefined
+      let res: any[][] = []
+      try {
+        res = (await sql.transaction([
+          sql`SELECT id FROM soda_master.ordenes WHERE id = ${O}::uuid FOR UPDATE`,
+          sql`SELECT soda_master.assert_cobro(
+                (SELECT COUNT(*) FROM soda_master.items_orden WHERE id = ${id}::uuid AND orden_id = ${O}::uuid) = 1,
+                'ITEM_NO_ENCONTRADO')`,
+          sql`SELECT soda_master.assert_cobro(
+                (SELECT estado FROM soda_master.ordenes WHERE id = ${O}::uuid) = ANY(${origenes}::text[]),
+                'ORDEN_NO_ACTIVA')`,
+          sql`SELECT soda_master.assert_cobro(
+                (SELECT pagado FROM soda_master.items_orden WHERE id = ${id}::uuid) = FALSE,
+                'ITEM_PAGADO')`,
+          sql`UPDATE soda_master.items_orden
+              SET cantidad = COALESCE(${updates.cantidad ?? null}::int, cantidad),
+                  estado_item = COALESCE(${updates.estado_item ?? null}::text, estado_item),
+                  notas_especiales = CASE WHEN ${tieneNotas}::boolean
+                                          THEN ${notasFinal ?? null}::text ELSE notas_especiales END,
+                  modificadores = CASE WHEN ${tieneMods}::boolean
+                                       THEN ${JSON.stringify(updates.modificadores ?? [])}::jsonb
+                                       ELSE modificadores END,
+                  precio_unitario = ${precioNuevo}::numeric,
+                  precio_manual = ${manual}::boolean
+              WHERE id = ${id}::uuid
+              RETURNING *`,
+        ])) as any[][]
+      } catch (err) {
+        traducirErrorTx(err)
+      }
+      itemActualizado = res[res.length - 1][0] as ItemOrden
+      await this.recalcularTotalesOrden(O)
+      if (updates.precio_manual === true && opts.usuario) {
+        await this.registrarAuditoriaAdmin({
+          usuario_id: opts.usuario.id,
+          usuario_nombre: opts.usuario.nombre,
+          usuario_rol: opts.usuario.rol,
+          accion: 'precio_manual_item',
+          entidad: 'item_orden',
+          entidad_id: id,
+          detalles: {
+            orden_id: O,
+            precio_anterior: Number(actual.precio_unitario),
+            precio_nuevo: precioNuevo,
+            motivo: updates.motivo ?? null,
+          },
+        }).catch((e) => console.error('[auditoria] precio_manual_item:', e))
+      }
     }
 
     // Sincronización del estado de la orden con el de sus items. Esto evita
@@ -2383,19 +2870,34 @@ export const db = {
 
   async eliminarItemOrden(id: string) {
     await ensureItemPagoSchema()
+    await ensurePagoSchema()
     const sql = getSql()
-    // Un ítem pagado es parte del registro de un cobro: no se borra.
-    const borrados = (await sql`
-      DELETE FROM soda_master.items_orden WHERE id = ${id} AND pagado = FALSE RETURNING id
+    const filas = (await sql`
+      SELECT orden_id FROM soda_master.items_orden WHERE id = ${id}::uuid
     `) as any[]
-    if (borrados.length === 0) {
-      const existe = (await sql`
-        SELECT pagado FROM soda_master.items_orden WHERE id = ${id}
-      `) as any[]
-      if (existe[0]?.pagado === true) {
-        throw new ErrorItemOrden('ITEM_PAGADO', 409, 'Este ítem ya fue pagado y no se puede eliminar.')
-      }
+    if (!filas[0]) throw new ErrorItemOrden('ITEM_NO_ENCONTRADO', 404, 'El ítem no existe.')
+    const O = String(filas[0].orden_id)
+    const origenes = ['pendiente', 'en_cocina', 'en_preparacion', 'listo', 'entregado', 'problema']
+    // Un ítem pagado es parte del registro de un cobro: no se borra. La
+    // verificación va con la orden bloqueada, igual que el cobro.
+    try {
+      await sql.transaction([
+        sql`SELECT id FROM soda_master.ordenes WHERE id = ${O}::uuid FOR UPDATE`,
+        sql`SELECT soda_master.assert_cobro(
+              (SELECT COUNT(*) FROM soda_master.items_orden WHERE id = ${id}::uuid) = 1,
+              'ITEM_NO_ENCONTRADO')`,
+        sql`SELECT soda_master.assert_cobro(
+              (SELECT estado FROM soda_master.ordenes WHERE id = ${O}::uuid) = ANY(${origenes}::text[]),
+              'ORDEN_NO_ACTIVA')`,
+        sql`SELECT soda_master.assert_cobro(
+              (SELECT pagado FROM soda_master.items_orden WHERE id = ${id}::uuid) = FALSE,
+              'ITEM_PAGADO')`,
+        sql`DELETE FROM soda_master.items_orden WHERE id = ${id}::uuid`,
+      ])
+    } catch (err) {
+      traducirErrorTx(err, { ITEM_PAGADO: 'Este ítem ya fue pagado y no se puede eliminar.' })
     }
+    await this.recalcularTotalesOrden(O)
   },
 
   // Pagos (sesión 5: cobro seguro, R2/A1/A5)
@@ -3407,6 +3909,8 @@ export const db = {
       FROM lock_orden
       RETURNING *
     `
+    // El total de la orden refleja el descuento (sesión 6).
+    await this.recalcularTotalesOrden(input.orden_id)
     return rows[0]
   },
 
@@ -3428,7 +3932,7 @@ export const db = {
         ua.rol    AS aplicado_por_rol,
         d.autorizado_por,
         ub.nombre AS autorizado_por_nombre,
-        o.total   AS orden_total,
+        o.subtotal AS orden_total,
         ms.numero AS mesa_numero
       FROM soda_master.descuentos d
       LEFT JOIN soda_master.usuarios ua ON ua.id = d.aplicado_por

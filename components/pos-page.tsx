@@ -29,6 +29,7 @@ import { Plus, Minus, Trash2, Send, Printer, Percent, ChefHat, Wine, Star, Arrow
 import { Switch } from '@/components/ui/switch'
 import { Label } from '@/components/ui/label'
 import { showToast } from '@/components/toast'
+import { mensajeAccionable } from '@/lib/api-error'
 import { Comanda, ItemComanda, Producto, TipoDescuento } from '@/lib/types'
 import {
   ingredientesEstandar as ingredientesEstandarFallback,
@@ -571,12 +572,14 @@ export function POSPage() {
 
     if (isPersistedId(itemId)) {
       try {
-        await actualizarItemOrden(itemId, {
+        // Sin precio: lo recalcula el servidor (producto + extras) y lo devuelve.
+        const guardado = await actualizarItemOrden(itemId, {
           cantidad: actualizado.cantidad,
-          precio_unitario: actualizado.precio,
           modificadores: actualizado.ingredientesEstandar || [],
           notas_especiales: buildItemMetadata(actualizado),
         })
+        const precioServidor = Number(guardado?.precio_unitario)
+        if (Number.isFinite(precioServidor)) actualizado.precio = precioServidor
       } catch (error) {
         showToast(
           error instanceof Error ? error.message : 'No se pudo actualizar el ítem',
@@ -683,7 +686,7 @@ export function POSPage() {
     // mensaje es más claro y no tira la transacción a medias.
     if (esCajero && permisoAperturaVigente === false) {
       showToast(
-        'No tienes permiso vigente para abrir mesa. Pedile al administrador que te otorgue acceso temporal.',
+        'No tienes permiso para abrir mesas. Pídele al admin un permiso temporal (o un rol adicional de mesero permanente).',
         'error',
       )
       return
@@ -691,15 +694,11 @@ export function POSPage() {
 
     let ordenCreadaParaRollback: string | null = null
     try {
+      // El servidor decide el usuario (sesión), los montos (desde los ítems y
+      // el descuento) y la hora de envío: el navegador solo dice qué mesa.
       const ordenData = {
         mesa_id: currentComanda.mesaId,
-        usuario_id: usuarioActual?.id,
         estado: 'en_cocina',
-        subtotal,
-        impuesto: impuestoMonto,
-        total,
-        notas: '',
-        enviado_a_cocina: true,
       }
 
       const esOrdenPersistida = isPersistedId(currentComanda.id)
@@ -712,6 +711,7 @@ export function POSPage() {
           ? currentComanda.items.filter((item) => !isPersistedId(item.id))
           : currentComanda.items
         const idsPersistidosPorLocal = new Map<string, string>()
+        const preciosServidor = new Map<string, number>()
 
         for (const item of itemsPendientesDeEnviar) {
           const metadata = {
@@ -728,14 +728,15 @@ export function POSPage() {
             orden_id: ordenId,
             producto_id: item.productoId,
             cantidad: item.cantidad,
-            precio_unitario: item.precio,
             modificadores: item.ingredientesEstandar || [],
             extras_ingredientes: extrasIngredientes,
             notas_especiales: JSON.stringify(metadata),
-            estado_item: 'pendiente',
           })
           if (itemCreado?.id) {
             idsPersistidosPorLocal.set(item.id, itemCreado.id)
+            // El precio lo calculó el servidor: la comanda adopta ese valor.
+            const precioServidor = Number(itemCreado.precio_unitario)
+            if (Number.isFinite(precioServidor)) preciosServidor.set(item.id, precioServidor)
           } else {
             throw new Error(`No se pudo enviar ${item.productoNombre}`)
           }
@@ -745,13 +746,7 @@ export function POSPage() {
         // If this is an existing comanda, adding more products must reopen it
         // for Cocina/Bar and refresh totals instead of creating a duplicate order.
         if (esOrdenPersistida) {
-          await updateOrden(ordenId, {
-            estado: 'en_cocina',
-            subtotal,
-            impuesto: impuestoMonto,
-            total,
-            enviado_a_cocina: true,
-          })
+          await updateOrden(ordenId, { estado: 'en_cocina' })
         }
 
         // La mesa se marca como ocupada SOLO al enviar la comanda a cocina/bar.
@@ -769,6 +764,7 @@ export function POSPage() {
           items: currentComanda.items.map((item) => ({
             ...item,
             id: idsPersistidosPorLocal.get(item.id) || item.id,
+            precio: preciosServidor.get(item.id) ?? item.precio,
             estado: isPersistedId(item.id) ? item.estado : 'pendiente',
           })),
         }
@@ -822,8 +818,7 @@ export function POSPage() {
           body: JSON.stringify({ id: ordenCreadaParaRollback }),
         }).catch(() => null)
       }
-      const message = error instanceof Error ? error.message : 'Error al enviar a cocina'
-      showToast(message, 'error')
+      showToast(mensajeAccionable(error, 'Error al enviar a cocina'), 'error')
     }
   }
 
