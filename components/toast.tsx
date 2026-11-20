@@ -14,6 +14,7 @@ interface Toast {
 
 let toastListeners: ((toasts: Toast[]) => void)[] = []
 let toasts: Toast[] = []
+const toastTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
 function notifyListeners() {
   toastListeners.forEach(listener => listener([...toasts]))
@@ -23,11 +24,12 @@ export function showToast(message: string, type: ToastType = 'info') {
   const id = Math.random().toString(36).substring(2, 9)
   toasts.push({ id, message, type })
   notifyListeners()
-  
-  setTimeout(() => {
+
+  toastTimers.set(id, setTimeout(() => {
+    toastTimers.delete(id)
     toasts = toasts.filter(t => t.id !== id)
     notifyListeners()
-  }, 4000)
+  }, 4000))
 }
 
 export function ToastContainer() {
@@ -38,10 +40,21 @@ export function ToastContainer() {
     toastListeners.push(listener)
     return () => {
       toastListeners = toastListeners.filter(l => l !== listener)
+      // C7: sin contenedor montado no queda nadie que mostrar los toasts: se cancelan los timers
+      if (toastListeners.length === 0) {
+        toastTimers.forEach(t => clearTimeout(t))
+        toastTimers.clear()
+        toasts = []
+      }
     }
   }, [])
 
   const removeToast = (id: string) => {
+    const timer = toastTimers.get(id)
+    if (timer) {
+      clearTimeout(timer)
+      toastTimers.delete(id)
+    }
     toasts = toasts.filter(t => t.id !== id)
     notifyListeners()
   }

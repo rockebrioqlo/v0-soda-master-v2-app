@@ -111,9 +111,13 @@ function mapPago(row: any): Pago {
   const divididoEn = row.dividido_en !== undefined && row.dividido_en !== null
     ? Number(row.dividido_en)
     : (row.divididoEn ?? 1)
+  // C5: campos explícitos (antes `...row` reexportaba toda la fila, incluidas columnas que
+  // nadie lee). `created_at` lo lee Reportes (CSV) y `cobrado_por*` identifica al cajero.
   return {
-    ...row,
     id: row.id,
+    created_at: row.created_at ?? undefined,
+    cobrado_por: row.cobrado_por ?? null,
+    cobrado_por_nombre: row.cobrado_por_nombre ?? null,
     comandaId: row.orden_id ?? row.comandaId ?? row.ordenId ?? '',
     orden_id: row.orden_id ?? row.ordenId,
     mesa_id: row.mesa_id ?? row.mesaId ?? null,
@@ -267,6 +271,11 @@ async function ensureItemPagoSchema(): Promise<void> {
   await sql`
     ALTER TABLE soda_master.items_orden
       ADD COLUMN IF NOT EXISTS pago_id UUID NULL
+  `
+  // C6: los cobros y el KDS buscan los ítems de una orden por (orden_id, pagado)
+  await sql`
+    CREATE INDEX IF NOT EXISTS items_orden_orden_pagado_idx
+      ON soda_master.items_orden (orden_id, pagado)
   `
   _itemPagoReady = true
 }

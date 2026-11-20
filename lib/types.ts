@@ -193,6 +193,9 @@ export interface Pago {
   aprobado?: boolean
   divididoEn: number
   fecha: number
+  created_at?: string | Date
+  cobrado_por?: string | null
+  cobrado_por_nombre?: string | null
 }
 
 export interface Orden {

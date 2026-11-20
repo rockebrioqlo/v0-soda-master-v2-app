@@ -295,6 +295,22 @@ exports.correr = async function (ctx) {
   check(`3 cobros simultáneos: gana exactamente uno y queda un solo pago (${bien}/2)`, bien === 2)
   await L.cerrarOrden(ctx, ordenSim)
 
+  // ───── Sesión 14 (C5, C6): forma explícita del pago y el índice de ítems ─────
+  console.log('\n[cobro] C5/C6: forma del pago e índice')
+  await L.limpiarMesas(ctx)
+  const idx = await db`SELECT indexdef FROM pg_indexes WHERE schemaname = 'soda_master' AND tablename = 'items_orden' AND indexname = 'items_orden_orden_pagado_idx'`
+  check('C6: existe el índice items_orden(orden_id, pagado)', idx.length === 1 && /\(orden_id, pagado\)/.test(idx[0].indexdef), idx)
+  const c5 = await orden(5, [it(f.pP, 1)])
+  const c5pago = await pagar(carlos, { orden_id: c5.orden.id, metodo: 'tarjeta', monto_esperado: 1500 })
+  const permitidas = ['id', 'created_at', 'cobrado_por', 'cobrado_por_nombre', 'comandaId', 'orden_id', 'mesa_id', 'mesa_nombre', 'metodo', 'monto', 'propina', 'vuelto', 'referencia', 'aprobado', 'descuento', 'divididoEn', 'fecha', 'orden_cerrada', 'items_pagados', 'total_a_pagar', 'impuesto', 'cuotas']
+  const clavesC5 = Object.keys(c5pago.json || {})
+  check('C5: la respuesta del cobro solo trae campos conocidos (sin total ni columnas crudas)', c5pago.status === 201 && clavesC5.every((k) => permitidas.includes(k)) && !clavesC5.includes('total') && !clavesC5.includes('dividido_en'), clavesC5)
+  check('C5: la respuesta trae los campos que lee la interfaz', ['id', 'comandaId', 'orden_id', 'metodo', 'monto', 'propina', 'descuento', 'divididoEn', 'fecha', 'created_at', 'mesa_nombre'].every((k) => clavesC5.includes(k)) && c5pago.json.comandaId === c5.orden.id && Number(c5pago.json.monto) === 1500, clavesC5)
+  const listaPagos = await api(carlos, 'GET', '/api/pagos?fecha=hoy')
+  const filaPago = Array.isArray(listaPagos.json) ? listaPagos.json.find((x) => x.id === c5pago.json.id) : null
+  check('C5: GET /api/pagos devuelve el pago con la misma forma (sin total ni dividido_en) y created_at como fecha', listaPagos.status === 200 && !!filaPago && !('total' in filaPago) && !('dividido_en' in filaPago) && !!filaPago.created_at && typeof filaPago.fecha === 'number', filaPago && Object.keys(filaPago))
+  await L.cerrarOrden(ctx, c5.orden.id)
+
   if (sinCaja && cajaId) {
     console.log('\n[cobro] cierre de caja cuadrado')
     const cierre = await api(carlos, 'POST', '/api/caja/cerrar', { caja_id: cajaId, efectivo_contado: 50000 + efectivoNeto, notas: ctx.marca })

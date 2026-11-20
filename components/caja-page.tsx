@@ -173,6 +173,8 @@ export function CajaPage() {
 
   const handleAbrir = async () => {
     if (!usuarioActual) return
+    // F40: hay que escribir el monto (0 es válido); el campo vacío no abre la caja
+    if (fondoInput === '') return
     const fondo = parseMonto(fondoInput)
     if (fondo < 0) {
       showToast('Fondo inicial inválido', 'error')
@@ -496,8 +498,8 @@ export function CajaPage() {
                 inputMode="numeric"
                 value={fondoInput ? parseMonto(fondoInput).toLocaleString('es-CL') : ''}
                 onChange={(e) => setFondoInput(e.target.value.replace(/[^\d]/g, ''))}
-                placeholder="50.000"
-                className="text-right text-lg font-semibold"
+                placeholder="Ej. 50.000"
+                className="text-right text-lg font-semibold placeholder:font-normal placeholder:text-muted-foreground/60"
               />
               <p className="mt-1 text-xs text-muted-foreground">
                 Dinero físico que dejas en caja para dar vueltos al iniciar.
@@ -517,7 +519,7 @@ export function CajaPage() {
             <Button variant="outline" onClick={() => setAbrirOpen(false)}>
               Cancelar
             </Button>
-            <Button onClick={handleAbrir} className="bg-amber-500 text-zinc-900 hover:bg-amber-400">
+            <Button onClick={handleAbrir} disabled={fondoInput === ''} className="bg-amber-500 text-zinc-900 hover:bg-amber-400">
               Abrir
             </Button>
           </DialogFooter>

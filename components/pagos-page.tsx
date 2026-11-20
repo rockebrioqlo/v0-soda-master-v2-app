@@ -174,6 +174,8 @@ export function PagosPage() {
     setMotivoPerdida('')
     setShowPerdidaDialog(false)
     setPendingPartialPay(null)
+    // C9: el efectivo recibido pertenece a la comanda que se estaba cobrando
+    setEfectivoRecibido('')
   }, [selectedComandaId])
 
   // Hidrata `asignaciones` (borrador local) desde `items_orden.cuenta_persona_id`.
@@ -704,7 +706,7 @@ export function PagosPage() {
   ])
 
   // Recent payments
-  const pagosRecientes = pagos
+  const pagosRecientes = [...pagos]
     .sort((a, b) => b.fecha - a.fecha)
     .slice(0, 10)
 
@@ -968,6 +970,8 @@ export function PagosPage() {
 
       const nuevoPago = await crearPagoApi(payload)
       dispatch({ type: 'ADD_PAGO', payload: nuevoPago })
+      // C9: cobro hecho; el efectivo recibido ya no aplica (evita el "Vuelto" residual con total $0)
+      setEfectivoRecibido('')
       if (ticketSnapshot) setBoletaSnapshot(ticketSnapshot)
 
       // El servidor marca los items cobrados como pagados y, si ya no quedan
@@ -2356,12 +2360,19 @@ export function PagosPage() {
                     <ul className="space-y-1 text-xs">
                       {calculoPorPersona.personas.map((p) => {
                         const persona = personasOrden[p.idx]
+                        // C8: solo se puede quitar una persona sin nada asignado: ni en el
+                        // borrador, ni guardado en la BD (pagado o pendiente). Con ítems
+                        // pagados el servidor responde 409 PERSONA_CON_ITEMS_PAGADOS.
+                        const personaSinItems =
+                          !!persona &&
+                          p.items.length === 0 &&
+                          !comandaAPagar?.items.some((it) => it.cuentaPersonaId === persona.id)
                         return (
                           <li key={p.idx} className="space-y-0.5">
                             <div className="flex justify-between">
                               <span className="text-foreground">
                                 Persona {p.idx + 1}
-                                {persona && p.items.length === 0 && numPersonasInt > 1 && (
+                                {personaSinItems && numPersonasInt > 1 && (
                                   <button
                                     type="button"
                                     className="ml-2 text-[10px] text-rose-700 hover:underline"
