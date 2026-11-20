@@ -106,6 +106,7 @@ Todos quedan asignados a una sesión (sección 4). C2 ya está corregido. Estado
 | A1 | 🔴 Crítico | `crearPago`: monto del cliente, no atómico | 5 ✅ |
 | A5 | 🔴 Crítico | Primer pago muestra "Mesa desconocida" | 5 ✅ |
 | A7 | 🔴 Crítico | `PATCH /api/ordenes` acepta cualquier campo | 6 ✅ |
+| 6.5 | **Dependencias y CVEs (sesión de seguridad de plataforma).** Verificar versiones reales instaladas (pnpm-lock) de next, react, react-dom y react-server-dom-*; subir a la última versión parchada de la línea 16.x (16.4.5 o superior a la fecha) y a React con el fix de CVE-2026-126187 (19.2.9+). Revisar exposición real a los críticos de 2026 según qué usa la app: proxy/middleware (bypass de mayo), optimización de imágenes con SVG (CVE-2026-96889), ImageResponse/next/og (CVE-2026-94545) y Cache Components/use cache (CVE-2026-126187). Confirmar la versión de Node del proyecto en Vercel (Node 20 sin soporte desde abril 2026 → 22 o 24). pnpm audit + revisión manual de advisories de GitHub (audit no siempre los detecta a tiempo). Configurar minimumReleaseAge en pnpm contra paquetes recién publicados comprometidos. pnpm build y prueba de humo del login, POS, Pagos y Caja. | Sonnet 5.5 | Plataforma |
 | A6 | 🔴 Crítico | Error de permiso especial se devuelve como 500 genérico | 6 ✅ |
 | A2 | 🔴 Crítico | `aplicarAsignacionesCuentas` no atómico ni valida pertenencia | 7 |
 | #11 | 🔴 Crítico | Orden + ítems no transaccional | 8 |
