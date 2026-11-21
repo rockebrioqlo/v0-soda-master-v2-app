@@ -368,6 +368,10 @@ async function limpiar(ctx) {
     try { await ctx.db`DELETE FROM soda_master.mermas WHERE descripcion = ${ctx.marca}
       OR producto_id IN (SELECT id FROM soda_master.productos WHERE starts_with(nombre, ${ctx.marca}))
       OR ingrediente_id IN (SELECT id FROM soda_master.ingredientes WHERE starts_with(nombre, ${ctx.marca}))` } catch (e) { avisos.push('no se pudieron borrar las mermas de prueba: ' + e.message) }
+    // sesión 17 (K1): un admin temporal que modificó usuarios dejó entradas en auditoria_admin (`usuario_id` cuenta como historial y
+    // impide borrarlo, F50). Excepción explícita del usuario (21-11-2026) a que auditoria_admin sea de solo adición: se borran SOLO las que
+    // dejaron los usuarios temporales de esta corrida (por id Y con el nombre "prueba …" que tenían al actuar), antes de borrarlos.
+    try { await ctx.db`DELETE FROM soda_master.auditoria_admin WHERE usuario_id = ANY(${ctx.usuariosPrueba || []}::uuid[]) AND starts_with(usuario_nombre, 'prueba ')` } catch (e) { avisos.push('no se pudieron borrar las entradas de auditoría de los usuarios de prueba: ' + e.message) }
     // usuarios de prueba (sesión 14.5a): se borran (sus sesiones caen en cascada)
     for (const id of ctx.usuariosPrueba || []) {
       const d = await api(ctx.admin, 'DELETE', '/api/usuarios/' + id)

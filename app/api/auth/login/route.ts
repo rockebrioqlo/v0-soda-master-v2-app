@@ -1,3 +1,4 @@
+import { after } from 'next/server'
 import { z } from 'zod'
 import { db } from '@/lib/db'
 import { crearSesion, ipDePeticion, revocarSesionDePeticion } from '@/lib/sesion'
@@ -36,6 +37,11 @@ export async function POST(request: Request) {
       exitoIntento(intento),
       revocarSesionDePeticion(request).then(() => crearSesion(usuario.id)),
     ])
+
+    // Sesión 17 (K1): purga oportunista de sesiones y notificaciones de más de 90 días (hasta 200 de cada una).
+    // Corre DESPUÉS de enviar la respuesta (`after`): no demora el login, y `purgarVencidos` no lanza nunca
+    // (un fallo solo queda en el log). Nunca toca una sesión vigente.
+    after(() => db.purgarVencidos())
 
     return Response.json(usuario, { headers: { 'Set-Cookie': cookie } })
   } catch (error) {

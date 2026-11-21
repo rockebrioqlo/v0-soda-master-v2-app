@@ -50,6 +50,13 @@ export const REGLAS: readonly Regla[] = [
   { ruta: r('auth/verificar-pin'), metodos: ['POST'], acceso: 'sesion' },
   { ruta: r('auth/desbloquear'), metodos: ['POST'], acceso: ADMIN },
 
+  // ── Datos personales (sesión 17, K1) ──────────────────────────────
+  // Auditoría de accesos y cambios, empleados y proveedores (lista, detalle y vista básica): solo admin.
+  // También caerían en el default; se listan para que la regla sea explícita y la prueba `rutas` la vea.
+  { ruta: r('auditoria'), metodos: ['GET'], acceso: ADMIN },
+  { ruta: r('(empleados|proveedores)'), metodos: ['GET', 'POST'], acceso: ADMIN },
+  { ruta: r(`(empleados|proveedores)/${ID}`), metodos: ['GET', 'PATCH'], acceso: ADMIN },
+
   // ── Lecturas que usa toda la app ──────────────────────────────────
   {
     ruta: r('(productos|productos/especiales|mesas|ordenes|configuracion|permisos-descuento|usuarios|recetas|items-orden|cuentas-persona)'),

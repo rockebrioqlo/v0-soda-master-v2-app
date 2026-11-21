@@ -73,7 +73,20 @@ export function ProveedoresTab() {
     setShowDialog(true)
   }
 
-  const openEditar = (p: Proveedor) => {
+  const openEditar = async (fila: Proveedor) => {
+    // Sesión 17 (K1): el detalle se pide por id (queda una entrada `ver_datos_personales` en la auditoría).
+    let p = fila
+    try {
+      const res = await fetch(`/api/proveedores/${fila.id}`)
+      if (!res.ok) {
+        showToast('No se pudo abrir el proveedor', 'error')
+        return
+      }
+      p = (await res.json()) as Proveedor
+    } catch {
+      showToast('No se pudo abrir el proveedor', 'error')
+      return
+    }
     setEditing(p)
     setForm({
       nombre: p.nombre || '',

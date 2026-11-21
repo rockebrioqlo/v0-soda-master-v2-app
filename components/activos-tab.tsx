@@ -88,7 +88,7 @@ export function ActivosTab() {
     try {
       const [a, p] = await Promise.all([
         fetch('/api/activos?incluir_baja=true'),
-        fetch('/api/proveedores'),
+        fetch('/api/proveedores?vista=basica'),
       ])
       if (a.ok) setItems(await a.json())
       if (p.ok) setProveedores(await p.json())

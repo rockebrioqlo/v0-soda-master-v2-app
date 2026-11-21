@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
+import { AuditoriaTab } from "@/components/auditoria-tab"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
   Select,
@@ -303,13 +304,14 @@ export function ConfiguracionPage() {
       </div>
 
       <Tabs defaultValue="negocio" className="space-y-4">
-        <TabsList className={`grid w-full ${esAdmin ? 'grid-cols-6' : 'grid-cols-5'}`}>
+        <TabsList className={`grid w-full ${esAdmin ? 'grid-cols-7' : 'grid-cols-5'}`}>
           <TabsTrigger value="negocio">Negocio</TabsTrigger>
           <TabsTrigger value="mesas">Mesas</TabsTrigger>
           <TabsTrigger value="impresion">Impresion</TabsTrigger>
           <TabsTrigger value="pagos">Pagos</TabsTrigger>
           <TabsTrigger value="notificaciones">Notificaciones</TabsTrigger>
           {esAdmin && <TabsTrigger value="descuentos">Descuentos</TabsTrigger>}
+          {esAdmin && <TabsTrigger value="auditoria">Auditoria</TabsTrigger>}
         </TabsList>
 
         <TabsContent value="negocio">
@@ -723,6 +725,12 @@ export function ConfiguracionPage() {
             </Card>
           )}
         </TabsContent>
+
+        {esAdmin && (
+          <TabsContent value="auditoria">
+            <AuditoriaTab />
+          </TabsContent>
+        )}
 
         {esAdmin && (
           <TabsContent value="descuentos">

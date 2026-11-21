@@ -1,5 +1,5 @@
 import { db } from '@/lib/db'
-import { ipDePeticion, requireAcceso } from '@/lib/sesion'
+import { actorDe, ipDePeticion, requireAcceso } from '@/lib/sesion'
 import { IdRutaSchema, leerBody, leerParamsRuta } from '@/lib/validacion-http'
 import { UsuarioPatchSchema } from '@/lib/usuarios-http'
 import { exitoIntento, falloIntento, iniciarIntento } from '@/lib/intentos-login'
@@ -58,7 +58,7 @@ export async function PATCH(
     // de la sesión; uno mismo no se desactiva ni se quita el rol admin (409 AUTO_MODIFICACION) y el último
     // admin activo no se desactiva ni pierde el rol (409 ULTIMO_ADMIN).
     const r = await db.actualizarUsuario(id, cambios, {
-      actorId: s.usuario.id,
+      actor: actorDe(s.usuario),
       conservarSesionId: propio ? s.usuario.sesion_id : null,
     })
     if (!r.ok) return respuestaCambioUsuario(r.error)
@@ -84,7 +84,7 @@ export async function DELETE(
     if (!p.ok) return p.respuesta
     // F49 y F50 (14.5b-3): no se borra a uno mismo, al último admin activo ni a un usuario con historial
     // (409 AUTO_MODIFICACION, ULTIMO_ADMIN, USUARIO_CON_HISTORIAL); el actor sale de la sesión.
-    const r = await db.eliminarUsuario(p.datos.id, { actorId: s.usuario.id })
+    const r = await db.eliminarUsuario(p.datos.id, { actor: actorDe(s.usuario) })
     if (!r.ok) return respuestaCambioUsuario(r.error)
     return Response.json({ success: true })
   } catch (error) {

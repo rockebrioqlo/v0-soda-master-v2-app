@@ -5,6 +5,7 @@ Sesión 16 del ROADMAP (21-11-2026), Bloque D, hallazgo K1. Inventario hecho **l
 - **Método:** consultas `SELECT` de solo lectura (columnas, restricciones y conteos) y lectura del código. No se escribió ni se borró nada en la base; no se imprimieron valores personales, PINs ni correos.
 - **Datos de prueba:** los datos de Neon son de prueba (AGENTS.md). Los proveedores y empleados vienen de `seed-demo` con RUT y correos ficticios. Lo que importa aquí es **cómo se guarda y se expone cada dato**, no los valores de hoy.
 - **Esto no es asesoría legal.** Los puntos marcados "a confirmar" deben revisarse con el contador o el abogado antes de vender.
+- **Actualizado en la sesión 17 (21-11-2026):** las filas y secciones que cambiaron llevan la marca **[S17]**. Lo que no lleva marca sigue como lo dejó la sesión 16.
 
 ---
 
@@ -37,10 +38,10 @@ El esquema `soda_master` tiene **31 tablas**. **No existe tabla de clientes ni d
 
 | Tabla (filas) | Columnas con datos personales | Para qué se usa | Quién lo ve hoy | Riesgo |
 |---|---|---|---|---|
-| `usuarios` (11) | `email`, `nombre`, `pin_hash` (bcrypt) | Login y nombre en pantallas, tickets y reportes | `GET /api/usuarios` lo entrega a **toda sesión** (nombre, email, rol y estado de todos); la app lo carga entero en cada dispositivo al iniciar, también en cocina y bar. El hash no sale nunca (lista blanca `mapUsuario`, probada). El bloqueo por PIN solo lo ve el admin. | 🟡 Cualquier rol ve el email de todos. |
+| `usuarios` (11) | `email`, `nombre`, `pin_hash` (bcrypt) | Login y nombre en pantallas, tickets y reportes | `GET /api/usuarios` lo entrega a **toda sesión** (nombre, email, rol y estado de todos); la app lo carga entero en cada dispositivo al iniciar, también en cocina y bar. El hash no sale nunca (lista blanca `mapUsuario`, probada). El bloqueo por PIN solo lo ve el admin. | 🟡 Cualquier rol ve el email de todos. **[S17]** Sigue igual: el correo de todos va a toda sesión porque el POS y las mermas lo usan para pedir el PIN del admin (hallazgo F59 en el ROADMAP; el usuario decidió dejarlo). Nuevo: cada alta, cambio (solo los nombres de campo que cambiaron), desactivación y baja de un usuario, y la consulta de la lista que hace el admin, quedan en `auditoria_admin` (no la recarga de fondo ni la consulta de uno). |
 | `usuarios`, vía `GET /api/auth/accesos-rapidos` | `nombre`, `email` de hasta 5 usuarios activos | Botones de acceso rápido del login (desarrollo) | **Sin sesión, cualquiera en internet** | 🔴 Se apaga con `ACCESOS_RAPIDOS=false`; ya está en P1 y P3 como obligatorio antes de producción. No se agrega como pendiente nuevo. |
-| `empleados` (10; 1 con documento, 1 con teléfono, 0 con email, 10 con sueldo, 9 con fecha de egreso) | `nombre`, `documento` (RUT), `telefono`, `email`, `sueldo_base`, `fecha_ingreso`, `fecha_egreso`, `notas`, `usuario_id` | Pestaña Finanzas → Empleados y nómina estimada; los gastos de tipo sueldo se asocian por `gastos.empleado_id` | **Solo admin**, en la API (tabla de permisos: por defecto solo admin, más `requireAcceso`) y en la pantalla (`finanzas`: solo admin) | 🟡 Ver el detalle abajo (2.4). |
-| `proveedores` (17; todos con RUT, contacto y teléfono) | `nombre`, `rut`, `contacto`, `telefono`, `email`, `direccion`, `notas` | Compras, gastos y activos | **Solo admin** (API y pantalla) | 🟡 Mismo patrón que empleados. Si el proveedor es persona natural, su RUT y contacto son datos personales (1 de 17 parece RUT de persona natural). |
+| `empleados` (10; 1 con documento, 1 con teléfono, 0 con email, 10 con sueldo, 9 con fecha de egreso) | `nombre`, `documento` (RUT), `telefono`, `email`, `sueldo_base`, `fecha_ingreso`, `fecha_egreso`, `notas`, `usuario_id` | Pestaña Finanzas → Empleados y nómina estimada; los gastos de tipo sueldo se asocian por `gastos.empleado_id` | **Solo admin**, en la API (tabla de permisos: por defecto solo admin, más `requireAcceso`) y en la pantalla (`finanzas`: solo admin) | 🟡 Ver el detalle abajo (2.4). **[S17]** Lista blanca (`mapEmpleado`, `SELECT` con columnas explícitas), vista básica para las pestañas que solo necesitan el nombre y detalle por id solo admin. Cada lista, detalle, alta, cambio y desactivación queda en `auditoria_admin`. Falta (sesión 18): vaciar un campo, borrar o anonimizar, validar el RUT. |
+| `proveedores` (17; todos con RUT, contacto y teléfono) | `nombre`, `rut`, `contacto`, `telefono`, `email`, `direccion`, `notas` | Compras, gastos y activos | **Solo admin** (API y pantalla) | 🟡 Mismo patrón que empleados. Si el proveedor es persona natural, su RUT y contacto son datos personales (1 de 17 parece RUT de persona natural). **[S17]** Igual que empleados (`mapProveedor`, vista básica, detalle por id, auditoría). |
 | `cuentas_persona` (313; 162 con nombre) | `nombre` (texto libre del comensal) | Dividir la cuenta por persona en POS y Pagos | **Toda sesión**, vía `GET /api/cuentas-persona` | 🟡 Es lo más parecido a datos de clientes; sin identificación fuerte (nombre de pila escrito a mano). |
 
 ### 2.2 Nombres copiados como texto (no se corrigen al editar al usuario)
@@ -62,10 +63,10 @@ Son **10 columnas en 6 tablas**. Además hay nombres dentro de texto libre, por 
 
 | Tabla (filas) | Datos personales | Quién lo ve | Riesgo |
 |---|---|---|---|
-| `auditoria_admin` (1.503; 7 tipos de acción: órdenes eliminadas y canceladas, pérdidas cobradas parcialmente, precio manual, descuadre de cierre, producto e insumo eliminados) | `usuario_id`, `usuario_nombre`, `usuario_rol`, `detalles` (JSON sin datos personales, solo ids, montos y motivos) | **Nadie**: `getAuditoriaAdmin` no tiene llamadores; no hay ruta ni pantalla que la lea | 🟡 **No registra accesos ni cambios** a empleados, proveedores o usuarios, y no se purga. Es la tabla que la sesión 17 debe extender. |
+| `auditoria_admin` (1.503; 7 tipos de acción: órdenes eliminadas y canceladas, pérdidas cobradas parcialmente, precio manual, descuadre de cierre, producto e insumo eliminados) | `usuario_id`, `usuario_nombre`, `usuario_rol`, `detalles` (JSON sin datos personales, solo ids, montos y motivos) | **Nadie**: `getAuditoriaAdmin` no tiene llamadores; no hay ruta ni pantalla que la lea | 🟡 **No registra accesos ni cambios** a empleados, proveedores o usuarios, y no se purga. Es la tabla que la sesión 17 debe extender. **[S17]** Ahora registra `ver_datos_personales`, `crear`, `modificar`, `desactivar` y `eliminar` sobre empleado, proveedor y usuario (solo nombres de campo, nunca valores), y `GET /api/auditoria` (solo admin) con una pestaña en Configuración la lee. Sigue sin purga (6 años propuestos). |
 | `intentos_login` (22) | La **clave contiene email + IP** (`ui:<email>\|<ip>`, `ug:<email>`, `ip:<ip>`; 4 filas viejas con prefijo `u:`) | Solo el servidor; el admin ve el estado de bloqueo | 🟡 IP y email juntos son dato personal. Se limpia a las 24 h, salvo 30 días si hubo un ingreso correcto. |
-| `sesiones` (730; 0 vigentes) | `usuario_id`, hash del token, fechas. **No guarda IP ni user-agent** | Solo el servidor | 🟡 Nunca se purgan (la más antigua es del 19-11-2026). |
-| `notificaciones` (54; la más antigua del 28-05-2026) | `destinatario_usuario_id`, `mesa_nombre`, `mensaje` (generado por la app) | El destinatario | 🟡 Sin purga. |
+| `sesiones` (730; 0 vigentes) | `usuario_id`, hash del token, fechas. **No guarda IP ni user-agent** | Solo el servidor | 🟡 Nunca se purgan (la más antigua es del 19-11-2026). **[S17]** Purga oportunista en el login: las revocadas o vencidas hace más de 90 días, hasta 200 por pasada. |
+| `notificaciones` (54; la más antigua del 28-05-2026) | `destinatario_usuario_id`, `mesa_nombre`, `mensaje` (generado por la app) | El destinatario | 🟡 Sin purga. **[S17]** Purga oportunista en el login: las de más de 90 días, hasta 200 por pasada (el primer login real borró 9). |
 | `limite_peticiones` (185) | Clave con hash del token de sesión | Solo el servidor | ⚪ Se limpia sola (1 h). |
 | `configuracion` (24 claves) | `nombre_negocio`, `direccion`, `telefono` del local (datos del negocio; personales solo si el local es persona natural) | Lectura: toda sesión; escritura: admin | ⚪ |
 
@@ -104,7 +105,7 @@ Son **10 columnas en 6 tablas**. Además hay nombres dentro de texto libre, por 
 |---|---|---|---|
 | **Neon** (Postgres) | Guarda **toda** la base (usuarios, empleados, proveedores, ventas) | **AWS us-east-1** (EE. UU.). Consta en la configuración local y en `ARQUITECTURA.md`. | **Sí**: fuera de Chile (y de México). Debe ir en el aviso de privacidad (sesión 19). |
 | **Vercel** (hosting y funciones) | Ejecuta la app; ve cada petición | **No consta en el repo:** `vercel.json` no fija regiones y ningún documento la menciona. | **A confirmar por el usuario en P5** (Vercel → proyecto → Settings → Functions). Si es EE. UU., es transferencia internacional. |
-| **Vercel Analytics** (`@vercel/analytics` en `app/layout.tsx`, solo se carga con `NODE_ENV=production`) | Mide visitas, también las de `/menu` (clientes del local) | No consta | **Decidido (21-11-2026): se quita en la sesión 17** (`app/layout.tsx` y la dependencia, que nada más usa). Con eso deja de ser un encargado y **el aviso de la sesión 19 no lo menciona**. |
+| **Vercel Analytics** (`@vercel/analytics` en `app/layout.tsx`, solo se carga con `NODE_ENV=production`) | Mide visitas, también las de `/menu` (clientes del local) | No consta | **Decidido (21-11-2026): se quita en la sesión 17** (`app/layout.tsx` y la dependencia, que nada más usa). Con eso deja de ser un encargado y **el aviso de la sesión 19 no lo menciona**. **[S17] Hecho: retirado (código y dependencia); ya no es un encargado y el aviso de la sesión 19 no lo menciona.** |
 
 Neon y Vercel son **encargados del tratamiento**: hace falta revisar sus contratos de tratamiento de datos (DPA) y listarlos en el aviso. El rol legal de Latencia Cero SpA frente al del local (responsable o encargado) lo define el abogado antes de redactar el aviso.
 
@@ -139,7 +140,7 @@ Hoy `sesiones` y `notificaciones` solo crecen. **Decisión: borrado oportunista 
 
 ## 5. Plan detallado de las sesiones 17 a 19
 
-### Sesión 17: datos sensibles solo admin y registro de accesos
+### Sesión 17: datos sensibles solo admin y registro de accesos **[S17] ✅ hecha (21-11-2026, local, sin push); el punto 5 NO se hizo (F59)**
 
 1. **Lista blanca de campos.** Módulos puros `mapEmpleado` y `mapProveedor` (como `usuario-map.ts`, con prueba unitaria) y `SELECT` con columnas explícitas: una columna nueva no sale por defecto.
 2. **Vista reducida para quien solo necesita nombres.** `?vista=basica` (o ruta aparte) que devuelve `id`, `nombre` y `activo`; Gastos, Compras y Activos pasan a usarla. El detalle (documento, sueldo, teléfono, email) solo en Finanzas → Empleados y Proveedores.
@@ -190,13 +191,13 @@ Hoy `sesiones` y `notificaciones` solo crecen. **Decisión: borrado oportunista 
 | | Riesgo | Sesión |
 |---|---|---|
 | 🔴 | `accesos-rapidos` público muestra nombre y email sin sesión | P1 y P3 (ya anotado) |
-| 🟡 | Cualquier rol ve el email de todos los usuarios | 17 |
-| 🟡 | Empleados y proveedores sin lista blanca y descargados completos para ver nombres | 17 |
-| 🟡 | Nadie registra accesos ni cambios a datos personales; la auditoría no se puede leer | 17 |
+| 🟡 | Cualquier rol ve el email de todos los usuarios | 17 → **F59** (sigue: el POS y las mermas usan el correo del admin; ver ROADMAP) |
+| 🟡 | Empleados y proveedores sin lista blanca y descargados completos para ver nombres | 17 ✅ hecho |
+| 🟡 | Nadie registra accesos ni cambios a datos personales; la auditoría no se puede leer | 17 ✅ hecho |
 | 🟡 | No se puede vaciar un campo ni borrar un empleado o proveedor | 18 |
 | 🟡 | 10 columnas de nombre copiado y nombres en texto libre sin tratamiento | 18 |
 | 🟡 | Sin aviso de privacidad ni procedimiento de brechas; Neon y Vercel sin declarar | 19 |
-| 🟡 | Vercel Analytics procesa visitas (también de `/menu`) sin declarar | 17 (se quita, decidido) |
-| 🟡 | `sesiones` y `notificaciones` sin purga | 17 (decidido: borrado oportunista en el login) |
+| 🟡 | Vercel Analytics procesa visitas (también de `/menu`) sin declarar | 17 ✅ retirado |
+| 🟡 | `sesiones` y `notificaciones` sin purga | 17 ✅ hecho (borrado oportunista en el login) |
 | 🟡 | La clave de `intentos_login` guarda email e IP | Se limpia a las 24 h o 30 días (ya implementado); sin cambio previsto |
 | 🟡 | Respaldos de Neon fuera del alcance de una anonimización | P5 (dato a confirmar) |

@@ -108,7 +108,7 @@ export function ComprasTab() {
     setLoading(true)
     try {
       const [provRes, insRes, comprasRes] = await Promise.all([
-        fetch('/api/proveedores'),
+        fetch('/api/proveedores?vista=basica'),
         fetch('/api/ingredientes'),
         fetch('/api/compras'),
       ])

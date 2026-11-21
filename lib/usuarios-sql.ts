@@ -13,7 +13,11 @@
  * sin administrador.
  *
  * Parámetros de `actualizar`: $1 id, $2 nombre, $3 email, $4 rol (ya normalizado), $5 roles_adicionales,
- * $6 activo, $7 pin_hash, $8 sesión que se conserva al revocar. Parámetro de `eliminar`: $1 id.
+ * $6 activo, $7 pin_hash, $8 sesión que se conserva al revocar; sesión 17 (K1): $9 a $11 el actor (id,
+ * nombre, rol). La auditoría compara la fila anterior con la nueva dentro del statement: `modificar` lista solo
+ * los NOMBRES de los campos que cambiaron (y `pin` si vino un hash nuevo) y `desactivar` sale si `activo` pasa de
+ * true a false. Parámetros de `eliminar`: $1 id, $2 a $4 el actor. La entrada de auditoría va en el MISMO
+ * statement: si falla, el cambio se revierte con ella.
  */
 /**
  * Columnas que apuntan a un usuario y cuentan como HISTORIAL: con una fila así el usuario no se borra
@@ -56,7 +60,7 @@ export const REFERENCIAS_LIMPIABLES: ReadonlyArray<readonly [tabla: string, colu
 
 const ESQUEMA_VALIDO = /^[a-z_][a-z0-9_]{0,62}$/
 
-export function sentenciasUsuarios(esquema: string): { actualizar: string; eliminar: string } {
+export function sentenciasUsuarios(esquema: string): { crear: string; actualizar: string; eliminar: string } {
   if (!ESQUEMA_VALIDO.test(esquema)) throw new Error('Esquema inválido')
   const S = esquema
 
@@ -68,7 +72,8 @@ export function sentenciasUsuarios(esquema: string): { actualizar: string; elimi
       FOR NO KEY UPDATE
     ),
     objetivo AS (
-      SELECT id, rol, activo FROM ${S}.usuarios WHERE id = $1::uuid
+      SELECT id, rol, activo, nombre, email, COALESCE(roles_adicionales, '{}'::text[]) AS roles_adicionales
+      FROM ${S}.usuarios WHERE id = $1::uuid
     )`
 
   const actualizar = `
@@ -99,6 +104,35 @@ export function sentenciasUsuarios(esquema: string): { actualizar: string; elimi
       RETURNING u.id, u.email, u.nombre, u.rol,
                 COALESCE(u.roles_adicionales, '{}'::text[]) AS roles_adicionales,
                 u.activo, u.created_at, u.updated_at
+    ),
+    dif AS (
+      SELECT upd.id, upd.nombre,
+        array_remove(ARRAY[
+          CASE WHEN o.nombre IS DISTINCT FROM upd.nombre THEN 'nombre'::text END,
+          CASE WHEN o.email IS DISTINCT FROM upd.email THEN 'email'::text END,
+          CASE WHEN o.rol IS DISTINCT FROM upd.rol THEN 'rol'::text END,
+          CASE WHEN o.roles_adicionales IS DISTINCT FROM upd.roles_adicionales THEN 'roles_adicionales'::text END,
+          CASE WHEN o.activo IS DISTINCT FROM upd.activo THEN 'activo'::text END,
+          CASE WHEN $7::text IS NOT NULL THEN 'pin'::text END
+        ]::text[], NULL) AS campos,
+        (COALESCE(o.activo, false) AND NOT COALESCE(upd.activo, true)) AS desactiva
+      FROM upd JOIN objetivo o ON o.id = upd.id
+    ),
+    cambios AS (
+      SELECT id, nombre, desactiva,
+             CASE WHEN desactiva THEN array_remove(campos, 'activo') ELSE campos END AS campos_modificar
+      FROM dif
+    ),
+    aud AS (
+      INSERT INTO ${S}.auditoria_admin
+        (usuario_id, usuario_nombre, usuario_rol, accion, entidad, entidad_id, entidad_nombre, detalles)
+      SELECT $9::uuid, $10::text, $11::text, v.accion, 'usuario', c.id, c.nombre, v.detalles
+      FROM cambios c
+      CROSS JOIN LATERAL (VALUES
+        ('modificar'::text, CASE WHEN cardinality(c.campos_modificar) > 0 THEN jsonb_build_object('campos', to_jsonb(c.campos_modificar)) END),
+        ('desactivar'::text, CASE WHEN c.desactiva THEN jsonb_build_object('campos', jsonb_build_array('activo')) END)
+      ) AS v(accion, detalles)
+      WHERE v.detalles IS NOT NULL
     ),
     rev AS (
       UPDATE ${S}.sesiones SET revocada_at = now()
@@ -136,7 +170,13 @@ export function sentenciasUsuarios(esquema: string): { actualizar: string; elimi
         AND NOT (
           COALESCE(d.actual_activo, false) AND d.actual_rol IN ('admin', 'administrador') AND d.otros = 0
         )
-      RETURNING u.id
+      RETURNING u.id, u.nombre
+    ),
+    aud AS (
+      INSERT INTO ${S}.auditoria_admin
+        (usuario_id, usuario_nombre, usuario_rol, accion, entidad, entidad_id, entidad_nombre, detalles)
+      SELECT $2::uuid, $3::text, $4::text, 'eliminar', 'usuario', borrar.id, borrar.nombre, NULL::jsonb
+      FROM borrar
     ),
     notif AS (
       DELETE FROM ${S}.notificaciones
@@ -148,5 +188,23 @@ export function sentenciasUsuarios(esquema: string): { actualizar: string; elimi
            (SELECT count(*) FROM notif)::int AS notificaciones_borradas
     FROM decision d`
 
-  return { actualizar, eliminar }
+  // Sesión 17 (K1): el alta también deja su entrada de auditoría en el mismo statement.
+  // $1 email, $2 nombre, $3 pin_hash, $4 rol, $5 roles_adicionales, $6 activo, $7 actor id, $8 actor nombre,
+  // $9 actor rol, $10 detalles (json: solo nombres de campo).
+  const crear = `
+    WITH ins AS (
+      INSERT INTO ${S}.usuarios (email, nombre, pin_hash, rol, roles_adicionales, activo)
+      VALUES (lower(btrim($1::text)), $2::text, $3::text, $4::text, $5::text[], $6::boolean)
+      RETURNING id, email, nombre, rol, COALESCE(roles_adicionales, '{}'::text[]) AS roles_adicionales,
+                activo, created_at, updated_at
+    ),
+    aud AS (
+      INSERT INTO ${S}.auditoria_admin
+        (usuario_id, usuario_nombre, usuario_rol, accion, entidad, entidad_id, entidad_nombre, detalles)
+      SELECT $7::uuid, $8::text, $9::text, 'crear', 'usuario', ins.id, ins.nombre, $10::jsonb
+      FROM ins
+    )
+    SELECT id, email, nombre, rol, roles_adicionales, activo, created_at, updated_at FROM ins`
+
+  return { crear, actualizar, eliminar }
 }

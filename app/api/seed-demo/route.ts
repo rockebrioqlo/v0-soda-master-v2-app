@@ -2,7 +2,7 @@ import { neon } from '@neondatabase/serverless'
 import { db } from '@/lib/db'
 import { runSeedRecetasBase } from '@/lib/seed-recetas'
 import { bloquearSeedSiNoPermitido } from '@/lib/seed-guard'
-import { requireAcceso } from '@/lib/sesion'
+import { actorDe, requireAcceso } from '@/lib/sesion'
 
 /**
  * POST /api/seed-demo
@@ -83,7 +83,7 @@ export async function POST(request: Request) {
         provId[p.nombre] = (existing[0] as { id: string }).id
         continue
       }
-      const created = await db.crearProveedor(p)
+      const created = await db.crearProveedor(p, actorDe(s.usuario))
       provId[p.nombre] = (created as { id: string }).id
     }
 
@@ -136,7 +136,7 @@ export async function POST(request: Request) {
         fecha_ingreso: e.fecha_ingreso,
         usuario_id: usr.id,
         notas: `Demo seed — rol ${usr.rol}`,
-      })
+      }, actorDe(s.usuario))
       empleadoId[usr.nombre] = (created as { id: string }).id
     }
 
@@ -157,7 +157,7 @@ export async function POST(request: Request) {
           periodicidad: 'mensual',
           fecha_ingreso: '2025-04-20',
           notas: 'Demo seed — sin cuenta de usuario',
-        })
+        }, actorDe(s.usuario))
         empleadoId[nombre] = (c as { id: string }).id
       } else {
         empleadoId[nombre] = (existing[0] as { id: string }).id
@@ -360,7 +360,7 @@ export async function POST(request: Request) {
         rut: '76.999.000-1',
         contacto: 'Administración',
         telefono: '+56 2 2999 9999',
-      }).catch(async () => {
+      }, actorDe(s.usuario)).catch(async () => {
         const r = await sql`SELECT id FROM soda_master.proveedores WHERE nombre = 'Inmobiliaria Centro' LIMIT 1`
         return (r[0] as { id: string }) || null
       })

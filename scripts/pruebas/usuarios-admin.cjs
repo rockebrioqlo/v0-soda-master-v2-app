@@ -152,13 +152,18 @@ exports.correr = async function (ctx, { login } = {}) {
 
   // al borrar a quien referencia el historial, el historial desaparece (cascada del permiso) y el otro se puede borrar
   const delM = await api(admin, 'DELETE', ruta(m.usuario.id))
+  // Sesión 17 (K1): el admin temporal que modificó usuarios dejó entradas en auditoria_admin (`usuario_id` es historial, F50): no se borra.
+  const delX0 = await api(admin, 'DELETE', ruta(x.usuario.id))
+  check('el admin temporal que modificó usuarios dejó entradas de auditoría: cuenta como historial y no se borra (409 USUARIO_CON_HISTORIAL)', delX0.status === 409 && delX0.json.codigo === 'USUARIO_CON_HISTORIAL', delX0)
+  // limpieza de las entradas de la propia prueba (el actor es un usuario temporal; mismo criterio que las mermas de prueba en lib.cjs)
+  await db`DELETE FROM soda_master.auditoria_admin WHERE usuario_id = ${x.usuario.id}::uuid AND starts_with(usuario_nombre, 'prueba ')`
   const delX = await api(admin, 'DELETE', ruta(x.usuario.id))
   const delY = await api(admin, 'DELETE', ruta(y.usuario.id))
-  check('al borrar al mesero cae su permiso (cascada) y el admin temporal queda sin historial: los tres se borran (200)', delM.status === 200 && delX.status === 200 && delY.status === 200, [delM.status, delX.status, delY.status])
+  check('al borrar al mesero cae su permiso (cascada) y, sin entradas de auditoría, el admin temporal queda sin historial: los tres se borran (200)', delM.status === 200 && delX.status === 200 && delY.status === 200, [delM.status, delX.status, delY.status])
 
   // estático
   const ruta_ = leer('app', 'api', 'usuarios', '[id]', 'route.ts')
-  check('la ruta toma el actor de la sesión (actorId: s.usuario.id) en PATCH y DELETE', (ruta_.match(/actorId: s\.usuario\.id/g) || []).length === 2 && /respuestaCambioUsuario/.test(ruta_))
+  check('la ruta toma el actor de la sesión (actor: actorDe(s.usuario)) en PATCH y DELETE', (ruta_.match(/actor: actorDe\(s\.usuario\)/g) || []).length === 2 && /respuestaCambioUsuario/.test(ruta_))
   const pagina = leer('components', 'usuarios-page.tsx')
   check('usuarios-page ya no corta en el cliente el borrado ni la desactivación propios: el mensaje sale del servidor', !/No puedes eliminar tu propio usuario|No puedes desactivar tu propio usuario/.test(pagina))
   check('db.ts: actualizarUsuario y eliminarUsuario usan los statements de lib/usuarios-sql.ts (un solo statement, sin SELECT aparte)', /SQL_USUARIOS\.actualizar/.test(leer('lib', 'db.ts')) && /SQL_USUARIOS\.eliminar/.test(leer('lib', 'db.ts')) && !/DELETE FROM soda_master\.usuarios\s+WHERE id = \$\{id\}/.test(leer('lib', 'db.ts')))
@@ -177,7 +182,9 @@ exports.correr = async function (ctx, { login } = {}) {
     const columnasPorTabla = {}
     for (const [t, c] of S.REFERENCIAS_HISTORIAL) (columnasPorTabla[t] = columnasPorTabla[t] || new Set()).add(c)
     for (const [t, cols] of Object.entries(columnasPorTabla)) {
-      await db.query(`CREATE TABLE ${ES}.${t} (${[...cols].map((c) => `${c} uuid`).join(', ')})`)
+      // Sesión 17 (K1): las sentencias escriben en auditoria_admin, así que el esquema lleva una copia completa de la tabla.
+      if (t === 'auditoria_admin') await db.query(`CREATE TABLE ${ES}.auditoria_admin (LIKE soda_master.auditoria_admin INCLUDING ALL)`)
+      else await db.query(`CREATE TABLE ${ES}.${t} (${[...cols].map((c) => `${c} uuid`).join(', ')})`)
     }
     const SQLS = S.sentenciasUsuarios(ES)
     const conPausa = (t) => {
@@ -187,7 +194,10 @@ exports.correr = async function (ctx, { login } = {}) {
     const sinBloqueo = (t) => t.replace('FOR NO KEY UPDATE', '')
     const fila = (id, rol, activo) => `('${id}', '${id}@prueba.invalid', 'prueba', 'x', '${rol}', ${activo})`
     const INS = (filas) => `INSERT INTO ${ES}.usuarios (id, email, nombre, pin_hash, rol, activo) VALUES ${filas.join(', ')}`
-    const params = (id, c = {}) => [id, c.nombre ?? null, null, c.rol ?? null, null, c.activo ?? null, null, null]
+    // Sesión 17 (K1): $9 a $11 el actor y $12 y $13 los detalles de la auditoría (null = sin entrada).
+    const params = (id, c = {}) => [id, c.nombre ?? null, null, c.rol ?? null, null, c.activo ?? null, null, null, null, null, null]
+    const pDel = (id) => [id, null, null, null]
+    const pDel5 = (id) => [id, actor, 'Admin Prueba', 'admin']
     const vaciar = `TRUNCATE ${ES}.usuarios, ${ES}.sesiones, ${ES}.notificaciones` + Object.keys(columnasPorTabla).map((t) => `, ${ES}.${t}`).join('')
 
     // C1. matriz contra la especificación pura
@@ -221,9 +231,9 @@ exports.correr = async function (ctx, { login } = {}) {
     check('SQL actualizar: el único admin activo no se desactiva (otros = 0, aplicado = 0)', r[2][0].otros === 0 && r[2][0].aplicado === 0)
     r = await db.transaction([db.query(vaciar), db.query(INS([fila(u1, 'admin', true), fila(u2, 'admin', false)])), db.query(SQLS.actualizar, params(u1, { rol: 'cajero' }))])
     check('SQL actualizar: un admin inactivo no cuenta como "otro admin": el único activo no pierde el rol', r[2][0].otros === 0 && r[2][0].aplicado === 0)
-    r = await db.transaction([db.query(vaciar), db.query(INS([fila(u1, 'admin', true), fila(me, 'mesero', true)])), db.query(SQLS.eliminar, [u1])])
+    r = await db.transaction([db.query(vaciar), db.query(INS([fila(u1, 'admin', true), fila(me, 'mesero', true)])), db.query(SQLS.eliminar, pDel(u1))])
     check('SQL eliminar: el único admin activo no se borra (ULTIMO_ADMIN, aunque no tenga historial)', r[2][0].otros === 0 && r[2][0].aplicado === 0 && r[2][0].historial === false && R.decidirCambioUsuario({ actorId: uuid(), objetivoId: u1, actual: { rol: r[2][0].actual_rol, activo: r[2][0].actual_activo }, cambio: { eliminar: true }, otrosAdminsActivos: r[2][0].otros, tieneHistorial: false }).codigo === 'ULTIMO_ADMIN')
-    r = await db.transaction([db.query(vaciar), db.query(INS([fila(u1, 'admin', true), fila(u2, 'administrador', true)])), db.query(SQLS.eliminar, [u1])])
+    r = await db.transaction([db.query(vaciar), db.query(INS([fila(u1, 'admin', true), fila(u2, 'administrador', true)])), db.query(SQLS.eliminar, pDel(u1))])
     const quedan = await db.query(`SELECT count(*)::int AS n FROM ${ES}.usuarios`)
     check('SQL eliminar: con otro admin activo el admin se borra (aplicado = 1) y queda el otro', r[2][0].aplicado === 1 && quedan[0].n === 1)
 
@@ -241,9 +251,9 @@ exports.correr = async function (ctx, { login } = {}) {
       const a = uuid(), b = uuid()
       const dd = await par(P_ACT, params(a, { activo: false }), P_ACT, params(b, { activo: false }), [fila(a, 'admin', true), fila(b, 'admin', true)])
       check(`carrera ${ronda}/3: dos admins se desactivan entre sí a la vez → solo uno lo logra y queda 1 admin activo`, resumen(dd) === '01' && dd.activos === 1 && dd.ms > 800, { r: resumen(dd), activos: dd.activos, ms: dd.ms })
-      const el = await par(P_DEL, [a], P_DEL, [b], [fila(a, 'admin', true), fila(b, 'admin', true)])
+      const el = await par(P_DEL, pDel(a), P_DEL, pDel(b), [fila(a, 'admin', true), fila(b, 'admin', true)])
       check(`carrera ${ronda}/3: dos admins se borran entre sí a la vez → solo uno lo logra y queda 1`, resumen(el) === '01' && el.activos === 1, { r: resumen(el), activos: el.activos })
-      const mx = await par(P_ACT, params(a, { rol: 'cajero' }), P_DEL, [b], [fila(a, 'admin', true), fila(b, 'admin', true)])
+      const mx = await par(P_ACT, params(a, { rol: 'cajero' }), P_DEL, pDel(b), [fila(a, 'admin', true), fila(b, 'admin', true)])
       check(`carrera ${ronda}/3: uno le baja el rol al otro mientras el otro lo borra → solo uno lo logra y queda 1 admin activo`, resumen(mx) === '01' && mx.activos === 1, { r: resumen(mx), activos: mx.activos })
     }
     const a1 = uuid(), b1 = uuid()
@@ -254,7 +264,7 @@ exports.correr = async function (ctx, { login } = {}) {
     let fallos = []
     for (const [t, c] of S.REFERENCIAS_HISTORIAL) {
       const id = uuid()
-      const rr = await db.transaction([db.query(vaciar), db.query(INS([fila(id, 'mesero', true), fila(uuid(), 'admin', true)])), db.query(`INSERT INTO ${ES}.${t} (${c}) VALUES ($1)`, [id]), db.query(SQLS.eliminar, [id])])
+      const rr = await db.transaction([db.query(vaciar), db.query(INS([fila(id, 'mesero', true), fila(uuid(), 'admin', true)])), db.query(t === 'auditoria_admin' ? `INSERT INTO ${ES}.auditoria_admin (usuario_id, accion, entidad) VALUES ($1, 'prueba', 'prueba')` : `INSERT INTO ${ES}.${t} (${c}) VALUES ($1)`, [id]), db.query(SQLS.eliminar, pDel(id))])
       const f = rr[3][0]
       const dec2 = R.decidirCambioUsuario({ actorId: uuid(), objetivoId: id, actual: { rol: f.actual_rol, activo: f.actual_activo }, cambio: { eliminar: true }, otrosAdminsActivos: f.otros, tieneHistorial: f.historial })
       if (!(f.historial === true && f.aplicado === 0 && dec2 && dec2.codigo === 'USUARIO_CON_HISTORIAL')) fallos.push(`${t}.${c}`)
@@ -266,30 +276,96 @@ exports.correr = async function (ctx, { login } = {}) {
       db.query(INS([fila(sid, 'mesero', true), fila(otroId, 'mesero', true), fila(uuid(), 'admin', true)])),
       db.query(`INSERT INTO ${ES}.notificaciones (destinatario_usuario_id) VALUES ($1), ($1), ($2)`, [sid, otroId]),
       db.query(`INSERT INTO ${ES}.ordenes (usuario_id) VALUES ($1)`, [otroId]),
-      db.query(SQLS.eliminar, [sid]),
+      db.query(SQLS.eliminar, pDel(sid)),
     ])
     const nrest = (await db.query(`SELECT count(*)::int AS n, count(*) FILTER (WHERE destinatario_usuario_id = $1)::int AS ajenas FROM ${ES}.notificaciones`, [otroId]))[0]
     check('sin historial: aplicado = 1, se borran SUS 2 notificaciones y queda la ajena', r[4][0].aplicado === 1 && r[4][0].notificaciones_borradas === 2 && nrest.n === 1 && nrest.ajenas === 1, [r[4][0], nrest])
     const hist = uuid()
-    r = await db.transaction([db.query(vaciar), db.query(INS([fila(hist, 'mesero', true), fila(uuid(), 'admin', true)])), db.query(`INSERT INTO ${ES}.notificaciones (destinatario_usuario_id) VALUES ($1)`, [hist]), db.query(`INSERT INTO ${ES}.pagos (cobrado_por) VALUES ($1)`, [hist]), db.query(SQLS.eliminar, [hist])])
+    r = await db.transaction([db.query(vaciar), db.query(INS([fila(hist, 'mesero', true), fila(uuid(), 'admin', true)])), db.query(`INSERT INTO ${ES}.notificaciones (destinatario_usuario_id) VALUES ($1)`, [hist]), db.query(`INSERT INTO ${ES}.pagos (cobrado_por) VALUES ($1)`, [hist]), db.query(SQLS.eliminar, pDel(hist))])
     const nh = (await db.query(`SELECT count(*)::int AS n FROM ${ES}.notificaciones`))[0].n
     check('con historial las notificaciones NO se borran (no se hace nada)', r[4][0].aplicado === 0 && r[4][0].notificaciones_borradas === 0 && nh === 1)
     const mixto = uuid()
-    r = await db.transaction([db.query(vaciar), db.query(INS([fila(mixto, 'admin', true)])), db.query(`INSERT INTO ${ES}.ordenes (usuario_id) VALUES ($1)`, [mixto]), db.query(SQLS.eliminar, [mixto])])
+    r = await db.transaction([db.query(vaciar), db.query(INS([fila(mixto, 'admin', true)])), db.query(`INSERT INTO ${ES}.ordenes (usuario_id) VALUES ($1)`, [mixto]), db.query(SQLS.eliminar, pDel(mixto))])
     check('último admin con historial: el SQL no borra y la regla responde ULTIMO_ADMIN antes que USUARIO_CON_HISTORIAL', r[3][0].aplicado === 0 && r[3][0].historial === true && R.decidirCambioUsuario({ actorId: uuid(), objetivoId: mixto, actual: { rol: 'admin', activo: true }, cambio: { eliminar: true }, otrosAdminsActivos: r[3][0].otros, tieneHistorial: true }).codigo === 'ULTIMO_ADMIN')
     const ses = uuid(), sesOtra = uuid(), uid = uuid()
     await db.transaction([db.query(vaciar), db.query(INS([fila(uid, 'mesero', true), fila(uuid(), 'admin', true)])), db.query(`INSERT INTO ${ES}.sesiones (id, usuario_id) VALUES ($1, $3), ($2, $3)`, [ses, sesOtra, uid])])
-    r = await db.query(SQLS.actualizar, [uid, null, null, null, null, false, null, ses])
+    r = await db.query(SQLS.actualizar, [uid, null, null, null, null, false, null, ses, null, null, null])
     const rev = await db.query(`SELECT id, revocada_at IS NOT NULL AS rev FROM ${ES}.sesiones`)
     check('desactivar revoca las sesiones del usuario en el mismo statement (conservando la que se pida)', r[0].aplicado === 1 && r[0].sesiones_revocadas === 1 && rev.find((s) => s.id === sesOtra).rev === true && rev.find((s) => s.id === ses).rev === false, [r[0], rev])
-    r = await db.query(SQLS.actualizar, [uid, null, null, null, null, null, 'hash-nuevo', null])
+    r = await db.query(SQLS.actualizar, [uid, null, null, null, null, null, 'hash-nuevo', null, null, null, null])
     const rev2 = await db.query(`SELECT count(*)::int AS n FROM ${ES}.sesiones WHERE revocada_at IS NULL`)
     check('cambiar el PIN revoca todas las sesiones restantes; un cambio rechazado (ULTIMO_ADMIN) no revoca nada', r[0].aplicado === 1 && rev2[0].n === 0)
     const solo = uuid(), sS = uuid()
     await db.transaction([db.query(vaciar), db.query(INS([fila(solo, 'admin', true)])), db.query(`INSERT INTO ${ES}.sesiones (id, usuario_id) VALUES ($1, $2)`, [sS, solo])])
-    r = await db.query(SQLS.actualizar, [solo, null, null, null, null, false, null, null])
+    r = await db.query(SQLS.actualizar, [solo, null, null, null, null, false, null, null, null, null, null])
     const revS = (await db.query(`SELECT revocada_at IS NULL AS viva FROM ${ES}.sesiones`))[0].viva
     check('el último admin rechazado conserva sus sesiones (la revocación depende de que el UPDATE se aplique)', r[0].aplicado === 0 && revS === true)
+
+    // C5. Sesión 17 (K1): la entrada de auditoría va en el MISMO statement del cambio (alta, cambio, baja)
+    console.log('\n[usuarios] K1 (C5): la auditoría de usuarios va en el mismo statement; si falla, el cambio se revierte')
+    const j = (o) => JSON.stringify(o)
+    const mismoConj = (a, b) => a.length === b.length && [...a].sort().join('|') === [...b].sort().join('|')
+    const actor = uuid(), objetivo = uuid(), otroAdmin = uuid()
+    const base5 = () => db.transaction([db.query(vaciar), db.query(INS([fila(objetivo, 'mesero', true), fila(actor, 'admin', true), fila(otroAdmin, 'admin', true)]))])
+    const entradas5 = () => db.query(`SELECT accion, entidad, entidad_id, entidad_nombre, usuario_id, usuario_nombre, usuario_rol, detalles FROM ${ES}.auditoria_admin ORDER BY accion`)
+    await base5()
+    r = await db.query(SQLS.actualizar, [objetivo, 'Nombre nuevo', null, null, null, false, null, null, actor, 'Admin Prueba', 'admin'])
+    let aud = await entradas5()
+    check('actualizar con cambio aplicado deja una entrada por acción (desactivar y modificar), con el actor, la entidad y solo los nombres de campo',
+      r[0].aplicado === 1 && aud.length === 2 && aud.map((a) => a.accion).join() === 'desactivar,modificar'
+      && aud.every((a) => a.entidad === 'usuario' && a.entidad_id === objetivo && a.entidad_nombre === 'Nombre nuevo' && a.usuario_id === actor && a.usuario_nombre === 'Admin Prueba' && a.usuario_rol === 'admin')
+      && j(aud.find((a) => a.accion === 'modificar').detalles) === j({ campos: ['nombre'] }) && j(aud.find((a) => a.accion === 'desactivar').detalles) === j({ campos: ['activo'] }), aud)
+    await base5()
+    r = await db.query(SQLS.actualizar, [objetivo, 'Solo nombre', null, null, null, null, null, null, actor, 'Admin Prueba', 'admin'])
+    aud = await entradas5()
+    check('sin desactivar: solo la entrada modificar con el campo que cambió', r[0].aplicado === 1 && aud.length === 1 && aud[0].accion === 'modificar' && j(aud[0].detalles) === j({ campos: ['nombre'] }), aud)
+    await base5()
+    r = await db.query(SQLS.actualizar, [objetivo, 'prueba', 'otro@prueba.invalid', 'cajero', ['bar'], true, 'hash-nuevo', null, actor, 'Admin Prueba', 'admin'])
+    aud = await entradas5()
+    check('modificar lista SOLO los campos que cambiaron: nombre igual y activo igual no salen; email, rol, roles_adicionales y pin sí', r[0].aplicado === 1 && aud.length === 1 && mismoConj(aud[0].detalles.campos, ['email', 'rol', 'roles_adicionales', 'pin']) && !JSON.stringify(aud[0].detalles).includes('hash') && !JSON.stringify(aud[0].detalles).includes('otro@'), aud)
+    await base5()
+    r = await db.query(SQLS.actualizar, [objetivo, 'prueba', null, null, null, true, null, null, actor, 'Admin Prueba', 'admin'])
+    check('un cambio sin diferencias reales (mismo nombre, mismo activo) se aplica pero no deja entrada', r[0].aplicado === 1 && (await entradas5()).length === 0)
+    await base5()
+    r = await db.query(SQLS.actualizar, [objetivo, 'Otro nombre', null, null, null, true, null, null, actor, 'Admin Prueba', 'admin'])
+    await db.query(SQLS.actualizar, [objetivo, null, null, null, null, false, null, null, actor, 'Admin Prueba', 'admin'])
+    await db.query(SQLS.actualizar, [objetivo, null, null, null, null, false, null, null, actor, 'Admin Prueba', 'admin'])
+    await db.query(SQLS.actualizar, [objetivo, null, null, null, null, true, null, null, actor, 'Admin Prueba', 'admin'])
+    aud = await entradas5()
+    check('desactivar es solo la transición activo true → false (desactivar dos veces deja una entrada); reactivar es una modificación del campo activo', aud.filter((a) => a.accion === 'desactivar').length === 1 && aud.filter((a) => a.accion === 'modificar').some((a) => j(a.detalles) === j({ campos: ['activo'] })) && aud.length === 3, aud)
+    const unico = uuid()
+    await db.transaction([db.query(vaciar), db.query(INS([fila(unico, 'admin', true)]))])
+    r = await db.query(SQLS.actualizar, [unico, null, null, null, null, false, null, null, actor, 'Admin Prueba', 'admin'])
+    check('un cambio rechazado (ULTIMO_ADMIN) no deja entrada de auditoría', r[0].aplicado === 0 && (await entradas5()).length === 0)
+    await base5()
+    r = await db.query(SQLS.eliminar, pDel5(objetivo))
+    aud = await entradas5()
+    check('eliminar con la baja aplicada deja la entrada "eliminar" (sin detalles) con el nombre del usuario borrado', r[0].aplicado === 1 && aud.length === 1 && aud[0].accion === 'eliminar' && aud[0].entidad_id === objetivo && aud[0].entidad_nombre === 'prueba' && aud[0].detalles === null && aud[0].usuario_id === actor, aud)
+    await db.transaction([db.query(vaciar), db.query(INS([fila(objetivo, 'mesero', true), fila(actor, 'admin', true)])), db.query(`INSERT INTO ${ES}.ordenes (usuario_id) VALUES ($1)`, [objetivo])])
+    r = await db.query(SQLS.eliminar, pDel5(objetivo))
+    check('un borrado rechazado (USUARIO_CON_HISTORIAL) no deja entrada de auditoría', r[0].aplicado === 0 && (await entradas5()).length === 0)
+    await db.query(vaciar)
+    const nuevo = (await db.query(SQLS.crear, ['  Alta@Prueba.INVALID ', 'Alta', 'hash', 'mesero', ['mesero'], true, actor, 'Admin Prueba', 'admin', j({ campos: ['email', 'nombre', 'rol', 'pin'] })]))[0]
+    aud = await entradas5()
+    check('crear: el alta (email normalizado, sin hash en la respuesta) y su entrada "crear" van juntos, con nombres de campo y sin valores',
+      nuevo.email === 'alta@prueba.invalid' && !('pin_hash' in nuevo) && aud.length === 1 && aud[0].accion === 'crear' && aud[0].entidad_id === nuevo.id && !JSON.stringify(aud[0].detalles).includes('hash') && !JSON.stringify(aud[0].detalles).includes('Alta'), [nuevo, aud])
+    // si el registro falla, el cambio se revierte
+    await base5()
+    await db.query(`ALTER TABLE ${ES}.auditoria_admin ADD CONSTRAINT prueba_rechaza CHECK (accion = 'ver_datos_personales')`)
+    let err = null
+    try { await db.query(SQLS.actualizar, [objetivo, 'No debe quedar', null, null, null, false, null, null, actor, 'Admin Prueba', 'admin']) } catch (e) { err = e }
+    const intacto = (await db.query(`SELECT nombre, activo FROM ${ES}.usuarios WHERE id = $1`, [objetivo]))[0]
+    check('actualizar: si la entrada de auditoría falla (CHECK 23514) el statement lanza y el cambio NO queda (nombre y activo intactos)', err && err.code === '23514' && intacto.nombre === 'prueba' && intacto.activo === true, { code: err && err.code, intacto })
+    err = null
+    try { await db.query(SQLS.eliminar, pDel5(objetivo)) } catch (e) { err = e }
+    check('eliminar: si la auditoría falla el usuario NO se borra', err && err.code === '23514' && (await db.query(`SELECT count(*)::int AS n FROM ${ES}.usuarios WHERE id = $1`, [objetivo]))[0].n === 1, err && err.code)
+    err = null
+    const antes = (await db.query(`SELECT count(*)::int AS n FROM ${ES}.usuarios`))[0].n
+    try { await db.query(SQLS.crear, ['otra@prueba.invalid', 'Otra', 'hash', 'mesero', ['mesero'], true, actor, 'Admin Prueba', 'admin', j({ campos: ['email'] })]) } catch (e) { err = e }
+    check('crear: si la auditoría falla el usuario NO se crea', err && err.code === '23514' && (await db.query(`SELECT count(*)::int AS n FROM ${ES}.usuarios`))[0].n === antes, err && err.code)
+    await db.query(`ALTER TABLE ${ES}.auditoria_admin DROP CONSTRAINT prueba_rechaza`)
+    r = await db.query(SQLS.actualizar, [objetivo, 'Control', null, null, null, null, null, null, actor, 'Admin Prueba', 'admin'])
+    check('CONTROL: sin el CHECK el mismo cambio sí se aplica y deja su entrada', r[0].aplicado === 1 && (await entradas5()).length === 1)
   } finally {
     try { await db.query(`DROP SCHEMA IF EXISTS ${ES} CASCADE`) } catch (e) { console.log('  AVISO: no se pudo eliminar el esquema temporal ' + ES + ': ' + e.message) }
   }

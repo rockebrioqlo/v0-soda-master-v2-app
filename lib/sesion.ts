@@ -241,3 +241,8 @@ export function ipDePeticion(request: Request): string {
   if (xff) return xff.split(',')[0].trim() || 'desconocida'
   return request.headers.get('x-real-ip')?.trim() || 'desconocida'
 }
+
+/** El usuario de la sesión como actor de la auditoría (sesión 17, K1): id, nombre y rol, nunca del body. */
+export function actorDe(usuario: { id: string; nombre: string; rol: string }) {
+  return { id: usuario.id, nombre: usuario.nombre, rol: usuario.rol }
+}

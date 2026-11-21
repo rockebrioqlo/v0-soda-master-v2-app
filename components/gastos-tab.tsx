@@ -105,8 +105,9 @@ export function GastosTab() {
       const [g, r, p, e, a] = await Promise.all([
         fetch(`/api/gastos?${qs.toString()}`),
         fetch(`/api/gastos?resumen=true&desde=${desde}&hasta=${hasta}`),
-        fetch('/api/proveedores'),
-        fetch('/api/empleados'),
+        // Sesión 17 (K1): solo hace falta el nombre; el detalle (RUT, sueldo, teléfono…) queda en Finanzas → Proveedores y Empleados.
+        fetch('/api/proveedores?vista=basica'),
+        fetch('/api/empleados?vista=basica'),
         fetch('/api/activos'),
       ])
       if (g.ok) setItems(await g.json())

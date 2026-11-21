@@ -25,6 +25,29 @@ import {
 } from './usuarios-reglas'
 import { sentenciasUsuarios } from './usuarios-sql'
 import {
+  COLUMNAS_EMPLEADO,
+  COLUMNAS_PROVEEDOR,
+  mapEmpleado,
+  mapProveedor,
+  mapPersonalBasico,
+} from './personal-map'
+import {
+  CAMPOS_EMPLEADO_EDITABLES,
+  CAMPOS_PROVEEDOR_EDITABLES,
+  CAMPOS_USUARIO_EDITABLES,
+  camposAplicados,
+  detallesDetalle,
+  detallesLista,
+  sentenciaLeerAuditoria,
+  sentenciaRegistrarAcceso,
+  sentenciasEmpleados,
+  sentenciasProveedores,
+  type AccionPersonal,
+  type ActorAuditoria,
+  type EntidadPersonal,
+} from './auditoria-datos'
+import { purgarSinFallar } from './purga-sql'
+import {
   MENSAJE_NOMBRE_DUPLICADO,
   MENSAJE_NOMBRE_RESERVADO,
   MENSAJE_NUMERO_DUPLICADO,
@@ -66,6 +89,9 @@ const HASH_RELLENO = '$2b$10$icawp9UmJE0PBbIsfgs..e2FY0BvOF5MEZLd8QBGd0kj/gDC3Pi
 
 // F49 y F50 (14.5b-3): los statements con guarda de administradores e historial (ver lib/usuarios-sql.ts).
 const SQL_USUARIOS = sentenciasUsuarios('soda_master')
+// Sesión 17 (K1): empleados y proveedores con lista blanca de columnas y registro de auditoría en el mismo statement.
+const SQL_EMPLEADOS = sentenciasEmpleados('soda_master', COLUMNAS_EMPLEADO)
+const SQL_PROVEEDORES = sentenciasProveedores('soda_master', COLUMNAS_PROVEEDOR)
 function errorNoEncontrado(): ErrorCambioUsuario {
   return { codigo: 'USUARIO_NO_ENCONTRADO', status: 404, mensaje: 'Usuario no encontrado' }
 }
@@ -2248,27 +2274,27 @@ export const db = {
   },
 
   /** F44 (14.5b-2): recibe el PIN en claro y lo hashea aquí; nunca se acepta un hash que venga del cliente. */
-  async crearUsuario(usuario: UsuarioNuevo) {
+  async crearUsuario(usuario: UsuarioNuevo, actor: ActorAuditoria) {
     const sql = getSql()
     if (!usuario.pin) throw new Error('PIN requerido')
     const pinHash = await bcryptjs.hash(usuario.pin, 10)
     await ensureRolesAdicionalesSchema()
+    await ensureAuditoriaAdminTable()
     const rol = normalizarRol(usuario.rol)
     const rolesAdic = normalizarRolesAdicionales(rol, usuario.roles_adicionales)
-    const result = await sql`
-      INSERT INTO soda_master.usuarios (email, nombre, pin_hash, rol, roles_adicionales, activo)
-      VALUES (
-        lower(btrim(${usuario.email})),
-        ${usuario.nombre},
-        ${pinHash},
-        ${rol},
-        ${rolesAdic}::text[],
-        ${usuario.activo ?? true}
-      )
-      RETURNING id, email, nombre, rol,
-                COALESCE(roles_adicionales, '{}'::text[]) AS roles_adicionales,
-                activo, created_at, updated_at
-    `
+    // Sesión 17 (K1): el alta y su entrada de auditoría (solo nombres de campo) van en un solo statement.
+    const result = (await sql.query(SQL_USUARIOS.crear, [
+      usuario.email,
+      usuario.nombre,
+      pinHash,
+      rol,
+      rolesAdic,
+      usuario.activo ?? true,
+      actor.id,
+      actor.nombre,
+      actor.rol,
+      JSON.stringify({ campos: camposAplicados({ ...usuario, rol }, CAMPOS_USUARIO_EDITABLES) }),
+    ])) as any[]
     return mapUsuario(result[0])
   },
 
@@ -2285,14 +2311,15 @@ export const db = {
   async actualizarUsuario(
     id: string,
     updates: UsuarioCambios,
-    opciones: { actorId: string; conservarSesionId?: string | null }
+    opciones: { actor: ActorAuditoria; conservarSesionId?: string | null }
   ): Promise<{ ok: true; usuario: Usuario } | { ok: false; error: ErrorCambioUsuario }> {
     const rol = normalizarRol(updates.rol)
     const cambio: CambioUsuario = { activo: updates.activo ?? null, rol }
-    const auto = autoModificacion(opciones.actorId, id, cambio)
+    const auto = autoModificacion(opciones.actor.id, id, cambio)
     if (auto) return { ok: false, error: auto }
     await ensureRolesAdicionalesSchema()
     await ensureSesionesSchema()
+    await ensureAuditoriaAdminTable()
     const sql = getSql()
     const nuevoPinHash: string | null = updates.pin ? await bcryptjs.hash(updates.pin, 10) : null
     // Para roles_adicionales necesitamos saber qué rol principal va a
@@ -2309,6 +2336,7 @@ export const db = {
       }
       rolesAdicNormalizados = normalizarRolesAdicionales(principal, updates.roles_adicionales)
     }
+    // Sesión 17 (K1): la entrada de auditoría (solo NOMBRES de los campos que cambiaron; el PIN y el correo no se escriben) la arma el mismo statement.
     const filas = (await sql.query(SQL_USUARIOS.actualizar, [
       id,
       updates.nombre ?? null,
@@ -2318,11 +2346,14 @@ export const db = {
       updates.activo ?? null,
       nuevoPinHash,
       opciones.conservarSesionId ?? null,
+      opciones.actor.id,
+      opciones.actor.nombre,
+      opciones.actor.rol,
     ])) as any[]
     const f = filas[0]
     if (f?.aplicado > 0) return { ok: true, usuario: mapUsuario(f) }
     const error = decidirCambioUsuario({
-      actorId: opciones.actorId,
+      actorId: opciones.actor.id,
       objetivoId: id,
       actual: f && f.existe > 0 ? { rol: f.actual_rol, activo: f.actual_activo } : null,
       cambio,
@@ -2341,10 +2372,10 @@ export const db = {
    */
   async eliminarUsuario(
     id: string,
-    opciones: { actorId: string }
+    opciones: { actor: ActorAuditoria }
   ): Promise<{ ok: true } | { ok: false; error: ErrorCambioUsuario }> {
     const cambio: CambioUsuario = { eliminar: true }
-    const auto = autoModificacion(opciones.actorId, id, cambio)
+    const auto = autoModificacion(opciones.actor.id, id, cambio)
     if (auto) return { ok: false, error: auto }
     await ensureSesionesSchema()
     await ensureRolesAdicionalesSchema()
@@ -2360,7 +2391,7 @@ export const db = {
     const sql = getSql()
     let filas: any[]
     try {
-      filas = (await sql.query(SQL_USUARIOS.eliminar, [id])) as any[]
+      filas = (await sql.query(SQL_USUARIOS.eliminar, [id, opciones.actor.id, opciones.actor.nombre, opciones.actor.rol])) as any[]
     } catch (error: any) {
       if (error?.code === '23503') {
         return { ok: false, error: { codigo: 'USUARIO_CON_HISTORIAL', status: 409, mensaje: MSG_USUARIO_CON_HISTORIAL } }
@@ -2370,7 +2401,7 @@ export const db = {
     const f = filas[0]
     if (f?.aplicado > 0) return { ok: true }
     const error = decidirCambioUsuario({
-      actorId: opciones.actorId,
+      actorId: opciones.actor.id,
       objetivoId: id,
       actual: f && f.existe > 0 ? { rol: f.actual_rol, activo: f.actual_activo } : null,
       cambio,
@@ -6020,35 +6051,60 @@ export const db = {
     return rows[0]
   },
 
+  /**
+   * Lectura de la auditoría (sesión 17, `GET /api/auditoria`): filtros opcionales por entidad, acción y fechas
+   * (YYYY-MM-DD, hora de Santiago, `hasta` inclusive) y límite (tope 500). Columnas explícitas.
+   */
   async getAuditoriaAdmin(filtro?: {
     entidad?: string
-    entidad_id?: string
+    accion?: string
+    desde?: string
+    hasta?: string
     limite?: number
   }): Promise<any[]> {
     await ensureAuditoriaAdminTable()
     const sql = getSql()
     const limite = filtro?.limite && filtro.limite > 0 ? Math.min(filtro.limite, 500) : 200
-    if (filtro?.entidad && filtro?.entidad_id) {
-      return (await sql`
-        SELECT * FROM soda_master.auditoria_admin
-        WHERE entidad = ${filtro.entidad} AND entidad_id = ${filtro.entidad_id}::uuid
-        ORDER BY created_at DESC
-        LIMIT ${limite}
-      `) as any[]
-    }
-    if (filtro?.entidad) {
-      return (await sql`
-        SELECT * FROM soda_master.auditoria_admin
-        WHERE entidad = ${filtro.entidad}
-        ORDER BY created_at DESC
-        LIMIT ${limite}
-      `) as any[]
-    }
-    return (await sql`
-      SELECT * FROM soda_master.auditoria_admin
-      ORDER BY created_at DESC
-      LIMIT ${limite}
-    `) as any[]
+    return (await sql.query(sentenciaLeerAuditoria('soda_master'), [
+      filtro?.entidad ?? null,
+      filtro?.accion ?? null,
+      filtro?.desde ?? null,
+      filtro?.hasta ?? null,
+      limite,
+    ])) as any[]
+  },
+
+  /**
+   * Registra una LECTURA de datos personales (`ver_datos_personales`). Quien la llama usa `leerConAuditoria`:
+   * si esto falla, solo se anota en el log. `filas` va solo en la consulta de lista.
+   */
+  async registrarAccesoDatosPersonales(input: {
+    actor: ActorAuditoria
+    entidad: EntidadPersonal
+    entidadId?: string | null
+    entidadNombre?: string | null
+    filas?: number
+  }): Promise<void> {
+    await ensureAuditoriaAdminTable()
+    const sql = getSql()
+    const accion: AccionPersonal = 'ver_datos_personales'
+    const detalles = input.filas === undefined ? detallesDetalle() : detallesLista(input.filas)
+    await sql.query(sentenciaRegistrarAcceso('soda_master'), [
+      input.actor.id, input.actor.nombre, input.actor.rol, accion, input.entidad,
+      input.entidadId ?? null, input.entidadNombre ?? null, JSON.stringify(detalles),
+    ])
+  },
+
+  /**
+   * Purga oportunista tras un login correcto (sesión 17): `sesiones` vencidas o revocadas hace más de 90 días
+   * y `notificaciones` de más de 90 días, a lo más 200 de cada una. NUNCA lanza (ver `lib/purga-sql.ts`).
+   */
+  async purgarVencidos(): Promise<void> {
+    await purgarSinFallar(async (texto, parametros) => {
+      await ensureSesionesSchema()
+      await ensureNotificacionesTable()
+      return (await getSql().query(texto, parametros as any[])) as any[]
+    }, 'soda_master')
   },
 
   // ──── Eliminación con motivo (productos / insumos) ────────────────
@@ -6837,22 +6893,25 @@ export const db = {
   // cada insumo usando promedio ponderado, para que el margen del menú sea
   // calculable a partir de precios reales y no estimados.
 
-  async getProveedores(soloActivos = true) {
+  /**
+   * Vista básica (id, nombre, activo) o detalle completo (lista blanca `mapProveedor`, sesión 17). El detalle
+   * NO se registra aquí: la ruta lo registra con `leerConAuditoria`.
+   */
+  async getProveedores(soloActivos = true, vista: 'basica' | 'detalle' = 'detalle') {
     await ensureComprasTables()
     const sql = getSql()
-    const rows = soloActivos
-      ? await sql`
-          SELECT * FROM soda_master.proveedores
-          WHERE activo = true
-          ORDER BY nombre
-        `
-      : await sql`
-          SELECT * FROM soda_master.proveedores
-          ORDER BY nombre
-        `
-    return rows
+    const rows = (await sql.query(vista === 'basica' ? SQL_PROVEEDORES.listarBasico : SQL_PROVEEDORES.listar, [soloActivos])) as any[]
+    return rows.map(vista === 'basica' ? mapPersonalBasico : mapProveedor)
   },
 
+  async getProveedorById(id: string) {
+    await ensureComprasTables()
+    const sql = getSql()
+    const rows = (await sql.query(SQL_PROVEEDORES.porId, [id])) as any[]
+    return rows[0] ? mapProveedor(rows[0]) : null
+  },
+
+  /** Crea el proveedor y registra `crear` en el MISMO statement (si el registro falla, no se crea). */
   async crearProveedor(payload: {
     nombre: string
     rut?: string
@@ -6861,26 +6920,20 @@ export const db = {
     email?: string
     direccion?: string
     notas?: string
-  }) {
+  }, actor: ActorAuditoria) {
     await ensureComprasTables()
+    await ensureAuditoriaAdminTable()
     const sql = getSql()
-    const rows = await sql`
-      INSERT INTO soda_master.proveedores
-        (nombre, rut, contacto, telefono, email, direccion, notas)
-      VALUES (
-        ${payload.nombre},
-        ${payload.rut ?? null},
-        ${payload.contacto ?? null},
-        ${payload.telefono ?? null},
-        ${payload.email ?? null},
-        ${payload.direccion ?? null},
-        ${payload.notas ?? null}
-      )
-      RETURNING *
-    `
-    return rows[0]
+    const valores: Record<string, unknown> = { ...payload }
+    const rows = (await sql.query(SQL_PROVEEDORES.crear, [
+      ...SQL_PROVEEDORES.insertables.map((c) => valores[c] ?? null),
+      actor.id, actor.nombre, actor.rol,
+      JSON.stringify({ campos: camposAplicados(valores, CAMPOS_PROVEEDOR_EDITABLES) }),
+    ])) as any[]
+    return mapProveedor(rows[0])
   },
 
+  /** Cambia el proveedor y registra `modificar` y/o `desactivar` en el MISMO statement (si el registro falla, el cambio se revierte). */
   async actualizarProveedor(id: string, payload: {
     nombre?: string
     rut?: string
@@ -6890,24 +6943,17 @@ export const db = {
     direccion?: string
     notas?: string
     activo?: boolean
-  }) {
+  }, actor: ActorAuditoria) {
     await ensureComprasTables()
+    await ensureAuditoriaAdminTable()
     const sql = getSql()
-    const rows = await sql`
-      UPDATE soda_master.proveedores SET
-        nombre    = COALESCE(${payload.nombre ?? null}, nombre),
-        rut       = COALESCE(${payload.rut ?? null}, rut),
-        contacto  = COALESCE(${payload.contacto ?? null}, contacto),
-        telefono  = COALESCE(${payload.telefono ?? null}, telefono),
-        email     = COALESCE(${payload.email ?? null}, email),
-        direccion = COALESCE(${payload.direccion ?? null}, direccion),
-        notas     = COALESCE(${payload.notas ?? null}, notas),
-        activo    = COALESCE(${payload.activo ?? null}, activo),
-        updated_at = now()
-      WHERE id = ${id}::uuid
-      RETURNING *
-    `
-    return rows[0] || null
+    const valores: Record<string, unknown> = { ...payload }
+    const rows = (await sql.query(SQL_PROVEEDORES.actualizar, [
+      id,
+      ...SQL_PROVEEDORES.actualizables.map((c) => valores[c] ?? null),
+      actor.id, actor.nombre, actor.rol,
+    ])) as any[]
+    return rows[0] ? mapProveedor(rows[0]) : null
   },
 
   async getCompras(filter: { limite?: number; proveedorId?: string } = {}) {
@@ -7271,15 +7317,25 @@ export const db = {
   },
 
   // ── Empleados ──────────────────────────────────────────────────────────────
-  async getEmpleados(soloActivos = true) {
+  /**
+   * Vista básica (id, nombre, activo) o detalle completo (lista blanca `mapEmpleado`, sesión 17). El detalle
+   * NO se registra aquí: la ruta lo registra con `leerConAuditoria`.
+   */
+  async getEmpleados(soloActivos = true, vista: 'basica' | 'detalle' = 'detalle') {
     await ensureFinanzasTables()
     const sql = getSql()
-    const rows = soloActivos
-      ? await sql`SELECT * FROM soda_master.empleados WHERE activo = true ORDER BY nombre`
-      : await sql`SELECT * FROM soda_master.empleados ORDER BY nombre`
-    return rows
+    const rows = (await sql.query(vista === 'basica' ? SQL_EMPLEADOS.listarBasico : SQL_EMPLEADOS.listar, [soloActivos])) as any[]
+    return rows.map(vista === 'basica' ? mapPersonalBasico : mapEmpleado)
   },
 
+  async getEmpleadoById(id: string) {
+    await ensureFinanzasTables()
+    const sql = getSql()
+    const rows = (await sql.query(SQL_EMPLEADOS.porId, [id])) as any[]
+    return rows[0] ? mapEmpleado(rows[0]) : null
+  },
+
+  /** Crea el empleado y registra `crear` en el MISMO statement (si el registro falla, no se crea). */
   async crearEmpleado(payload: {
     nombre: string
     cargo?: string
@@ -7291,30 +7347,23 @@ export const db = {
     fecha_ingreso?: string
     usuario_id?: string | null
     notas?: string
-  }) {
+  }, actor: ActorAuditoria) {
     await ensureFinanzasTables()
+    await ensureAuditoriaAdminTable()
     const sql = getSql()
-    const rows = await sql`
-      INSERT INTO soda_master.empleados (
-        nombre, cargo, documento, telefono, email,
-        sueldo_base, periodicidad, fecha_ingreso, usuario_id, notas
-      ) VALUES (
-        ${payload.nombre},
-        ${payload.cargo || null},
-        ${payload.documento || null},
-        ${payload.telefono || null},
-        ${payload.email || null},
-        ${payload.sueldo_base},
-        ${payload.periodicidad || 'mensual'},
-        ${payload.fecha_ingreso || null},
-        ${payload.usuario_id || null},
-        ${payload.notas || null}
-      )
-      RETURNING *
-    `
-    return rows[0]
+    const valores: Record<string, unknown> = { ...payload, periodicidad: payload.periodicidad || 'mensual' }
+    for (const c of ['cargo', 'documento', 'telefono', 'email', 'fecha_ingreso', 'usuario_id', 'notas']) {
+      valores[c] = valores[c] || null
+    }
+    const rows = (await sql.query(SQL_EMPLEADOS.crear, [
+      ...SQL_EMPLEADOS.insertables.map((c) => valores[c] ?? null),
+      actor.id, actor.nombre, actor.rol,
+      JSON.stringify({ campos: camposAplicados(valores, CAMPOS_EMPLEADO_EDITABLES) }),
+    ])) as any[]
+    return mapEmpleado(rows[0])
   },
 
+  /** Cambia el empleado y registra `modificar` y/o `desactivar` en el MISMO statement (si el registro falla, el cambio se revierte). */
   async actualizarEmpleado(id: string, payload: {
     nombre?: string
     cargo?: string
@@ -7328,28 +7377,17 @@ export const db = {
     activo?: boolean
     usuario_id?: string | null
     notas?: string
-  }) {
+  }, actor: ActorAuditoria) {
     await ensureFinanzasTables()
+    await ensureAuditoriaAdminTable()
     const sql = getSql()
-    const rows = await sql`
-      UPDATE soda_master.empleados SET
-        nombre        = COALESCE(${payload.nombre ?? null}, nombre),
-        cargo         = COALESCE(${payload.cargo ?? null}, cargo),
-        documento     = COALESCE(${payload.documento ?? null}, documento),
-        telefono      = COALESCE(${payload.telefono ?? null}, telefono),
-        email         = COALESCE(${payload.email ?? null}, email),
-        sueldo_base   = COALESCE(${payload.sueldo_base ?? null}, sueldo_base),
-        periodicidad  = COALESCE(${payload.periodicidad ?? null}, periodicidad),
-        fecha_ingreso = COALESCE(${payload.fecha_ingreso ?? null}::date, fecha_ingreso),
-        fecha_egreso  = COALESCE(${payload.fecha_egreso ?? null}::date, fecha_egreso),
-        activo        = COALESCE(${payload.activo ?? null}, activo),
-        usuario_id    = COALESCE(${payload.usuario_id ?? null}, usuario_id),
-        notas         = COALESCE(${payload.notas ?? null}, notas),
-        updated_at = now()
-      WHERE id = ${id}::uuid
-      RETURNING *
-    `
-    return rows[0] || null
+    const valores: Record<string, unknown> = { ...payload }
+    const rows = (await sql.query(SQL_EMPLEADOS.actualizar, [
+      id,
+      ...SQL_EMPLEADOS.actualizables.map((c) => valores[c] ?? null),
+      actor.id, actor.nombre, actor.rol,
+    ])) as any[]
+    return rows[0] ? mapEmpleado(rows[0]) : null
   },
 
   // ── Gastos del negocio ─────────────────────────────────────────────────────

@@ -102,7 +102,20 @@ export function EmpleadosTab() {
     setShowDialog(true)
   }
 
-  const abrirEditar = (e: Empleado) => {
+  const abrirEditar = async (fila: Empleado) => {
+    // Sesión 17 (K1): el detalle se pide por id (queda una entrada `ver_datos_personales` en la auditoría).
+    let e = fila
+    try {
+      const res = await fetch(`/api/empleados/${fila.id}`)
+      if (!res.ok) {
+        showToast('No se pudo abrir el empleado', 'error')
+        return
+      }
+      e = (await res.json()) as Empleado
+    } catch {
+      showToast('No se pudo abrir el empleado', 'error')
+      return
+    }
     setEditing(e)
     setForm({
       nombre: e.nombre || '',
