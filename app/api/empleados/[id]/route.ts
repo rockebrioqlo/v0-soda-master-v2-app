@@ -1,6 +1,6 @@
 import { db } from '@/lib/db'
 import { actorDe, requireAcceso } from '@/lib/sesion'
-import { EmpleadoPatchSchema } from '@/lib/finanzas-http'
+import { EmpleadoPatchSchema, resolverCampoDocumento } from '@/lib/finanzas-http'
 import { leerConAuditoria } from '@/lib/auditoria-datos'
 import { IdRutaSchema, leerBody, leerParamsRuta } from '@/lib/validacion-http'
 
@@ -42,26 +42,19 @@ export async function PATCH(
     if (!p.ok) return p.respuesta
     const parsed = await leerBody(request, EmpleadoPatchSchema, 'Datos del empleado')
     if (!parsed.ok) return parsed.respuesta
-    const body = parsed.datos
+    const { documento_otro, ...body } = parsed.datos
+    // Rectificación (sesión 18): solo las claves que el cliente mandó. Ausente = no se toca; `null` o vacío = se vacía el campo.
+    const patch = Object.fromEntries(Object.entries(body).filter(([, v]) => v !== undefined)) as Parameters<typeof db.actualizarEmpleado>[1]
+    if (body.documento !== undefined) {
+      const actual = await db.getEmpleadoById(p.datos.id)
+      if (!actual) return Response.json({ error: 'Empleado no encontrado' }, { status: 404 })
+      const doc = resolverCampoDocumento(body.documento, actual.documento, documento_otro)
+      if (!doc.ok) return doc.respuesta
+      if (doc.incluir) patch.documento = doc.valor
+    }
     // El cambio y su entrada de auditoría (modificar y/o desactivar) van en un solo statement: si el registro
     // falla, el cambio se revierte (500).
-    const updated = await db.actualizarEmpleado(
-      p.datos.id,
-      {
-        nombre: body.nombre,
-        cargo: body.cargo ?? undefined,
-        documento: body.documento ?? undefined,
-        telefono: body.telefono ?? undefined,
-        email: body.email ?? undefined,
-        sueldo_base: body.sueldo_base,
-        periodicidad: body.periodicidad,
-        fecha_ingreso: body.fecha_ingreso ?? undefined,
-        fecha_egreso: body.fecha_egreso ?? undefined,
-        activo: body.activo,
-        notas: body.notas ?? undefined,
-      },
-      actorDe(s.usuario),
-    )
+    const updated = await db.actualizarEmpleado(p.datos.id, patch, actorDe(s.usuario))
     if (!updated) {
       return Response.json({ error: 'Empleado no encontrado' }, { status: 404 })
     }

@@ -14,9 +14,11 @@ import {
 } from '@/components/ui/dialog'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Switch } from '@/components/ui/switch'
+import { Checkbox } from '@/components/ui/checkbox'
 import { Label } from '@/components/ui/label'
 import { Plus, Edit, RefreshCw } from 'lucide-react'
 import { showToast } from '@/components/toast'
+import { validarRut } from '@/lib/rut'
 
 type Proveedor = {
   id: string
@@ -39,6 +41,8 @@ const EMPTY = {
   direccion: '',
   notas: '',
   activo: true,
+  // Sesión 18: casilla "otro documento" (pasaporte o extranjero: no se valida el Módulo 11). Solo se usa al guardar.
+  documento_otro: false,
 }
 
 export function ProveedoresTab() {
@@ -97,6 +101,8 @@ export function ProveedoresTab() {
       direccion: p.direccion || '',
       notas: p.notas || '',
       activo: p.activo !== false,
+      // un dato antiguo que no es un RUT válido queda marcado como "otro documento" para no bloquear la edición
+      documento_otro: !!p.rut && !validarRut(p.rut),
     })
     setShowDialog(true)
   }
@@ -104,6 +110,11 @@ export function ProveedoresTab() {
   const guardar = async () => {
     if (!form.nombre.trim()) {
       showToast('Nombre requerido', 'error')
+      return
+    }
+    const rut = form.rut.trim()
+    if (rut && !form.documento_otro && !validarRut(rut) && rut !== (editing?.rut ?? '').trim()) {
+      showToast('RUT inválido: revisa el dígito verificador (si es otro documento, marca "Otro documento")', 'error')
       return
     }
     try {
@@ -114,7 +125,11 @@ export function ProveedoresTab() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(form),
       })
-      if (!res.ok) throw new Error('Error al guardar')
+      if (!res.ok) {
+        const data = await res.json().catch(() => null)
+        showToast(data?.codigo === 'RUT_INVALIDO' && data?.error ? data.error : 'Error al guardar proveedor', 'error')
+        return
+      }
       showToast(editing ? 'Proveedor actualizado' : 'Proveedor creado', 'success')
       setShowDialog(false)
       await load()
@@ -207,6 +222,10 @@ export function ProveedoresTab() {
                 onChange={(e) => setForm({ ...form, telefono: e.target.value })}
               />
             </div>
+            <label className="flex items-center gap-2 text-xs text-muted-foreground">
+              <Checkbox checked={form.documento_otro} onCheckedChange={(v) => setForm({ ...form, documento_otro: v === true })} />
+              Otro documento (extranjero, pasaporte): no se valida como RUT
+            </label>
             <Input
               placeholder="Persona de contacto"
               value={form.contacto}

@@ -57,7 +57,7 @@ Estas columnas guardan una **copia del nombre** de quien actuó. Corregir o anon
 | `permisos_especiales` | `otorgado_por_nombre`, `revocado_por_nombre` | Admin |
 | `auditoria_admin` | `usuario_nombre` | Nadie hoy (ver 2.3) |
 
-Son **10 columnas en 6 tablas**. Además hay nombres dentro de texto libre, por ejemplo la nota de un ajuste manual de stock (`Ajuste manual por <nombre>: <motivo>`, en `movimientos_inventario`) y la nota que deja el cierre de una orden con "quién borró". La boleta que se imprime al cliente muestra "Atendido por: <nombre>", leído en vivo desde `usuarios`.
+Son **10 columnas en 6 tablas** **[S18] y una 11.ª que el inventario no tenía: `auditoria_admin.entidad_nombre` copia el nombre del titular en las entradas de crear y modificar de la sesión 17. La sesión 18 las anonimiza todas por id (`lib/arco-reglas.ts`, `COLUMNAS_NOMBRE_COPIADO`; la prueba de cobertura falla si aparece una columna `*_nombre` sin decidir)**. Además hay nombres dentro de texto libre, por ejemplo la nota de un ajuste manual de stock (`Ajuste manual por <nombre>: <motivo>`, en `movimientos_inventario`) y la nota que deja el cierre de una orden con "quién borró". La boleta que se imprime al cliente muestra "Atendido por: <nombre>", leído en vivo desde `usuarios`.
 
 ### 2.3 Registro y operación
 
@@ -74,7 +74,7 @@ Son **10 columnas en 6 tablas**. Además hay nombres dentro de texto libre, por 
 
 - **Lectura sin lista blanca:** `getEmpleados` y `getProveedores` hacen `SELECT *`. Una columna sensible nueva saldría hacia afuera por defecto (el mismo defecto que `mapUsuario` ya corrigió en C11).
 - **Exceso de datos en pantalla:** la pestaña Gastos pide `/api/empleados` y `/api/proveedores` completos solo para mostrar nombres; Compras y Activos piden los proveedores completos por lo mismo. Solo el admin lo recibe, pero la descarga trae documento y sueldo.
-- **No se puede vaciar un campo:** `actualizarEmpleado` y `actualizarProveedor` usan `COALESCE(nuevo, actual)`, así que enviar vacío o nulo deja el valor anterior. Esto impide la rectificación a "sin dato" y la supresión parcial (sesión 18).
+- **[S18] Resuelto: el `PATCH` vacía un campo (`null` o texto vacío) y distingue "ausente"; el RUT se valida con Módulo 11. (Antes) No se puede vaciar un campo:** `actualizarEmpleado` y `actualizarProveedor` usan `COALESCE(nuevo, actual)`, así que enviar vacío o nulo deja el valor anterior. Esto impide la rectificación a "sin dato" y la supresión parcial (sesión 18).
 - **No hay `DELETE`** de empleados ni de proveedores (solo desactivar con `activo = false`): los datos personales permanecen para siempre.
 - **Sin auditoría:** nadie registra quién abrió, consultó, creó, cambió o desactivó un empleado, proveedor o usuario.
 - **Sin validación del RUT:** `documento` y `rut` son texto libre de hasta 40 y 20 caracteres (sin Módulo 11; está pendiente en AGENTS.md).
@@ -153,7 +153,7 @@ Hoy `sesiones` y `notificaciones` solo crecen. **Decisión: borrado oportunista 
 
 **Decisiones del usuario (21-11-2026), ya tomadas:** el fallo del registro de una lectura solo se anota en el log y el de una modificación revierte el cambio; la purga es oportunista en el login; Vercel Analytics se quita. No queda ninguna decisión pendiente para esta sesión.
 
-### Sesión 18: derechos ARCOP
+### Sesión 18: derechos ARCOP **[S18] ✅ hecha (21-11-2026, local, sin push); decisiones del usuario: el sueldo se conserva por defecto (`ANONIMIZAR_SUELDO=false`, a confirmar con el contador), UPDATE de los nombres de `auditoria_admin` solo desde el statement de anonimización, sin modo "borrar", casilla `documento_otro` para el RUT, el empleado se anonimiza junto con su usuario vinculado y la exportación falla si no se puede registrar. Pendiente: el plazo laboral (contador), el texto legal de la respuesta y la ventana de respaldos de Neon (P5)**
 
 1. **Tabla de solicitudes** `solicitudes_arco`: tipo (acceso, rectificación, supresión, oposición, portabilidad), titular (tipo y id), canal, `ingresada_en`, **`vence_en` = ingreso + 30 días corridos**, `prorrogada` (una sola vez, con motivo, que suma 30 días más), estado, resolución, quién la resolvió y cuándo. Cada solicitud y cada resolución quedan en `auditoria_admin`.
 2. **Exportar** (acceso y portabilidad): un JSON por titular con sus datos de `usuarios`, `empleados` y `proveedores`, y los registros donde figura. Solo admin. Los nombres de `cuentas_persona` no son identificables por persona (texto libre); se documenta que no se pueden ubicar con certeza.
@@ -194,8 +194,8 @@ Hoy `sesiones` y `notificaciones` solo crecen. **Decisión: borrado oportunista 
 | 🟡 | Cualquier rol ve el email de todos los usuarios | 17 → **F59** (sigue: el POS y las mermas usan el correo del admin; ver ROADMAP) |
 | 🟡 | Empleados y proveedores sin lista blanca y descargados completos para ver nombres | 17 ✅ hecho |
 | 🟡 | Nadie registra accesos ni cambios a datos personales; la auditoría no se puede leer | 17 ✅ hecho |
-| 🟡 | No se puede vaciar un campo ni borrar un empleado o proveedor | 18 |
-| 🟡 | 10 columnas de nombre copiado y nombres en texto libre sin tratamiento | 18 |
+| 🟡 | No se puede vaciar un campo ni borrar un empleado o proveedor | 18 ✅ (se vacía; se anonimiza en vez de borrar) |
+| 🟡 | 10 columnas de nombre copiado y nombres en texto libre sin tratamiento | 18 ✅ (11 columnas) |
 | 🟡 | Sin aviso de privacidad ni procedimiento de brechas; Neon y Vercel sin declarar | 19 |
 | 🟡 | Vercel Analytics procesa visitas (también de `/menu`) sin declarar | 17 ✅ retirado |
 | 🟡 | `sesiones` y `notificaciones` sin purga | 17 ✅ hecho (borrado oportunista en el login) |

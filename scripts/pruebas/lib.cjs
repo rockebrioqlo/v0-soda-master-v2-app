@@ -368,6 +368,22 @@ async function limpiar(ctx) {
     try { await ctx.db`DELETE FROM soda_master.mermas WHERE descripcion = ${ctx.marca}
       OR producto_id IN (SELECT id FROM soda_master.productos WHERE starts_with(nombre, ${ctx.marca}))
       OR ingrediente_id IN (SELECT id FROM soda_master.ingredientes WHERE starts_with(nombre, ${ctx.marca}))` } catch (e) { avisos.push('no se pudieron borrar las mermas de prueba: ' + e.message) }
+    // sesión 18 (K1, derechos ARCOP): las solicitudes, empleados, proveedores y gastos que creó el módulo `arco` se borran por los
+    // ids que guardó en `ctx.arco` (tras anonimizarlos el nombre ya no empieza con la marca). Guarda doble, como en la sesión 17:
+    // el id guardado Y que la fila sea de prueba (titular de la lista; nombre con la marca o ya anonimizado). Las solicitudes van
+    // ANTES de los usuarios temporales: `ingresada_por` y `resuelta_por` cuentan como historial y los dejarían sin poder borrarse (F50).
+    if (ctx.arco) {
+      try {
+        const A = ctx.arco
+        const titulares = [...(A.empleados || []), ...(A.proveedores || []), ...(ctx.usuariosPrueba || []), ...(A.extraTitulares || [])]
+        await ctx.db`DELETE FROM soda_master.solicitudes_arco WHERE id = ANY(${A.solicitudes || []}::uuid[]) AND titular_id = ANY(${titulares}::uuid[])`
+        await ctx.db`DELETE FROM soda_master.gastos WHERE id = ANY(${A.gastos || []}::uuid[]) AND (empleado_id = ANY(${A.empleados || []}::uuid[]) OR proveedor_id = ANY(${A.proveedores || []}::uuid[]))`
+        await ctx.db`DELETE FROM soda_master.empleados WHERE id = ANY(${A.empleados || []}::uuid[]) AND (starts_with(nombre, ${ctx.marca}) OR nombre = 'Empleado anonimizado')`
+        await ctx.db`DELETE FROM soda_master.proveedores WHERE id = ANY(${A.proveedores || []}::uuid[]) AND (starts_with(nombre, ${ctx.marca}) OR nombre = 'Proveedor anonimizado')`
+        const quedan = await ctx.db`SELECT (SELECT count(*)::int FROM soda_master.solicitudes_arco WHERE id = ANY(${A.solicitudes || []}::uuid[])) AS s, (SELECT count(*)::int FROM soda_master.empleados WHERE id = ANY(${A.empleados || []}::uuid[])) AS e, (SELECT count(*)::int FROM soda_master.proveedores WHERE id = ANY(${A.proveedores || []}::uuid[])) AS p`
+        if (quedan[0].s + quedan[0].e + quedan[0].p > 0) avisos.push(`quedaron filas de prueba de ARCOP (solicitudes ${quedan[0].s}, empleados ${quedan[0].e}, proveedores ${quedan[0].p})`)
+      } catch (e) { avisos.push('no se pudieron borrar las solicitudes ARCOP y los titulares de prueba: ' + e.message) }
+    }
     // sesión 17 (K1): un admin temporal que modificó usuarios dejó entradas en auditoria_admin (`usuario_id` cuenta como historial y
     // impide borrarlo, F50). Excepción explícita del usuario (21-11-2026) a que auditoria_admin sea de solo adición: se borran SOLO las que
     // dejaron los usuarios temporales de esta corrida (por id Y con el nombre "prueba …" que tenían al actuar), antes de borrarlos.

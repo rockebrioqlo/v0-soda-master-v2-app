@@ -178,7 +178,7 @@ exports.correr = async function (ctx) {
   check('empleados y proveedores: vista inválida o parámetro desconocido → 400; id mal escrito → 400; id que no existe → 404', (await adm('GET', '/api/empleados?vista=otra')).status === 400 && (await adm('GET', '/api/empleados?foo=1')).status === 400 && (await adm('GET', '/api/proveedores?vista=otra')).status === 400 && (await adm('GET', '/api/proveedores?foo=1')).status === 400 && (await adm('GET', '/api/empleados/no-es-uuid')).status === 400 && (await adm('GET', '/api/proveedores/no-es-uuid')).status === 400 && (await adm('GET', '/api/empleados/' + UUID_FALSO)).status === 404 && (await adm('GET', '/api/proveedores/' + UUID_FALSO)).status === 404)
 
   // fixtures: un empleado y un proveedor con valores inconfundibles (la marca los hace reconocibles y se borran al final)
-  const V = { doc: '99.888.777-6', tel: '+56 9 5555 4321', mail: `prueba-dp-${etiqueta}@prueba.invalid`, sueldo: 1234567, nota: 'nota reservada prueba', rut: '77.666.555-4', contacto: 'Contacto Reservado Prueba', dir: 'Calle Reservada 123', sueldo2: 7654321, tel2: '+56 9 1111 2222' }
+  const V = { doc: '99.888.777-1', tel: '+56 9 5555 4321', mail: `prueba-dp-${etiqueta}@prueba.invalid`, sueldo: 1234567, nota: 'nota reservada prueba', rut: '77.666.555-K', contacto: 'Contacto Reservado Prueba', dir: 'Calle Reservada 123', sueldo2: 7654321, tel2: '+56 9 1111 2222' }
   const creados = { empleados: [], proveedores: [] }
   const limpiarDatos = async () => {
     for (const id of creados.empleados) await db`DELETE FROM soda_master.empleados WHERE id = ${id}::uuid AND starts_with(nombre, ${marca})`
@@ -355,7 +355,7 @@ exports.correr = async function (ctx) {
       const todo = S === SE ? { sueldo_base: 0, periodicidad: 'mensual', ...vals } : vals
       return q(S.crear, [...S.insertables.map((c) => todo[c] ?? null), actor.id, actor.nombre, actor.rol, j({ campos })])
     }
-    const cambiar = (S, id, vals) => q(S.actualizar, [id, ...S.actualizables.map((c) => vals[c] ?? null), actor.id, actor.nombre, actor.rol])
+    const cambiar = (S, id, vals) => q(S.actualizar, [id, j(vals), actor.id, actor.nombre, actor.rol]) // sesión 18: el cambio llega como UN json con solo las claves presentes
     const regLectura = (extra = {}) => q(AD.sentenciaRegistrarAcceso(ES), [actor.id, actor.nombre, actor.rol, 'ver_datos_personales', 'empleado', null, null, j(extra.detalles ?? AD.detallesLista(2))])
 
     // C1. lista blanca en el SQL (columna extra) y vistas

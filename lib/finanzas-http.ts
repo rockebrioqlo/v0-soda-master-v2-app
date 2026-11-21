@@ -6,6 +6,7 @@
  */
 import { z } from 'zod'
 import { fechaYmd, limite, uuid } from '@/lib/validacion-http'
+import { resolverDocumento } from '@/lib/rut'
 
 const texto = (max: number) => z.string().trim().max(max)
 const textoOpcional = (max: number) => texto(max).nullish()
@@ -40,6 +41,8 @@ export const EmpleadoSchema = z
     nombre,
     cargo: textoOpcional(120),
     documento: textoOpcional(40),
+    // Sesión 18: pasaporte o documento extranjero (no se valida el Módulo 11). Solo se usa al escribir; no se guarda.
+    documento_otro: z.boolean().optional(),
     telefono: textoOpcional(40),
     email: textoOpcional(254),
     sueldo_base: dinero,
@@ -58,6 +61,8 @@ export const ProveedorSchema = z
   .object({
     nombre,
     rut: textoOpcional(20),
+    // Sesión 18: documento que no es RUT chileno (no se valida el Módulo 11). Solo se usa al escribir; no se guarda.
+    documento_otro: z.boolean().optional(),
     contacto: textoOpcional(120),
     telefono: textoOpcional(40),
     email: textoOpcional(254),
@@ -96,3 +101,24 @@ export const GastosConsultaSchema = z
     limite: limite(1000).optional(),
   })
   .strict()
+
+/** Respuesta 400 de un RUT con el dígito verificador errado (sesión 18). */
+export function respuestaRutInvalido(mensaje: string): Response {
+  return Response.json({ error: mensaje, codigo: 'RUT_INVALIDO' }, { status: 400 })
+}
+
+/**
+ * Lo que se guarda en `documento` (empleados) o `rut` (proveedores). `nuevo` es lo que llegó (undefined = el campo no vino: no se
+ * toca), `actual` lo guardado (para no bloquear datos antiguos que el formulario reenvía) y `otro` la casilla "otro documento".
+ * Devuelve `incluir: false` si no hay nada que escribir.
+ */
+export function resolverCampoDocumento(
+  nuevo: string | null | undefined,
+  actual: string | null | undefined,
+  otro: boolean | undefined,
+): { ok: true; incluir: false } | { ok: true; incluir: true; valor: string | null } | { ok: false; respuesta: Response } {
+  if (nuevo === undefined) return { ok: true, incluir: false }
+  const r = resolverDocumento(nuevo, actual, otro === true)
+  if (!r.ok) return { ok: false, respuesta: respuestaRutInvalido(r.error) }
+  return { ok: true, incluir: true, valor: r.valor }
+}

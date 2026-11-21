@@ -394,5 +394,5 @@ exports.correr = async function (ctx, { login } = {}) {
   const existentes = new Set((await db`SELECT table_name, column_name FROM information_schema.columns WHERE table_schema = 'soda_master'`).map((r) => `${r.table_name}.${r.column_name}`))
   const fantasmas = [...hist, ...limp].filter((k) => !existentes.has(k))
   check('toda columna de la lista existe en la base (sin errores de escritura)', fantasmas.length === 0, fantasmas)
-  check('REFERENCIAS_HISTORIAL tiene las 19 columnas decididas y notificaciones.destinatario_usuario_id NO cuenta como historial', S.REFERENCIAS_HISTORIAL.length === 19 && !hist.has('notificaciones.destinatario_usuario_id') && hist.has('empleados.usuario_id') && limp.has('notificaciones.destinatario_usuario_id'))
+  check('REFERENCIAS_HISTORIAL tiene las 21 columnas decididas (19 de la sesión 14.5b-3 y las 2 de solicitudes_arco de la 18) y notificaciones.destinatario_usuario_id NO cuenta como historial', S.REFERENCIAS_HISTORIAL.length === 21 && !hist.has('notificaciones.destinatario_usuario_id') && hist.has('empleados.usuario_id') && limp.has('notificaciones.destinatario_usuario_id'))
 }

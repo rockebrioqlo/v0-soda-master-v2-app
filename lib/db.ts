@@ -48,6 +48,20 @@ import {
 } from './auditoria-datos'
 import { purgarSinFallar } from './purga-sql'
 import {
+  sentenciasArco,
+  sentenciasTablaSolicitudes,
+  type TipoTitular,
+} from './arco-sql'
+import {
+  ANONIMIZAR_SUELDO,
+  COLUMNAS_NOMBRE_COPIADO,
+  ERR as ERR_ARCO,
+  decidirProrroga,
+  decidirResolucion,
+  decidirSupresion,
+  exportarConAuditoria,
+} from './arco-reglas'
+import {
   MENSAJE_NOMBRE_DUPLICADO,
   MENSAJE_NOMBRE_RESERVADO,
   MENSAJE_NUMERO_DUPLICADO,
@@ -92,6 +106,13 @@ const SQL_USUARIOS = sentenciasUsuarios('soda_master')
 // Sesión 17 (K1): empleados y proveedores con lista blanca de columnas y registro de auditoría en el mismo statement.
 const SQL_EMPLEADOS = sentenciasEmpleados('soda_master', COLUMNAS_EMPLEADO)
 const SQL_PROVEEDORES = sentenciasProveedores('soda_master', COLUMNAS_PROVEEDOR)
+// Sesión 18 (K1, derechos ARCOP): solicitudes, exportación y anonimización por titular (ver lib/arco-sql.ts).
+const SQL_ARCO = sentenciasArco('soda_master', {
+  columnasEmpleado: COLUMNAS_EMPLEADO,
+  columnasProveedor: COLUMNAS_PROVEEDOR,
+  columnasNombre: COLUMNAS_NOMBRE_COPIADO,
+  anonimizarSueldo: ANONIMIZAR_SUELDO,
+})
 function errorNoEncontrado(): ErrorCambioUsuario {
   return { codigo: 'USUARIO_NO_ENCONTRADO', status: 404, mensaje: 'Usuario no encontrado' }
 }
@@ -1569,6 +1590,31 @@ async function ensureAuditoriaAdminTable(): Promise<void> {
       ON soda_master.auditoria_admin (entidad, entidad_id)
   `
   _auditoriaAdminReady = true
+}
+
+// Sesión 18 (K1): tabla de solicitudes de derechos ARCOP. Migración idempotente (el DDL vive en lib/arco-sql.ts para que la
+// prueba cree la misma tabla en su esquema temporal).
+let _solicitudesArcoReady = false
+async function ensureSolicitudesArcoSchema(): Promise<void> {
+  if (_solicitudesArcoReady) return
+  const sql = getSql()
+  for (const sentencia of sentenciasTablaSolicitudes('soda_master')) await sql.query(sentencia)
+  _solicitudesArcoReady = true
+}
+
+/** Todas las tablas que tocan las solicitudes ARCOP existen antes de ejecutar un statement que las nombra. */
+async function asegurarTablasArco(): Promise<void> {
+  await ensureAuditoriaAdminTable()
+  await ensureFinanzasTables() // empleados, gastos
+  await ensureComprasTables() // proveedores, compras, movimientos de inventario
+  await ensureSesionesSchema() // sesiones, intentos_login
+  await ensureNotificacionesTable()
+  await ensureCajaSchema()
+  await ensurePagoSchema()
+  await ensurePerdidasTable()
+  await ensurePermisosEspecialesTable()
+  await ensureMermasItemSchema()
+  await ensureSolicitudesArcoSchema()
 }
 
 // ──── Migración timestamp → timestamptz ──────────────────────────────
@@ -6925,6 +6971,7 @@ export const db = {
     await ensureAuditoriaAdminTable()
     const sql = getSql()
     const valores: Record<string, unknown> = { ...payload }
+    for (const c of SQL_PROVEEDORES.insertables) if (valores[c] === '') valores[c] = null // un campo vacío es "sin dato"
     const rows = (await sql.query(SQL_PROVEEDORES.crear, [
       ...SQL_PROVEEDORES.insertables.map((c) => valores[c] ?? null),
       actor.id, actor.nombre, actor.rol,
@@ -6933,24 +6980,27 @@ export const db = {
     return mapProveedor(rows[0])
   },
 
-  /** Cambia el proveedor y registra `modificar` y/o `desactivar` en el MISMO statement (si el registro falla, el cambio se revierte). */
+  /**
+   * Cambia el proveedor y registra `modificar` y/o `desactivar` en el MISMO statement (si el registro falla, el cambio se revierte).
+   * Sesión 18 (rectificación): `payload` lleva SOLO las claves que el cliente mandó. Una clave ausente no se toca; `null` o
+   * texto vacío en una columna que admite NULL la vacía (nombre y activo no se pueden vaciar).
+   */
   async actualizarProveedor(id: string, payload: {
     nombre?: string
-    rut?: string
-    contacto?: string
-    telefono?: string
-    email?: string
-    direccion?: string
-    notas?: string
+    rut?: string | null
+    contacto?: string | null
+    telefono?: string | null
+    email?: string | null
+    direccion?: string | null
+    notas?: string | null
     activo?: boolean
   }, actor: ActorAuditoria) {
     await ensureComprasTables()
     await ensureAuditoriaAdminTable()
     const sql = getSql()
-    const valores: Record<string, unknown> = { ...payload }
     const rows = (await sql.query(SQL_PROVEEDORES.actualizar, [
       id,
-      ...SQL_PROVEEDORES.actualizables.map((c) => valores[c] ?? null),
+      JSON.stringify(payload), // JSON.stringify omite las claves undefined y conserva las null
       actor.id, actor.nombre, actor.rol,
     ])) as any[]
     return rows[0] ? mapProveedor(rows[0]) : null
@@ -7363,31 +7413,177 @@ export const db = {
     return mapEmpleado(rows[0])
   },
 
-  /** Cambia el empleado y registra `modificar` y/o `desactivar` en el MISMO statement (si el registro falla, el cambio se revierte). */
+  /**
+   * Cambia el empleado y registra `modificar` y/o `desactivar` en el MISMO statement (si el registro falla, el cambio se revierte).
+   * Sesión 18 (rectificación): `payload` lleva SOLO las claves que el cliente mandó. Una clave ausente no se toca; `null` o
+   * texto vacío en una columna que admite NULL la vacía (nombre, sueldo, periodicidad y activo no se pueden vaciar).
+   */
   async actualizarEmpleado(id: string, payload: {
     nombre?: string
-    cargo?: string
-    documento?: string
-    telefono?: string
-    email?: string
+    cargo?: string | null
+    documento?: string | null
+    telefono?: string | null
+    email?: string | null
     sueldo_base?: number
     periodicidad?: string
-    fecha_ingreso?: string
-    fecha_egreso?: string
+    fecha_ingreso?: string | null
+    fecha_egreso?: string | null
     activo?: boolean
     usuario_id?: string | null
-    notas?: string
+    notas?: string | null
   }, actor: ActorAuditoria) {
     await ensureFinanzasTables()
     await ensureAuditoriaAdminTable()
     const sql = getSql()
-    const valores: Record<string, unknown> = { ...payload }
     const rows = (await sql.query(SQL_EMPLEADOS.actualizar, [
       id,
-      ...SQL_EMPLEADOS.actualizables.map((c) => valores[c] ?? null),
+      JSON.stringify(payload), // JSON.stringify omite las claves undefined y conserva las null
       actor.id, actor.nombre, actor.rol,
     ])) as any[]
     return rows[0] ? mapEmpleado(rows[0]) : null
+  },
+
+  // ── Derechos ARCOP (sesión 18, K1): solicitudes, exportar y anonimizar ─────────────────────────────
+
+  /** Ingresa una solicitud (`vence_en` = hoy en Santiago + 30 días). 404 si el titular no existe, 409 si ya hay una igual pendiente. */
+  async crearSolicitudArco(input: {
+    tipo: string
+    titular_tipo: TipoTitular
+    titular_id: string
+    canal: string
+    actor: ActorAuditoria
+  }) {
+    await asegurarTablasArco()
+    const sql = getSql()
+    let rows: any[]
+    try {
+      rows = (await sql.query(SQL_ARCO.crear, [
+        input.tipo, input.titular_tipo, input.titular_id, input.canal,
+        input.actor.id, input.actor.nombre, input.actor.rol,
+      ])) as any[]
+    } catch (error: any) {
+      if (error?.code === '23505') throw ERR_ARCO.duplicada()
+      throw error
+    }
+    if (!rows[0]) throw ERR_ARCO.titularNoEncontrado()
+    return (await this.getSolicitudArco(rows[0].id))!
+  },
+
+  async getSolicitudArco(id: string) {
+    await asegurarTablasArco()
+    const rows = (await getSql().query(SQL_ARCO.porId, [id])) as any[]
+    return rows[0] ?? null
+  },
+
+  async listarSolicitudesArco(filtro: { estado?: string; limite?: number } = {}) {
+    await asegurarTablasArco()
+    return (await getSql().query(SQL_ARCO.listar, [filtro.estado ?? null, filtro.limite ?? 100])) as any[]
+  },
+
+  /** Prórroga única de 30 días (con motivo): solo pendiente, antes de vencer y una vez. */
+  async prorrogarSolicitudArco(id: string, motivo: string, actor: ActorAuditoria) {
+    await asegurarTablasArco()
+    const rows = (await getSql().query(SQL_ARCO.prorrogar, [id, motivo, actor.id, actor.nombre, actor.rol])) as any[]
+    const error = decidirProrroga(rows[0])
+    if (error) throw error
+    return (await this.getSolicitudArco(id))!
+  },
+
+  /** Resuelve una solicitud (acceso, portabilidad, rectificación, oposición) o rechaza cualquiera (la supresión se atiende con `suprimirTitularArco`). */
+  async resolverSolicitudArco(id: string, resultado: 'atendida' | 'rechazada', respuesta: string, actor: ActorAuditoria) {
+    await asegurarTablasArco()
+    const rows = (await getSql().query(SQL_ARCO.resolver, [id, resultado, respuesta, actor.id, actor.nombre, actor.rol])) as any[]
+    const error = decidirResolucion(rows[0], resultado)
+    if (error) throw error
+    return (await this.getSolicitudArco(id))!
+  },
+
+  /**
+   * Exporta los datos de un titular (acceso y portabilidad). PRIMERO registra `exportar` en la auditoría y recién entonces lee:
+   * si el registro falla (500), no se entrega nada (decisión del 21-11-2026; `exportarConAuditoria`).
+   * Acceso: la ficha, la cuenta vinculada y los registros donde figura. Portabilidad: solo la ficha que el titular entregó.
+   */
+  async exportarSolicitudArco(id: string, actor: ActorAuditoria) {
+    await asegurarTablasArco()
+    const sql = getSql()
+    const sol = await this.getSolicitudArco(id)
+    if (!sol) throw ERR_ARCO.solicitudNoEncontrada()
+    if (sol.tipo !== 'acceso' && sol.tipo !== 'portabilidad') throw ERR_ARCO.tipoNoExportable()
+    const tipo = sol.titular_tipo as TipoTitular
+    const q = async (texto: string, params: unknown[] = [sol.titular_id]) => (await sql.query(texto, params as any[])) as any[]
+    const completo = sol.tipo === 'acceso'
+    const datos = await exportarConAuditoria(
+      () => sql.query(
+        `INSERT INTO soda_master.auditoria_admin (usuario_id, usuario_nombre, usuario_rol, accion, entidad, entidad_id, entidad_nombre, detalles)
+         VALUES ($1::uuid, $2::text, $3::text, 'exportar', $4::text, $5::uuid, NULL, $6::jsonb)`,
+        [actor.id, actor.nombre, actor.rol, tipo, sol.titular_id, JSON.stringify({ solicitud: sol.id, tipo: sol.tipo })],
+      ),
+      async () => {
+        const E = SQL_ARCO.exportar
+        const aviso = [
+          'Los nombres de comensales de cuentas_persona (cuentas por persona) son texto libre escrito a mano: no se pueden asociar con certeza a una persona y no se buscaron.',
+          'El PIN de acceso solo existe como un hash irreversible y no se entrega.',
+        ]
+        if (tipo === 'usuario') {
+          const [ficha] = await q(E.usuario.ficha)
+          if (!ficha) throw ERR_ARCO.titularNoEncontrado()
+          const base: Record<string, unknown> = { ficha, empleado_vinculado: await q(E.usuario.empleado_vinculado) }
+          if (completo) {
+            const [actividad, auditoria, sesiones, intentos] = await Promise.all([
+              q(E.usuario.actividad), q(E.usuario.auditoria), q(E.usuario.sesiones), q(E.usuario.intentos_login),
+            ])
+            base.registros = { actividad, auditoria, sesiones, intentos_login: intentos, truncado: auditoria.length >= 2000 || sesiones.length >= 2000 }
+          }
+          return { datos: base, aviso }
+        }
+        if (tipo === 'empleado') {
+          const [ficha] = await q(E.empleado.ficha)
+          if (!ficha) throw ERR_ARCO.titularNoEncontrado()
+          const base: Record<string, unknown> = { ficha }
+          if (ficha.usuario_id) base.usuario_vinculado = (await q(E.usuario.ficha, [ficha.usuario_id]))[0] ?? null
+          if (completo) {
+            const gastos = await q(E.empleado.gastos)
+            base.registros = { gastos, truncado: gastos.length >= 2000 }
+          }
+          return { datos: base, aviso }
+        }
+        const [ficha] = await q(E.proveedor.ficha)
+        if (!ficha) throw ERR_ARCO.titularNoEncontrado()
+        const base: Record<string, unknown> = { ficha }
+        if (completo) {
+          const [compras, gastos, activos] = await Promise.all([q(E.proveedor.compras), q(E.proveedor.gastos), q(E.proveedor.activos)])
+          base.registros = { compras, gastos, activos, truncado: [compras, gastos, activos].some((x) => x.length >= 2000) }
+        }
+        return { datos: base, aviso }
+      },
+    )
+    return {
+      solicitud: { id: sol.id, tipo: sol.tipo, titular_tipo: tipo },
+      generado_en: new Date().toISOString(),
+      titular_tipo: tipo,
+      datos: datos.datos,
+      aviso: datos.aviso,
+    }
+  },
+
+  /**
+   * Supresión por anonimización de un titular, en UN solo statement atómico (ver lib/arco-sql.ts): marca la solicitud como
+   * resuelta, anonimiza la ficha, las 10 columnas de nombre copiado, los nombres en texto libre conocido y deja la
+   * auditoría. Lo que debe conservarse (6 años tributarios; sueldo y fechas laborales) NO se borra y queda en `resultado`.
+   * Si una guarda da 409 (uno mismo, último admin, ya anonimizado, ya resuelta) no cambia nada.
+   */
+  async suprimirTitularArco(solicitudId: string, actor: ActorAuditoria, opciones: { esPersonaNatural?: boolean } = {}) {
+    await asegurarTablasArco()
+    const sol = await this.getSolicitudArco(solicitudId)
+    if (!sol) throw ERR_ARCO.solicitudNoEncontrada()
+    if (sol.tipo !== 'supresion') throw ERR_ARCO.tipoNoEsSupresion()
+    const tipo = sol.titular_tipo as TipoTitular
+    // una empresa no es titular de datos personales: el administrador confirma que el proveedor es una persona natural
+    if (tipo === 'proveedor' && opciones.esPersonaNatural !== true) throw ERR_ARCO.confirmacionRequerida()
+    const rows = (await getSql().query(SQL_ARCO.suprimir[tipo], [solicitudId, actor.id, actor.nombre, actor.rol])) as any[]
+    const error = decidirSupresion(rows[0])
+    if (error) throw error
+    return { solicitud: (await this.getSolicitudArco(solicitudId))!, resultado: rows[0].resultado as { anonimizado: string[]; conservado: string[] } }
   },
 
   // ── Gastos del negocio ─────────────────────────────────────────────────────

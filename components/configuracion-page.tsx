@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
 import { AuditoriaTab } from "@/components/auditoria-tab"
+import { ArcoTab } from "@/components/arco-tab"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
   Select,
@@ -304,7 +305,7 @@ export function ConfiguracionPage() {
       </div>
 
       <Tabs defaultValue="negocio" className="space-y-4">
-        <TabsList className={`grid w-full ${esAdmin ? 'grid-cols-7' : 'grid-cols-5'}`}>
+        <TabsList className={`grid w-full ${esAdmin ? 'grid-cols-8' : 'grid-cols-5'}`}>
           <TabsTrigger value="negocio">Negocio</TabsTrigger>
           <TabsTrigger value="mesas">Mesas</TabsTrigger>
           <TabsTrigger value="impresion">Impresion</TabsTrigger>
@@ -312,6 +313,7 @@ export function ConfiguracionPage() {
           <TabsTrigger value="notificaciones">Notificaciones</TabsTrigger>
           {esAdmin && <TabsTrigger value="descuentos">Descuentos</TabsTrigger>}
           {esAdmin && <TabsTrigger value="auditoria">Auditoria</TabsTrigger>}
+          {esAdmin && <TabsTrigger value="arco">Derechos ARCOP</TabsTrigger>}
         </TabsList>
 
         <TabsContent value="negocio">
@@ -729,6 +731,12 @@ export function ConfiguracionPage() {
         {esAdmin && (
           <TabsContent value="auditoria">
             <AuditoriaTab />
+          </TabsContent>
+        )}
+
+        {esAdmin && (
+          <TabsContent value="arco">
+            <ArcoTab />
           </TabsContent>
         )}
 

@@ -57,6 +57,12 @@ export const REGLAS: readonly Regla[] = [
   { ruta: r('(empleados|proveedores)'), metodos: ['GET', 'POST'], acceso: ADMIN },
   { ruta: r(`(empleados|proveedores)/${ID}`), metodos: ['GET', 'PATCH'], acceso: ADMIN },
 
+  // ── Derechos ARCOP (sesión 18, K1): solicitudes, exportar y anonimizar: solo admin ──────────────
+  { ruta: r('arco/solicitudes'), metodos: ['GET', 'POST'], acceso: ADMIN },
+  { ruta: r(`arco/solicitudes/${ID}`), metodos: ['GET'], acceso: ADMIN },
+  { ruta: r(`arco/solicitudes/${ID}/(prorroga|resolver|suprimir)`), metodos: ['POST'], acceso: ADMIN },
+  { ruta: r(`arco/solicitudes/${ID}/exportar`), metodos: ['GET'], acceso: ADMIN },
+
   // ── Lecturas que usa toda la app ──────────────────────────────────
   {
     ruta: r('(productos|productos/especiales|mesas|ordenes|configuracion|permisos-descuento|usuarios|recetas|items-orden|cuentas-persona)'),

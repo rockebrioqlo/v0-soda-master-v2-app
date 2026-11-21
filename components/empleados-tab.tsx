@@ -24,8 +24,10 @@ import {
 } from '@/components/ui/select'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Plus, Edit, RefreshCw, UserPlus } from 'lucide-react'
+import { Checkbox } from '@/components/ui/checkbox'
 import { showToast } from '@/components/toast'
 import { formatCurrency } from '@/lib/helpers'
+import { validarRut } from '@/lib/rut'
 
 type Empleado = {
   id: string
@@ -54,6 +56,8 @@ const EMPTY = {
   fecha_egreso: '',
   activo: true,
   notas: '',
+  // Sesión 18: casilla "otro documento" (pasaporte o extranjero: no se valida el Módulo 11). Solo se usa al guardar.
+  documento_otro: false,
 }
 
 const SUELDO_MENSUAL_FACTOR: Record<Empleado['periodicidad'], number> = {
@@ -129,6 +133,8 @@ export function EmpleadosTab() {
       fecha_egreso: e.fecha_egreso ? String(e.fecha_egreso).slice(0, 10) : '',
       activo: e.activo !== false,
       notas: e.notas || '',
+      // un dato antiguo que no es un RUT válido queda marcado como "otro documento" para no bloquear la edición
+      documento_otro: !!e.documento && !validarRut(e.documento),
     })
     setShowDialog(true)
   }
@@ -138,10 +144,16 @@ export function EmpleadosTab() {
       showToast('Nombre requerido', 'error')
       return
     }
+    const doc = form.documento.trim()
+    if (doc && !form.documento_otro && !validarRut(doc) && doc !== (editing?.documento ?? '').trim()) {
+      showToast('RUT inválido: revisa el dígito verificador (si es otro documento, marca "Otro documento")', 'error')
+      return
+    }
     const payload = {
       nombre: form.nombre.trim(),
       cargo: form.cargo || null,
       documento: form.documento || null,
+      documento_otro: form.documento_otro,
       telefono: form.telefono || null,
       email: form.email || null,
       sueldo_base: Number(form.sueldo_base) || 0,
@@ -159,7 +171,11 @@ export function EmpleadosTab() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       })
-      if (!res.ok) throw new Error('Error al guardar')
+      if (!res.ok) {
+        const data = await res.json().catch(() => null)
+        showToast(data?.codigo === 'RUT_INVALIDO' && data?.error ? data.error : 'Error al guardar empleado', 'error')
+        return
+      }
       showToast(editing ? 'Empleado actualizado' : 'Empleado creado', 'success')
       setShowDialog(false)
       await load()
@@ -282,11 +298,15 @@ export function EmpleadosTab() {
                 onChange={(ev) => setForm({ ...form, cargo: ev.target.value })}
               />
               <Input
-                placeholder="Documento"
+                placeholder="Documento (RUT)"
                 value={form.documento}
                 onChange={(ev) => setForm({ ...form, documento: ev.target.value })}
               />
             </div>
+            <label className="flex items-center gap-2 text-xs text-muted-foreground">
+              <Checkbox checked={form.documento_otro} onCheckedChange={(v) => setForm({ ...form, documento_otro: v === true })} />
+              Otro documento (extranjero, pasaporte): no se valida como RUT
+            </label>
             <div className="grid grid-cols-2 gap-2">
               <Input
                 placeholder="Teléfono"

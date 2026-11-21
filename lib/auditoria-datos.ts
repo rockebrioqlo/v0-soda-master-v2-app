@@ -34,8 +34,13 @@ export interface ActorAuditoria {
 /** Los únicos campos que puede tener `detalles` de estas acciones. */
 export type DetallesAcceso = { campos: string[] } | { filas: number; vista: 'detalle' } | { vista: 'detalle' }
 
+// Sesión 18 (ARCOP): las entradas de las solicitudes y de la anonimización llevan, además, el id de la solicitud, su tipo, el
+// resultado y los NOMBRES de lo conservado (nunca un valor). Las arma `lib/arco-sql.ts` y `detallesSeguros` las acepta.
+
 const ESQUEMA_VALIDO = /^[a-z_][a-z0-9_]{0,62}$/
 const NOMBRE_CAMPO = /^[a-z_][a-z0-9_]{0,40}$/
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+const TIPOS_ARCO = ['acceso', 'rectificacion', 'supresion', 'oposicion', 'portabilidad']
 
 /** Campos que se pueden tocar en un empleado, un proveedor o un usuario (nombres, nunca valores). */
 export const CAMPOS_EMPLEADO_EDITABLES = [
@@ -79,6 +84,15 @@ export function detallesSeguros(detalles: unknown): boolean {
       if (typeof v !== 'number' || !Number.isInteger(v) || v < 0) return false
     } else if (k === 'vista') {
       if (v !== 'detalle') return false
+    } else if (k === 'solicitud') {
+      // sesión 18 (ARCOP): el id de la solicitud, nunca un valor del titular
+      if (typeof v !== 'string' || !UUID.test(v)) return false
+    } else if (k === 'tipo') {
+      if (typeof v !== 'string' || !TIPOS_ARCO.includes(v)) return false
+    } else if (k === 'resultado') {
+      if (v !== 'atendida' && v !== 'rechazada' && v !== 'anonimizada') return false
+    } else if (k === 'conservado') {
+      if (!Array.isArray(v) || !v.every((c) => typeof c === 'string' && NOMBRE_CAMPO.test(c))) return false
     } else {
       return false
     }
@@ -113,8 +127,12 @@ interface Tabla {
   salida: readonly string[]
   /** Columnas que entran en el INSERT, con su tipo SQL. */
   insertables: ReadonlyArray<readonly [string, string]>
-  /** Columnas que cambia el UPDATE (COALESCE(nuevo, actual)), con su tipo SQL. */
-  actualizables: ReadonlyArray<readonly [string, string]>
+  /**
+   * Columnas que cambia el UPDATE, con su tipo SQL y si admiten NULL (sesión 18, rectificación). El cambio llega como UN
+   * json con SOLO las claves presentes: una clave ausente no se toca; una clave con `null` o texto vacío VACÍA la columna
+   * (si admite NULL). Una columna que no admite NULL (nombre, sueldo, periodicidad, activo) ignora `null`.
+   */
+  actualizables: ReadonlyArray<readonly [string, string, boolean]>
 }
 
 const TABLAS: Record<'empleados' | 'proveedores', Omit<Tabla, 'salida'>> = {
@@ -127,9 +145,9 @@ const TABLAS: Record<'empleados' | 'proveedores', Omit<Tabla, 'salida'>> = {
       ['notas', 'text'],
     ],
     actualizables: [
-      ['nombre', 'text'], ['cargo', 'text'], ['documento', 'text'], ['telefono', 'text'], ['email', 'text'],
-      ['sueldo_base', 'numeric'], ['periodicidad', 'text'], ['fecha_ingreso', 'date'], ['fecha_egreso', 'date'],
-      ['activo', 'boolean'], ['usuario_id', 'uuid'], ['notas', 'text'],
+      ['nombre', 'text', false], ['cargo', 'text', true], ['documento', 'text', true], ['telefono', 'text', true], ['email', 'text', true],
+      ['sueldo_base', 'numeric', false], ['periodicidad', 'text', false], ['fecha_ingreso', 'date', true], ['fecha_egreso', 'date', true],
+      ['activo', 'boolean', false], ['usuario_id', 'uuid', true], ['notas', 'text', true],
     ],
   },
   proveedores: {
@@ -140,8 +158,8 @@ const TABLAS: Record<'empleados' | 'proveedores', Omit<Tabla, 'salida'>> = {
       ['direccion', 'text'], ['notas', 'text'],
     ],
     actualizables: [
-      ['nombre', 'text'], ['rut', 'text'], ['contacto', 'text'], ['telefono', 'text'], ['email', 'text'],
-      ['direccion', 'text'], ['notas', 'text'], ['activo', 'boolean'],
+      ['nombre', 'text', false], ['rut', 'text', true], ['contacto', 'text', true], ['telefono', 'text', true], ['email', 'text', true],
+      ['direccion', 'text', true], ['notas', 'text', true], ['activo', 'boolean', false],
     ],
   },
 }
@@ -163,7 +181,8 @@ export interface SentenciasPersonal {
   crear: string
   /**
    * Cambia la fila y registra `modificar` (solo los campos que cambiaron de valor) y/o `desactivar` (si `activo` pasa de
-   * true a false) en el mismo statement. $1 id, luego los actualizables en orden, luego actor (id, nombre, rol).
+   * true a false) en el mismo statement. $1 id, $2 el cambio como json (SOLO las claves presentes; `null` o texto vacío en una
+   * columna que admite NULL la vacía; sesión 18), $3 a $5 el actor (id, nombre, rol).
    */
   actualizar: string
   insertables: readonly string[]
@@ -191,11 +210,15 @@ function sentenciasDe(esquema: string, t: Tabla): SentenciasPersonal {
     )
     SELECT ${out} FROM ins`
 
-  const nAct = t.actualizables.length
   const sets = t.actualizables
-    .map(([c, tipo], i) => `${c} = COALESCE($${i + 2}::${tipo}, ${c})`)
+    .map(([c, tipo, anulable]) => {
+      const valor = `$2::jsonb->>'${c}'`
+      if (!anulable) return `${c} = COALESCE((${valor})::${tipo}, ${c})`
+      // clave presente: se aplica (vacío o null = NULL); clave ausente: no se toca
+      return `${c} = CASE WHEN $2::jsonb ? '${c}' THEN NULLIF(btrim(${valor}), '')::${tipo} ELSE ${c} END`
+    })
     .join(',\n          ')
-  const b = nAct + 2 // $b actor id, $b+1 nombre, $b+2 rol
+  const b = 3 // $b actor id, $b+1 nombre, $b+2 rol
   const comparaciones = t.actualizables
     .map(([c]) => `CASE WHEN old.${c} IS DISTINCT FROM upd.${c} THEN '${c}'::text END`)
     .join(',\n          ')

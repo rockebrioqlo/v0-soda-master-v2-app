@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import { db } from '@/lib/db'
 import { actorDe, requireAcceso } from '@/lib/sesion'
-import { EmpleadoSchema } from '@/lib/finanzas-http'
+import { EmpleadoSchema, resolverCampoDocumento } from '@/lib/finanzas-http'
 import { leerConAuditoria } from '@/lib/auditoria-datos'
 import { booleanoConsulta, leerBody, leerConsulta } from '@/lib/validacion-http'
 
@@ -43,12 +43,15 @@ export async function POST(request: Request) {
     const parsed = await leerBody(request, EmpleadoSchema, 'Datos del empleado')
     if (!parsed.ok) return parsed.respuesta
     const d = parsed.datos
+    // RUT con Módulo 11 (sesión 18); con `documento_otro` se acepta un pasaporte u otro documento.
+    const doc = resolverCampoDocumento(d.documento, null, d.documento_otro)
+    if (!doc.ok) return doc.respuesta
     // El alta y su entrada de auditoría van en un solo statement: si el registro falla, no se crea (500).
     const row = await db.crearEmpleado(
       {
         nombre: d.nombre,
         cargo: d.cargo ?? undefined,
-        documento: d.documento ?? undefined,
+        documento: (doc.incluir ? doc.valor : null) ?? undefined,
         telefono: d.telefono ?? undefined,
         email: d.email ?? undefined,
         sueldo_base: d.sueldo_base,

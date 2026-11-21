@@ -45,6 +45,10 @@ export const REFERENCIAS_HISTORIAL: ReadonlyArray<readonly [tabla: string, colum
   ['perdidas_comanda', 'autorizado_por'],
   ['permisos_especiales', 'otorgado_por'],
   ['permisos_especiales', 'revocado_por'],
+  // Sesión 18 (ARCOP): quién ingresó y quién resolvió una solicitud (sin clave foránea, como las demás; hallazgo F51).
+  // Con una solicitud el usuario no se borra: se desactiva o se anonimiza.
+  ['solicitudes_arco', 'ingresada_por'],
+  ['solicitudes_arco', 'resuelta_por'],
 ]
 
 /**

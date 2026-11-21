@@ -35,12 +35,18 @@ const ACCIONES: Array<{ valor: string; etiqueta: string }> = [
   { valor: 'modificar', etiqueta: 'Modificar' },
   { valor: 'desactivar', etiqueta: 'Desactivar' },
   { valor: 'eliminar', etiqueta: 'Eliminar' },
+  // Derechos ARCOP (sesión 18)
+  { valor: 'prorrogar', etiqueta: 'Prorrogar solicitud' },
+  { valor: 'resolver', etiqueta: 'Resolver solicitud' },
+  { valor: 'exportar', etiqueta: 'Exportar datos' },
+  { valor: 'anonimizar', etiqueta: 'Anonimizar' },
 ]
 
 const ENTIDADES: Array<{ valor: string; etiqueta: string }> = [
   { valor: 'empleado', etiqueta: 'Empleado' },
   { valor: 'proveedor', etiqueta: 'Proveedor' },
   { valor: 'usuario', etiqueta: 'Usuario' },
+  { valor: 'solicitud_arco', etiqueta: 'Solicitud ARCOP' },
 ]
 
 function fechaHora(valor: string): string {
@@ -64,7 +70,10 @@ function resumenDetalles(d: unknown): string {
   if (typeof d !== 'object' || Array.isArray(d)) return String(d).slice(0, 120)
   const o = d as Record<string, unknown>
   const partes: string[] = []
+  if (typeof o.tipo === 'string') partes.push(`Solicitud de ${o.tipo}`)
+  if (typeof o.resultado === 'string') partes.push(`Resultado: ${o.resultado}`)
   if (Array.isArray(o.campos)) partes.push(`Campos: ${o.campos.join(', ') || '—'}`)
+  if (Array.isArray(o.conservado) && o.conservado.length > 0) partes.push(`Conservado: ${o.conservado.join(', ')}`)
   if (typeof o.filas === 'number') partes.push(`${o.filas} fila${o.filas === 1 ? '' : 's'}`)
   if (o.vista === 'detalle' && partes.length === 0) partes.push('Detalle abierto')
   if (partes.length > 0) return partes.join(' · ')
@@ -113,8 +122,8 @@ export function AuditoriaTab() {
       <CardHeader>
         <CardTitle>Auditoría de accesos y cambios</CardTitle>
         <CardDescription>
-          Quién vio o cambió datos de empleados, proveedores y usuarios. Solo se guardan los nombres de los campos que
-          cambiaron, nunca sus valores.
+          Quién vio, cambió, exportó o anonimizó datos de empleados, proveedores y usuarios, y las solicitudes de derechos
+          ARCOP. Solo se guardan los nombres de los campos, nunca sus valores.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">

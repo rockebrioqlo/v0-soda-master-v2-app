@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import { db } from '@/lib/db'
 import { actorDe, requireAcceso } from '@/lib/sesion'
-import { ProveedorSchema } from '@/lib/finanzas-http'
+import { ProveedorSchema, resolverCampoDocumento } from '@/lib/finanzas-http'
 import { leerConAuditoria } from '@/lib/auditoria-datos'
 import { booleanoConsulta, leerBody, leerConsulta } from '@/lib/validacion-http'
 
@@ -43,11 +43,14 @@ export async function POST(request: Request) {
     const parsed = await leerBody(request, ProveedorSchema, 'Datos del proveedor')
     if (!parsed.ok) return parsed.respuesta
     const d = parsed.datos
+    // RUT con Módulo 11 (sesión 18); con `documento_otro` se acepta otro documento. Un RUT vacío es "sin dato".
+    const doc = resolverCampoDocumento(d.rut, null, d.documento_otro)
+    if (!doc.ok) return doc.respuesta
     // El alta y su entrada de auditoría van en un solo statement: si el registro falla, no se crea (500).
     const row = await db.crearProveedor(
       {
         nombre: d.nombre,
-        rut: d.rut || undefined,
+        rut: (doc.incluir ? doc.valor : null) ?? undefined,
         contacto: d.contacto || undefined,
         telefono: d.telefono || undefined,
         email: d.email || undefined,

@@ -1,6 +1,6 @@
 import { db } from '@/lib/db'
 import { actorDe, requireAcceso } from '@/lib/sesion'
-import { ProveedorPatchSchema } from '@/lib/finanzas-http'
+import { ProveedorPatchSchema, resolverCampoDocumento } from '@/lib/finanzas-http'
 import { leerConAuditoria } from '@/lib/auditoria-datos'
 import { IdRutaSchema, leerBody, leerParamsRuta } from '@/lib/validacion-http'
 
@@ -42,23 +42,19 @@ export async function PATCH(
     if (!p.ok) return p.respuesta
     const parsed = await leerBody(request, ProveedorPatchSchema, 'Datos del proveedor')
     if (!parsed.ok) return parsed.respuesta
-    const body = parsed.datos
+    const { documento_otro, ...body } = parsed.datos
+    // Rectificación (sesión 18): solo las claves que el cliente mandó. Ausente = no se toca; `null` o vacío = se vacía el campo.
+    const patch = Object.fromEntries(Object.entries(body).filter(([, v]) => v !== undefined)) as Parameters<typeof db.actualizarProveedor>[1]
+    if (body.rut !== undefined) {
+      const actual = await db.getProveedorById(p.datos.id)
+      if (!actual) return Response.json({ error: 'Proveedor no encontrado' }, { status: 404 })
+      const doc = resolverCampoDocumento(body.rut, actual.rut, documento_otro)
+      if (!doc.ok) return doc.respuesta
+      if (doc.incluir) patch.rut = doc.valor
+    }
     // El cambio y su entrada de auditoría (modificar y/o desactivar) van en un solo statement: si el registro
     // falla, el cambio se revierte (500).
-    const updated = await db.actualizarProveedor(
-      p.datos.id,
-      {
-        nombre: body.nombre,
-        rut: body.rut ?? undefined,
-        contacto: body.contacto ?? undefined,
-        telefono: body.telefono ?? undefined,
-        email: body.email ?? undefined,
-        direccion: body.direccion ?? undefined,
-        notas: body.notas ?? undefined,
-        activo: body.activo,
-      },
-      actorDe(s.usuario),
-    )
+    const updated = await db.actualizarProveedor(p.datos.id, patch, actorDe(s.usuario))
     if (!updated) {
       return Response.json({ error: 'Proveedor no encontrado' }, { status: 404 })
     }
