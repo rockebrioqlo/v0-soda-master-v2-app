@@ -16,6 +16,14 @@ import { ORIGENES_VALIDOS, esEstadoTerminal, type DestinoPatch } from './ordenes
 import { ESTADOS_ITEM, ESTADOS_ITEM_EDITABLES, type EstadoItem } from './items-reglas'
 import { CATEGORIAS_BAR, type Estacion } from './estaciones'
 import { formatCurrency } from './helpers'
+import {
+  autoModificacion,
+  decidirCambioUsuario,
+  type CambioUsuario,
+  type ErrorCambioUsuario,
+  MSG_USUARIO_CON_HISTORIAL,
+} from './usuarios-reglas'
+import { sentenciasUsuarios } from './usuarios-sql'
 
 // Lazy initialization to avoid build-time errors
 let _sql: NeonQueryFunction<false, false> | null = null
@@ -47,6 +55,12 @@ function mapMesa(row: any): Mesa {
 
 // Hash bcrypt de un valor aleatorio descartado; solo se usa para igualar tiempos en verificarPIN.
 const HASH_RELLENO = '$2b$10$icawp9UmJE0PBbIsfgs..e2FY0BvOF5MEZLd8QBGd0kj/gDC3PiJC'
+
+// F49 y F50 (14.5b-3): los statements con guarda de administradores e historial (ver lib/usuarios-sql.ts).
+const SQL_USUARIOS = sentenciasUsuarios('soda_master')
+function errorNoEncontrado(): ErrorCambioUsuario {
+  return { codigo: 'USUARIO_NO_ENCONTRADO', status: 404, mensaje: 'Usuario no encontrado' }
+}
 
 
 function normalizarRol(rol?: string | null): string | null {
@@ -2070,19 +2084,27 @@ export const db = {
   },
 
   /**
-   * Actualiza un usuario. Con `pin` (en claro; se hashea aquí) cierra TODAS las sesiones del usuario en la
-   * MISMA transacción que el UPDATE, salvo `conservarSesionId` (la sesión desde la que el propio usuario se
-   * cambia el PIN): así no queda un PIN nuevo con la sesión vieja viva.
+   * Actualiza un usuario. Con `pin` (en claro; se hashea aquí) cierra TODAS las sesiones del usuario en el
+   * MISMO statement que el UPDATE, salvo `conservarSesionId` (la sesión desde la que el propio usuario se
+   * cambia el PIN); desactivarlo (`activo: false`) también las cierra ahí mismo.
+   *
+   * F49 (14.5b-3): `actorId` es el usuario de la sesión (nunca del body). Uno mismo no puede desactivarse ni
+   * quitarse el rol admin (409 AUTO_MODIFICACION, sin tocar la base) y no se puede desactivar ni quitar el
+   * rol admin al ÚLTIMO admin activo (409 ULTIMO_ADMIN): la comprobación y el cambio van en un solo
+   * statement (ver lib/usuarios-sql.ts). Devuelve `{ ok: true, usuario }` o `{ ok: false, error }`.
    */
   async actualizarUsuario(
     id: string,
     updates: UsuarioCambios,
-    opciones: { conservarSesionId?: string | null } = {}
-  ) {
+    opciones: { actorId: string; conservarSesionId?: string | null }
+  ): Promise<{ ok: true; usuario: Usuario } | { ok: false; error: ErrorCambioUsuario }> {
+    const rol = normalizarRol(updates.rol)
+    const cambio: CambioUsuario = { activo: updates.activo ?? null, rol }
+    const auto = autoModificacion(opciones.actorId, id, cambio)
+    if (auto) return { ok: false, error: auto }
     await ensureRolesAdicionalesSchema()
     await ensureSesionesSchema()
     const sql = getSql()
-    const rol = normalizarRol(updates.rol)
     const nuevoPinHash: string | null = updates.pin ? await bcryptjs.hash(updates.pin, 10) : null
     // Para roles_adicionales necesitamos saber qué rol principal va a
     // quedar después del update; si no cambia, lo leemos de la fila
@@ -2098,43 +2120,75 @@ export const db = {
       }
       rolesAdicNormalizados = normalizarRolesAdicionales(principal, updates.roles_adicionales)
     }
-    const actualizar = sql`
-      UPDATE soda_master.usuarios
-      SET nombre = COALESCE(${updates.nombre ?? null}, nombre),
-          email = COALESCE(lower(btrim(${updates.email ?? null})), email),
-          rol = COALESCE(${rol}, rol),
-          roles_adicionales = COALESCE(${rolesAdicNormalizados}::text[], roles_adicionales),
-          activo = COALESCE(${updates.activo ?? null}, activo),
-          pin_hash = COALESCE(${nuevoPinHash}, pin_hash),
-          updated_at = CURRENT_TIMESTAMP
-      WHERE id = ${id}
-      RETURNING id, email, nombre, rol,
-                COALESCE(roles_adicionales, '{}'::text[]) AS roles_adicionales,
-                activo, created_at, updated_at
-    `
-    let filas: any[]
-    if (nuevoPinHash) {
-      const revocar = sql`
-        UPDATE soda_master.sesiones SET revocada_at = now()
-        WHERE usuario_id = ${id}::uuid AND revocada_at IS NULL
-          AND (${opciones.conservarSesionId ?? null}::uuid IS NULL OR id <> ${opciones.conservarSesionId ?? null}::uuid)
-      `
-      filas = (await sql.transaction([actualizar, revocar]))[0] as any[]
-    } else {
-      filas = (await actualizar) as any[]
-    }
-    if (!filas[0]) return null
-    return mapUsuario(filas[0])
+    const filas = (await sql.query(SQL_USUARIOS.actualizar, [
+      id,
+      updates.nombre ?? null,
+      updates.email ?? null,
+      rol,
+      rolesAdicNormalizados,
+      updates.activo ?? null,
+      nuevoPinHash,
+      opciones.conservarSesionId ?? null,
+    ])) as any[]
+    const f = filas[0]
+    if (f?.aplicado > 0) return { ok: true, usuario: mapUsuario(f) }
+    const error = decidirCambioUsuario({
+      actorId: opciones.actorId,
+      objetivoId: id,
+      actual: f && f.existe > 0 ? { rol: f.actual_rol, activo: f.actual_activo } : null,
+      cambio,
+      otrosAdminsActivos: f?.otros ?? 0,
+    })
+    // Sin motivo: el usuario desapareció entre la lectura y el UPDATE (otro admin lo borró a la vez).
+    return { ok: false, error: error ?? errorNoEncontrado() }
   },
 
-  async eliminarUsuario(id: string) {
+  /**
+   * Borra un usuario SIN historial (F50, 14.5b-3). Un usuario con historial (ver REFERENCIAS_HISTORIAL)
+   * responde 409 USUARIO_CON_HISTORIAL: hay que desactivarlo. Uno mismo → 409 AUTO_MODIFICACION; el último
+   * admin activo → 409 ULTIMO_ADMIN. Comprobación y borrado en UN statement; las notificaciones del usuario
+   * se borran en el mismo, y las sesiones y los permisos propios caen por `ON DELETE CASCADE`. Si alguien
+   * le crea historial justo en medio, la clave foránea (23503) es la red de seguridad.
+   */
+  async eliminarUsuario(
+    id: string,
+    opciones: { actorId: string }
+  ): Promise<{ ok: true } | { ok: false; error: ErrorCambioUsuario }> {
+    const cambio: CambioUsuario = { eliminar: true }
+    const auto = autoModificacion(opciones.actorId, id, cambio)
+    if (auto) return { ok: false, error: auto }
+    await ensureSesionesSchema()
+    await ensureRolesAdicionalesSchema()
+    await ensurePermisosEspecialesTable()
+    await ensurePerdidasTable()
+    await ensureAuditoriaAdminTable()
+    await ensureCajaSchema()
+    await ensureRecetasTables()
+    await ensureComprasTables()
+    await ensureFinanzasTables()
+    await ensureNotificacionesTable()
+    await ensurePagoSchema()
     const sql = getSql()
-    const result = await sql`
-      DELETE FROM soda_master.usuarios
-      WHERE id = ${id}
-      RETURNING id
-    `
-    return result.length > 0
+    let filas: any[]
+    try {
+      filas = (await sql.query(SQL_USUARIOS.eliminar, [id])) as any[]
+    } catch (error: any) {
+      if (error?.code === '23503') {
+        return { ok: false, error: { codigo: 'USUARIO_CON_HISTORIAL', status: 409, mensaje: MSG_USUARIO_CON_HISTORIAL } }
+      }
+      throw error
+    }
+    const f = filas[0]
+    if (f?.aplicado > 0) return { ok: true }
+    const error = decidirCambioUsuario({
+      actorId: opciones.actorId,
+      objetivoId: id,
+      actual: f && f.existe > 0 ? { rol: f.actual_rol, activo: f.actual_activo } : null,
+      cambio,
+      otrosAdminsActivos: f?.otros ?? 0,
+      tieneHistorial: f?.historial === true,
+    })
+    return { ok: false, error: error ?? errorNoEncontrado() }
   },
 
   // Sesiones en servidor (sesión 3). Ver lib/sesion.ts.

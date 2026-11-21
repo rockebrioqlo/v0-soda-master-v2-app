@@ -17,6 +17,11 @@
  *     reinicia; tope GLOBAL por usuario con ataque repartido en muchas IPs y una IP con éxito reciente que sigue
  *     entrando; el 429 tiene el mismo cuerpo y `Retry-After`.
  *
+ *  7. F49 y F50 (sesión 14.5b-3, `usuarios-admin.cjs`): no se desactiva, borra ni quita el rol admin al último admin
+ *     activo ni a uno mismo (409 `ULTIMO_ADMIN`, `AUTO_MODIFICACION`) y un usuario con historial no se borra (409
+ *     `USUARIO_CON_HISTORIAL`): regla pura, API con usuarios temporales, el mismo SQL en un esquema temporal
+ *     `prueba_usuarios_*` (carrera incluida) y cobertura de las tablas que referencian a `usuarios`.
+ *
  * Solo usa usuarios temporales de `crearUsuarioPrueba` (nunca bloquea a un usuario real) y simula IPs distintas
  * con `x-forwarded-for` (cada prueba usa las suyas; ninguna deja bloqueada la IP de las demás). Al terminar borra
  * las filas de `intentos_login` de sus usuarios y sus IPs. Los PINs viven solo en memoria.
@@ -320,6 +325,8 @@ exports.correr = async function (ctx) {
     check('las funciones que reinician o devuelven cupo solo viven en lib/intentos-login.ts', solo(/db\.(registrarExitoUsuarioIp|devolverCupoIntento)\(/, ['lib/intentos-login.ts']), donde(/db\.(registrarExitoUsuarioIp|devolverCupoIntento)\(/))
     check('exitoIntento solo lo llaman login, verificar-pin y el cambio del propio PIN (con pin_actual verificado)', solo(/\bexitoIntento\(/, ['app/api/auth/login/route.ts', 'app/api/auth/verificar-pin/route.ts', 'app/api/usuarios/[id]/route.ts', 'lib/intentos-login.ts']), donde(/\bexitoIntento\(/))
     check('nadie más escribe en intentos_login desde código de la app', solo(/UPDATE soda_master\.intentos_login|INSERT INTO soda_master\.intentos_login|DELETE FROM soda_master\.intentos_login/, ['lib/db.ts']), donde(/UPDATE soda_master\.intentos_login|INSERT INTO soda_master\.intentos_login|DELETE FROM soda_master\.intentos_login/))
+    // ───────────────────────── 7. F49 y F50 (sesión 14.5b-3): administradores y borrado ─────────────────────────
+    await require('./usuarios-admin.cjs').correr(ctx, { login })
   } finally {
     try { await limpiarIntentos() } catch (e) { console.log('  AVISO: no se pudieron limpiar los intentos de prueba:', e.message) }
   }

@@ -129,10 +129,7 @@ export function UsuariosPage() {
   }
 
   const handleDelete = async (usuarioId: string) => {
-    if (usuarioId === state.usuarioActual?.id) {
-      showToast('No puedes eliminar tu propio usuario', 'error')
-      return
-    }
+    // Las reglas (uno mismo, último admin, historial) las decide el servidor y su mensaje sale en el aviso.
     try {
       await eliminarUsuarioApi(usuarioId)
       showToast('Usuario eliminado', 'success')
@@ -142,10 +139,6 @@ export function UsuariosPage() {
   }
 
   const handleToggleActivo = async (usuario: Usuario) => {
-    if (usuario.id === state.usuarioActual?.id) {
-      showToast('No puedes desactivar tu propio usuario', 'error')
-      return
-    }
     try {
       await actualizarUsuarioApi(usuario.id, { activo: !usuario.activo })
       showToast(usuario.activo ? 'Usuario desactivado' : 'Usuario activado', 'success')
