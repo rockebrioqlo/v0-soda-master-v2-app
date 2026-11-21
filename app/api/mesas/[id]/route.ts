@@ -2,6 +2,7 @@ import { db } from '@/lib/db'
 import { requireAcceso } from '@/lib/sesion'
 import { MesaPatchPorIdSchema } from '@/lib/catalogo-http'
 import { IdRutaSchema, leerBody, leerParamsRuta } from '@/lib/validacion-http'
+import { respuestaDeError } from '@/lib/ordenes-http'
 
 // Esta ruta (por id) queda solo para el admin en la tabla del proxy; salón cambia el estado por PATCH /api/mesas.
 export async function PATCH(
@@ -21,6 +22,8 @@ export async function PATCH(
     }
     return Response.json(mesa)
   } catch (error) {
+    const resp = respuestaDeError(error)
+    if (resp) return resp
     console.error('Update mesa error:', error)
     return Response.json({ error: 'Error en servidor' }, { status: 500 })
   }

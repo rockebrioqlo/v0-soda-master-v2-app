@@ -89,7 +89,6 @@ export function POSPage() {
     posNavigation,
     clearPOSNavigation,
     navigateTo,
-    updateMesa,
     enviarComandaApi,
     actualizarItemOrden,
     eliminarItemOrden,
@@ -766,11 +765,10 @@ export function POSPage() {
           if (Number.isFinite(precioServidor)) preciosServidor.set(item.id, precioServidor)
         })
 
-        // La mesa se marca como ocupada SOLO al enviar la comanda a cocina/bar.
-        // Antes de este punto, la comanda existe únicamente en memoria local.
+        // Sesión 15 (F23): el servidor ya dejó la mesa ocupada dentro de la misma transacción del envío; aquí solo se
+        // refleja en la pantalla (sin otra llamada que pudiera fallar y dejar una comanda enviada con la mesa libre).
         const mesa = mesas.find(m => m.id === currentComanda.mesaId)
         if (mesa && mesa.estado !== 'ocupada') {
-          await updateMesa(mesa.id, { estado: 'ocupada' })
           dispatch({ type: 'UPDATE_MESA', payload: { ...mesa, estado: 'ocupada' } })
         }
 
@@ -827,7 +825,7 @@ export function POSPage() {
         }
       }
     } catch (error) {
-      console.error('[v0] Error sending to kitchen:', error)
+      console.error('Error sending to kitchen:', error)
       showToast(mensajeAccionable(error, 'Error al enviar a cocina'), 'error')
     }
   }

@@ -111,10 +111,15 @@ export function MesasPage() {
 
     try {
       if (editingMesa) {
-        await updateMesa(editingMesa.id, {
-          capacidad: parseInt(formData.capacidad),
-          estado: formData.estado,
-        })
+        // Sesión 15 (#23): también se guarda el nombre. Solo se envía lo que cambió (el servidor rechaza un nombre
+        // repetido con 409 y no deja pasar a libre una mesa con comanda activa).
+        const cambios: { nombre?: string; capacidad?: number; estado?: EstadoMesa } = {}
+        const nombre = formData.nombre.trim()
+        if (nombre !== editingMesa.nombre) cambios.nombre = nombre
+        const capacidad = parseInt(formData.capacidad)
+        if (capacidad !== editingMesa.capacidad) cambios.capacidad = capacidad
+        if (formData.estado !== editingMesa.estado) cambios.estado = formData.estado
+        if (Object.keys(cambios).length > 0) await updateMesa(editingMesa.id, cambios)
         showToast('Mesa actualizada', 'success')
       } else {
         await crearMesaApi({
@@ -163,8 +168,13 @@ export function MesasPage() {
       return
     }
 
-    await updateMesa(mesa.id, { estado: nuevoEstado })
-    showToast(`Mesa ${mesa.nombre} ahora está ${getEstadoMesaLabel(nuevoEstado).toLowerCase()}`, 'success')
+    try {
+      await updateMesa(mesa.id, { estado: nuevoEstado })
+      showToast(`${mesa.nombre} ahora está ${getEstadoMesaLabel(nuevoEstado).toLowerCase()}`, 'success')
+    } catch (error: any) {
+      // F56: el servidor no libera una mesa con comanda activa; el mensaje explica qué hacer.
+      showToast(error?.message || 'No se pudo cambiar el estado de la mesa', 'error')
+    }
   }
 
   const handleConfirmOverride = async () => {
@@ -185,7 +195,7 @@ export function MesasPage() {
         await updateOrden(comanda.id, { estado: 'cancelado', notas: nota })
       }
       await updateMesa(overrideMesa.id, { estado: 'libre' })
-      showToast(`Mesa ${overrideMesa.nombre} liberada (forzada por admin)`, 'success')
+      showToast(`${overrideMesa.nombre} liberada (forzada por admin)`, 'success')
       setOverrideMesa(null)
       setOverrideMotivo('')
     } catch (error: any) {

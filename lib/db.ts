@@ -24,6 +24,14 @@ import {
   MSG_USUARIO_CON_HISTORIAL,
 } from './usuarios-reglas'
 import { sentenciasUsuarios } from './usuarios-sql'
+import {
+  MENSAJE_NOMBRE_DUPLICADO,
+  MENSAJE_NOMBRE_RESERVADO,
+  MENSAJE_NUMERO_DUPLICADO,
+  NUMERO_MESA_MAX,
+  normalizarNombreMesa,
+  numeroDeNombreReservado,
+} from './mesas-nombre'
 
 // Lazy initialization to avoid build-time errors
 let _sql: NeonQueryFunction<false, false> | null = null
@@ -437,6 +445,12 @@ const ERRORES_TX_ORDEN: Record<string, { status: number; mensaje: string }> = {
   PERDIDA_YA_RESUELTA: { status: 409, mensaje: 'Esta pérdida ya fue cobrada retroactivamente.' },
   // Sesión 8: orden + ítems en una transacción, stock todo-o-nada.
   MESA_NO_ENCONTRADA: { status: 404, mensaje: 'La mesa no existe.' },
+  // Sesión 15 (F56, #23): la mesa no se libera con una comanda activa y los nombres "Mesa <número>" son de su número.
+  MESA_CON_COMANDA: {
+    status: 409,
+    mensaje: 'La mesa tiene una comanda activa sin cerrar: cóbrala o cancélala antes de liberar la mesa.',
+  },
+  NOMBRE_RESERVADO: { status: 400, mensaje: MENSAJE_NOMBRE_RESERVADO },
   COMANDA_ACTIVA: { status: 409, mensaje: 'Ya existe una comanda activa para esta mesa' },
   STOCK_INSUFICIENTE: { status: 409, mensaje: 'Stock insuficiente para enviar la comanda.' },
   ORDEN_MODIFICADA: {
@@ -1183,6 +1197,69 @@ async function verificarCierreOrden(
   }
 }
 
+/**
+ * Lock advisory de UNA mesa (sesión 15, F23/F56). Es la ÚNICA definición de la clave: la apertura de comanda, el envío
+ * de ítems y los cambios de la mesa (`actualizarMesa`) la toman, así que se serializan entre sí. Orden de bloqueo de
+ * todo el sistema: este lock → fila de la orden → fila de la mesa (nadie toma la mesa antes que la orden). Se normaliza
+ * el uuid a minúsculas para que dos escrituras del mismo id den la misma clave.
+ */
+function sentenciaLockMesa(sql: Sql, mesaId: string) {
+  return sql`SELECT pg_advisory_xact_lock(hashtext(${mesaId}::uuid::text)::bigint)`
+}
+
+let _mesasSchemaReady: Promise<void> | null = null
+
+/**
+ * Sesión 15 (#23): `mesas.nombre` (NULL = "Mesa <número>") y el índice único del nombre efectivo, sin distinguir
+ * mayúsculas ni espacios en los bordes. Idempotente y memorizada por proceso: la primera llamada hace el trabajo y las
+ * siguientes (incluidas las que llegan a la vez) reutilizan la misma promesa; si falla, se reintenta en la siguiente.
+ */
+function ensureMesasSchema(): Promise<void> {
+  if (!_mesasSchemaReady) {
+    _mesasSchemaReady = (async () => {
+      const sql = getSql()
+      const col = (await sql`
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'soda_master' AND table_name = 'mesas' AND column_name = 'nombre'
+      `) as any[]
+      if (col.length === 0) {
+        await sql`ALTER TABLE soda_master.mesas ADD COLUMN IF NOT EXISTS nombre VARCHAR(60) NULL`
+      }
+      const idx = (await sql`
+        SELECT 1 FROM pg_indexes WHERE schemaname = 'soda_master' AND indexname = 'mesas_nombre_efectivo_uk'
+      `) as any[]
+      if (idx.length === 0) {
+        try {
+          await sql`
+            CREATE UNIQUE INDEX IF NOT EXISTS mesas_nombre_efectivo_uk
+            ON soda_master.mesas ((lower(btrim(COALESCE(nombre, 'Mesa ' || numero::text)))))
+          `
+        } catch (err) {
+          // Dos instancias creándolo a la vez: si ya existe, está bien.
+          const otra = (await sql`
+            SELECT 1 FROM pg_indexes WHERE schemaname = 'soda_master' AND indexname = 'mesas_nombre_efectivo_uk'
+          `) as any[]
+          if (otra.length === 0) throw err
+        }
+      }
+    })().catch((err) => {
+      _mesasSchemaReady = null
+      throw err
+    })
+  }
+  return _mesasSchemaReady
+}
+
+/** Choques de unicidad de las mesas (23505) → 409 con código; cualquier otro error se traduce o se relanza. */
+function errorDeMesa(err: any): never {
+  const texto = `${err?.message ?? ''} ${err?.code ?? ''}`
+  if (err?.code === '23505' || texto.includes('23505') || texto.includes('duplicate key')) {
+    if (texto.includes('mesas_nombre_efectivo_uk')) throw new ErrorOrden('NOMBRE_DUPLICADO', 409, MENSAJE_NOMBRE_DUPLICADO)
+    if (texto.includes('mesas_numero_key')) throw new ErrorOrden('NUMERO_DUPLICADO', 409, MENSAJE_NUMERO_DUPLICADO)
+  }
+  return traducirErrorTx(err)
+}
+
 /** Statements que abren una orden bajo lock de la mesa (B1). El último devuelve la orden. */
 function sentenciasAperturaOrden(
   sql: Sql,
@@ -1197,8 +1274,8 @@ function sentenciasAperturaOrden(
   const M = o.mesaId
   const enviado = o.estado === 'en_cocina'
   return [
-    // Un lock real (dentro de la transacción) serializa las aperturas de una misma mesa.
-    sql`SELECT pg_advisory_xact_lock(hashtext(${M}::text)::bigint)`,
+    // Un lock real (dentro de la transacción) serializa las aperturas de una misma mesa (y sus cambios de estado, F56).
+    sentenciaLockMesa(sql, M),
     // Limpieza de comandas vacías abandonadas: solo las de más de 2 minutos. Una orden recién
     // creada por otra request (sin ítems todavía) NUNCA se borra aquí.
     sql`
@@ -2566,54 +2643,85 @@ export const db = {
   },
 
   // Mesas
+  // `nombre` sale de `COALESCE(mesas.nombre, 'Mesa ' || numero)` (sesión 15, #23): el nombre por defecto no se guarda.
   async getMesas(): Promise<Mesa[]> {
+    await ensureMesasSchema()
     const sql = getSql()
     const result = await sql`
-      SELECT *, 
-             'Mesa ' || numero AS nombre 
-      FROM soda_master.mesas 
+      SELECT id, numero, area, capacidad, estado, created_at, updated_at,
+             COALESCE(nombre, 'Mesa ' || numero::text) AS nombre
+      FROM soda_master.mesas
       ORDER BY numero
     `
     return result.map(mapMesa)
   },
 
   async getMesaById(id: string): Promise<Mesa | null> {
+    await ensureMesasSchema()
     const sql = getSql()
     const result = await sql`
-      SELECT *, 
-             'Mesa ' || numero AS nombre 
-      FROM soda_master.mesas 
+      SELECT id, numero, area, capacidad, estado, created_at, updated_at,
+             COALESCE(nombre, 'Mesa ' || numero::text) AS nombre
+      FROM soda_master.mesas
       WHERE id = ${id}
     `
     return result[0] ? mapMesa(result[0]) : null
   },
 
-  async actualizarEstadoMesa(id: string, estado: string) {
-    const sql = getSql()
-    const dbEstado = toDatabaseMesaEstado(estado)
-    const result = await sql`
-      UPDATE soda_master.mesas 
-      SET estado = ${dbEstado}, updated_at = CURRENT_TIMESTAMP
-      WHERE id = ${id}
-      RETURNING *, 'Mesa ' || numero AS nombre
-    `
-    return mapMesa(result[0])
-  },
-
-  async actualizarMesa(id: string, updates: Partial<Mesa>) {
+  /**
+   * Cambia una mesa (sesión 15). Una sola transacción bajo el lock advisory de la mesa (el mismo del envío de comanda):
+   *  - F56: pasar a `libre` con una comanda activa CON ítems → 409 `MESA_CON_COMANDA` (órdenes sin ítems, pagadas,
+   *    canceladas o perdidas no bloquean). El lock hace que el chequeo vea el envío que acaba de confirmar otro.
+   *  - #23: el nombre llega normalizado; "mesa <número>" solo vale con el número de la propia mesa (400 `NOMBRE_RESERVADO`)
+   *    y se guarda como NULL; un nombre repetido (sin distinguir mayúsculas) o un número repetido → 409.
+   * Devuelve la mesa; lanza `ErrorOrden` (404 si no existe).
+   */
+  async actualizarMesa(id: string, updates: Partial<Mesa>): Promise<Mesa> {
+    await ensureMesasSchema()
+    await ensurePagoSchema()
     const sql = getSql()
     const dbEstado = toDatabaseMesaEstado(updates.estado)
-    const result = await sql`
-      UPDATE soda_master.mesas 
-      SET estado = COALESCE(${dbEstado}, estado),
-          capacidad = COALESCE(${updates.capacidad ?? null}, capacidad),
-          area = COALESCE(${updates.area ?? null}, area),
-          numero = COALESCE(${updates.numero ?? null}, numero),
-          updated_at = CURRENT_TIMESTAMP
-      WHERE id = ${id}
-      RETURNING *, 'Mesa ' || numero AS nombre
-    `
-    return mapMesa(result[0])
+    const nombre = updates.nombre === undefined ? null : normalizarNombreMesa(updates.nombre)
+    if (updates.nombre !== undefined && !nombre) throw new ErrorOrden('DATOS_INVALIDOS', 400, 'El nombre de la mesa no puede estar vacío.')
+    const reservado = nombre ? numeroDeNombreReservado(nombre) : null
+    const aLibre = dbEstado === 'disponible'
+    let resultados: any[][]
+    try {
+      resultados = (await sql.transaction([
+        sentenciaLockMesa(sql, id),
+        sql`SELECT soda_master.assert_cobro(
+              EXISTS (SELECT 1 FROM soda_master.mesas WHERE id = ${id}::uuid), 'MESA_NO_ENCONTRADA')`,
+        sql`SELECT id FROM soda_master.mesas WHERE id = ${id}::uuid FOR NO KEY UPDATE`,
+        sql`SELECT soda_master.assert_cobro(
+              NOT ${aLibre}::boolean OR NOT EXISTS (
+                SELECT 1 FROM soda_master.ordenes o
+                WHERE o.mesa_id = ${id}::uuid
+                  AND o.estado NOT IN ('pagado', 'cancelado', 'perdida')
+                  AND EXISTS (SELECT 1 FROM soda_master.items_orden i WHERE i.orden_id = o.id)),
+              'MESA_CON_COMANDA')`,
+        sql`SELECT soda_master.assert_cobro(
+              ${reservado}::int IS NULL
+              OR ${reservado}::int = COALESCE(${updates.numero ?? null}::int, (SELECT numero FROM soda_master.mesas WHERE id = ${id}::uuid)),
+              'NOMBRE_RESERVADO')`,
+        sql`
+          UPDATE soda_master.mesas
+          SET estado = COALESCE(${dbEstado}, estado),
+              capacidad = COALESCE(${updates.capacidad ?? null}, capacidad),
+              area = COALESCE(${updates.area ?? null}, area),
+              numero = COALESCE(${updates.numero ?? null}, numero),
+              nombre = CASE WHEN ${nombre}::text IS NULL THEN nombre
+                            WHEN ${reservado}::int IS NOT NULL THEN NULL
+                            ELSE ${nombre}::text END,
+              updated_at = CURRENT_TIMESTAMP
+          WHERE id = ${id}::uuid
+          RETURNING id, numero, area, capacidad, estado, created_at, updated_at,
+                    COALESCE(nombre, 'Mesa ' || numero::text) AS nombre
+        `,
+      ])) as any[][]
+    } catch (err) {
+      return errorDeMesa(err)
+    }
+    return mapMesa(resultados[resultados.length - 1][0])
   },
 
   async crearMesa(mesa: {
@@ -2623,40 +2731,59 @@ export const db = {
     capacidad?: number
     estado?: string
   }) {
+    await ensureMesasSchema()
     const sql = getSql()
+    const nombre = mesa.nombre === undefined ? null : normalizarNombreMesa(mesa.nombre)
+    if (mesa.nombre !== undefined && !nombre) throw new ErrorOrden('DATOS_INVALIDOS', 400, 'El nombre de la mesa no puede estar vacío.')
+    const reservado = nombre ? numeroDeNombreReservado(nombre) : null
     let numero = mesa.numero
     let area = mesa.area ?? null
-    if (mesa.nombre && (numero === undefined || numero === null)) {
-      const trimmed = mesa.nombre.trim()
-      const match = trimmed.match(/^(.*?)\s*(\d+)$/)
+    if (nombre && (numero === undefined || numero === null)) {
+      // "Terraza 3": el número del final se usa si está libre y la etiqueta queda como área (comportamiento anterior).
+      // "Mesa 7" (nombre por defecto) pide el número 7. El nombre completo se guarda como nombre.
+      const match = nombre.match(/^(.*?)\s*(\d+)$/)
       if (match) {
-        const labelPart = (match[1] || '').trim()
-        if (!area && labelPart) area = labelPart
-        const candidate = parseInt(match[2], 10)
-        const existing = await sql`
-          SELECT id FROM soda_master.mesas WHERE numero = ${candidate} LIMIT 1
-        `
-        if (!existing[0]) {
-          numero = candidate
+        const etiqueta = (match[1] || '').trim()
+        if (!area && etiqueta && reservado === null) area = etiqueta
+        const candidato = parseInt(match[2], 10)
+        if (candidato >= 1 && candidato <= NUMERO_MESA_MAX) {
+          const existing = await sql`
+            SELECT id FROM soda_master.mesas WHERE numero = ${candidato} LIMIT 1
+          `
+          if (!existing[0]) numero = candidato
         }
-      } else if (!area) {
-        area = trimmed || null
       }
     }
-    if (numero === undefined || numero === null) {
-      const next = await sql`
-        SELECT COALESCE(MAX(numero), 0) + 1 AS next FROM soda_master.mesas
-      `
-      numero = Number((next[0] as any).next)
-    }
+    const numeroAuto = numero === undefined || numero === null
+    const nombreGuardado = reservado !== null ? null : nombre
     const capacidad = mesa.capacidad ?? 4
     const dbEstado = toDatabaseMesaEstado(mesa.estado ?? 'libre') ?? 'disponible'
-    const result = await sql`
-      INSERT INTO soda_master.mesas (numero, area, capacidad, estado)
-      VALUES (${numero}, ${area}, ${capacidad}, ${dbEstado})
-      RETURNING *, 'Mesa ' || numero AS nombre
-    `
-    return mapMesa(result[0])
+    // Con número automático (máximo + 1) dos creaciones a la vez calculan el mismo número: la que pierde reintenta con el
+    // siguiente (así, con el mismo nombre, termina en 409 NOMBRE_DUPLICADO y, con nombres distintos, las dos se crean).
+    for (let intento = 1; ; intento++) {
+      if (numeroAuto) {
+        const next = await sql`
+          SELECT COALESCE(MAX(numero), 0) + 1 AS next FROM soda_master.mesas
+        `
+        numero = Number((next[0] as any).next)
+      }
+      if (reservado !== null && reservado !== numero) {
+        throw new ErrorOrden('NOMBRE_RESERVADO', 400, MENSAJE_NOMBRE_RESERVADO)
+      }
+      try {
+        const result = (await sql`
+          INSERT INTO soda_master.mesas (numero, area, capacidad, estado, nombre)
+          VALUES (${numero}, ${area}, ${capacidad}, ${dbEstado}, ${nombreGuardado})
+          RETURNING id, numero, area, capacidad, estado, created_at, updated_at,
+                    COALESCE(nombre, 'Mesa ' || numero::text) AS nombre
+        `) as any[]
+        return mapMesa(result[0])
+      } catch (err: any) {
+        const choqueDeNumero = `${err?.message ?? ''}`.includes('mesas_numero_key')
+        if (numeroAuto && reservado === null && choqueDeNumero && intento < 5) continue
+        return errorDeMesa(err)
+      }
+    }
   },
 
   async eliminarMesa(id: string) {
@@ -3580,11 +3707,13 @@ export const db = {
     const enviar = input.enviar !== false
 
     // ── Lectura previa (la transacción la revalida) ──
+    let mesaDeLaOrden: string | null = null
     if (input.orden_id) {
       const ordenRows = (await sql`
-        SELECT estado FROM soda_master.ordenes WHERE id = ${input.orden_id}::uuid
+        SELECT estado, mesa_id::text AS mesa_id FROM soda_master.ordenes WHERE id = ${input.orden_id}::uuid
       `) as any[]
       if (!ordenRows[0]) throw new ErrorOrden('ORDEN_NO_ENCONTRADA', 404, 'La orden no existe.')
+      mesaDeLaOrden = ordenRows[0].mesa_id ?? null
       if (esEstadoTerminal(ordenRows[0].estado)) {
         throw new ErrorOrden(
           'ORDEN_NO_ACTIVA',
@@ -3648,6 +3777,8 @@ export const db = {
       const consultas: any[] = []
       if (input.orden_id) {
         const O = input.orden_id
+        // F56: el mismo lock de la mesa que toma la apertura y `actualizarMesa`, ANTES de la fila de la orden.
+        if (mesaDeLaOrden) consultas.push(sentenciaLockMesa(sql, mesaDeLaOrden))
         consultas.push(
           sql`SELECT id FROM soda_master.ordenes WHERE id = ${O}::uuid FOR UPDATE`,
           sql`SELECT soda_master.assert_cobro(
@@ -3694,6 +3825,14 @@ export const db = {
       // Sesión 13 (B5): con ítems nuevos pendientes, la orden vuelve a `en_cocina` (o conserva
       // `problema` / `en_preparacion` si hay ítems en ese estado) y reaparece en el KDS.
       consultas.push(sentenciaRecalcularEstado(sql, ordenId))
+      // Sesión 15 (F23): la mesa queda ocupada en la MISMA transacción que la comanda enviada (antes el POS lo hacía
+      // después con otra llamada y un fallo dejaba la comanda enviada con la mesa libre). Con el lock de la mesa ya tomado.
+      if (enviar) {
+        consultas.push(sql`
+          UPDATE soda_master.mesas SET estado = 'ocupada', updated_at = CURRENT_TIMESTAMP
+          WHERE id = (SELECT mesa_id FROM soda_master.ordenes WHERE id = ${ordenId}::uuid)
+            AND estado IS DISTINCT FROM 'ocupada'`)
+      }
       const idxOrden = consultas.length
       consultas.push(sql`SELECT * FROM soda_master.ordenes WHERE id = ${ordenId}::uuid`)
       let res: any[][]
@@ -4254,6 +4393,7 @@ export const db = {
     referencia?: string | null
     usuario: { id: string; nombre: string }
   }) {
+    await ensureMesasSchema()
     await ensureItemPagoSchema()
     await ensureOrdenEstadoSchema()
     await ensureCajaSchema()
@@ -4561,7 +4701,7 @@ export const db = {
     }
     // j) el pago creado, con mesa
     consultas.push(sql`
-      SELECT p.*, o.mesa_id, ('Mesa ' || m.numero) AS mesa_nombre, o.estado AS orden_estado
+      SELECT p.*, o.mesa_id, COALESCE(m.nombre, 'Mesa ' || m.numero::text) AS mesa_nombre, o.estado AS orden_estado
       FROM soda_master.pagos p
       JOIN soda_master.ordenes o ON o.id = p.orden_id
       LEFT JOIN soda_master.mesas m ON m.id = o.mesa_id
@@ -4598,11 +4738,12 @@ export const db = {
 
   async getPagos(filtro?: { fecha?: string }): Promise<Pago[]> {
     await ensureTimestampTzMigration()
+    await ensureMesasSchema()
     const sql = getSql()
     let rows: any[]
     if (filtro?.fecha === 'hoy') {
       rows = await sql`
-        SELECT p.*, o.mesa_id, ('Mesa ' || m.numero) AS mesa_nombre
+        SELECT p.*, o.mesa_id, COALESCE(m.nombre, 'Mesa ' || m.numero::text) AS mesa_nombre
         FROM soda_master.pagos p
         LEFT JOIN soda_master.ordenes o ON o.id = p.orden_id
         LEFT JOIN soda_master.mesas m ON m.id = o.mesa_id
@@ -4611,7 +4752,7 @@ export const db = {
       `
     } else if (filtro?.fecha) {
       rows = await sql`
-        SELECT p.*, o.mesa_id, ('Mesa ' || m.numero) AS mesa_nombre
+        SELECT p.*, o.mesa_id, COALESCE(m.nombre, 'Mesa ' || m.numero::text) AS mesa_nombre
         FROM soda_master.pagos p
         LEFT JOIN soda_master.ordenes o ON o.id = p.orden_id
         LEFT JOIN soda_master.mesas m ON m.id = o.mesa_id
@@ -4620,7 +4761,7 @@ export const db = {
       `
     } else {
       rows = await sql`
-        SELECT p.*, o.mesa_id, ('Mesa ' || m.numero) AS mesa_nombre
+        SELECT p.*, o.mesa_id, COALESCE(m.nombre, 'Mesa ' || m.numero::text) AS mesa_nombre
         FROM soda_master.pagos p
         LEFT JOIN soda_master.ordenes o ON o.id = p.orden_id
         LEFT JOIN soda_master.mesas m ON m.id = o.mesa_id

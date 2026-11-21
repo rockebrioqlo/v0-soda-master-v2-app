@@ -343,6 +343,18 @@ async function limpiar(ctx) {
         await api(ctx.admin, 'PATCH', '/api/mesas', { id: m.id, estado: 'libre' })
       }
     }
+    // sesión 15 (#23): mesas que creó una prueba (se borran) y mesas de prueba renombradas (vuelven a su nombre original)
+    for (const id of ctx.mesasPrueba || []) {
+      const d = await api(ctx.admin, 'DELETE', '/api/mesas/' + id)
+      if (d.status !== 200 && d.status !== 404) avisos.push(`no se pudo borrar la mesa de prueba ${id} (${d.status})`)
+    }
+    const mesas2 = await api(ctx.admin, 'GET', '/api/mesas')
+    for (const m of Array.isArray(mesas2.json) ? mesas2.json : []) {
+      if (MESAS.includes(Number(m.numero)) && m.nombre !== 'Mesa ' + m.numero) {
+        await api(ctx.admin, 'PATCH', '/api/mesas', { id: m.id, nombre: 'Mesa ' + m.numero })
+        avisos.push('se restauró el nombre de la mesa ' + m.numero)
+      }
+    }
     if (ctx.f) {
       for (const id of [ctx.f.pR, ctx.f.pRP, ctx.f.pP, ctx.f.pEsp, ctx.f.pBar]) await api(ctx.admin, 'PATCH', '/api/productos/' + id, { activo: false })
       for (const id of [ctx.f.ingA, ctx.f.ingB, ctx.f.ingX, ctx.f.ingO]) await api(ctx.admin, 'PATCH', '/api/ingredientes/' + id, { activo: false })

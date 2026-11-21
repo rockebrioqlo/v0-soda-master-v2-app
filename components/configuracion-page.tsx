@@ -240,7 +240,10 @@ export function ConfiguracionPage() {
 
     try {
       if (editingTable) {
+        // Sesión 15 (#23): el nombre también se guarda (solo si cambió; el servidor valida que sea único).
+        const nombre = tableForm.nombre.trim()
         await updateMesa(editingTable.id, {
+          ...(nombre !== editingTable.nombre ? { nombre } : {}),
           capacidad: tableForm.capacidad,
           area: tableForm.area,
         })

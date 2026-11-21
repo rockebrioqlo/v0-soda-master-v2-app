@@ -17,6 +17,7 @@ import { errorDeRespuesta } from '@/lib/api-error'
 import { enPausaPorLimite, registrarLimite, segundosDePausa } from '@/lib/pausa-limite'
 import { CABECERA_SONDEO } from '@/lib/sesion-reglas'
 import { MENSAJES_CIERRE, registrarMotivoCierre, esErrorDePin } from '@/lib/sesion-cliente'
+import { esFalloDeConexion, hayFalloDeConexion, MENSAJE_ERROR_CONEXION, type ResultadoCarga } from '@/lib/carga-inicial'
 
 type PageType = 'dashboard' | 'mesas' | 'pos' | 'kds' | 'inventario' | 'finanzas' | 'usuarios' | 'pagos' | 'caja' | 'mermas' | 'reportes' | 'configuracion'
 
@@ -196,6 +197,11 @@ interface AppContextType {
   logout: () => void
   hasPermission: (modulo: string) => boolean
   isInitialized: boolean
+  /** Sesión 15 (#26): mensaje si el arranque no pudo leer la base (red caída o 5xx); null si todo cargó. */
+  initError: string | null
+  reintentandoInicio: boolean
+  /** Repite el arranque UNA vez (lo dispara el botón Reintentar; no hay reintentos automáticos). */
+  reintentarInicio: () => Promise<void>
   currentPage: PageType
   setCurrentPage: (page: PageType) => void
   navigateTo: (page: PageType) => void
@@ -458,6 +464,8 @@ const isRol = (rol: unknown): rol is Rol => typeof rol === 'string' && rol in de
 export function AppProvider({ children }: { children: React.ReactNode }) {
   const [state, dispatch] = useReducer(appReducer, initialState)
   const [isInitialized, setIsInitialized] = useState(false)
+  const [initError, setInitError] = useState<string | null>(null)
+  const [reintentandoInicio, setReintentandoInicio] = useState(false)
   const [currentPage, setCurrentPage] = useState<PageType>('dashboard')
   const [posNavigation, setPosNavigation] = useState<POSNavigationState>({ mesaId: null, comandaId: null })
 
@@ -475,21 +483,34 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   // Carga los datos de la app desde Neon. Desde la sesión 3 la API exige
   // sesión, así que se llama después de restaurar la sesión (cookie) o de
   // un login correcto, nunca antes.
-  const cargarDatosApp = useCallback(async () => {
+  // Devuelve false si alguna de las cargas esenciales (usuarios, productos, mesas, órdenes) falló por conexión (red o
+  // 5xx, ver lib/carga-inicial.ts); un 401/403/404 no cuenta. Sin temporizadores: lo repite solo el botón Reintentar.
+  const cargarDatosApp = useCallback(async (): Promise<boolean> => {
+      const resultados: ResultadoCarga[] = []
+      const pedir = async (url: string): Promise<Response | null> => {
+        try {
+          const res = await fetch(url)
+          resultados.push(res.status)
+          return res
+        } catch {
+          resultados.push('red')
+          return null
+        }
+      }
       try {
         // Ya no se llama POST /api/seed en cada carga (sesión 2, R6).
         // Una base vacía se inicializa a mano: ver README, "Base de datos vacía".
 
         // Load usuarios from Neon
-        const usuariosRes = await fetch('/api/usuarios')
-        if (usuariosRes.ok) {
+        const usuariosRes = await pedir('/api/usuarios')
+        if (usuariosRes?.ok) {
           const usuarios = await usuariosRes.json()
           dispatch({ type: 'SET_USUARIOS', payload: usuarios })
         }
 
         // Load productos from Neon
-        const productosRes = await fetch('/api/productos')
-        if (productosRes.ok) {
+        const productosRes = await pedir('/api/productos')
+        if (productosRes?.ok) {
           const productos = await productosRes.json()
           if (Array.isArray(productos)) {
             dispatch({ type: 'SET_PRODUCTOS', payload: productos })
@@ -498,8 +519,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
         // Load mesas from Neon
         let loadedMesas: any[] = []
-        const mesasRes = await fetch('/api/mesas')
-        if (mesasRes.ok) {
+        const mesasRes = await pedir('/api/mesas')
+        if (mesasRes?.ok) {
           const mesas = await mesasRes.json()
           if (Array.isArray(mesas) && mesas.length > 0) {
             // Normalize estado and ensure nombre exists
@@ -513,8 +534,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         }
 
         // Load ordenes/comandas from Neon — use ?kds=true to get items via JOIN
-        const ordenesRes = await fetch('/api/ordenes?kds=true')
-        if (ordenesRes.ok) {
+        const ordenesRes = await pedir('/api/ordenes?kds=true')
+        if (ordenesRes?.ok) {
           const ordenes = await ordenesRes.json()
           if (Array.isArray(ordenes)) {
             const comandas = ordenes
@@ -555,13 +576,15 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
       } catch (error) {
         console.error('Error cargando datos:', error)
+        return false
       }
+      return !hayFalloDeConexion(resultados)
   }, [])
 
   // Al cargar: la sesión vive en una cookie httpOnly del servidor
   // (sesión 3). sessionStorage solo recuerda la página abierta.
-  useEffect(() => {
-    const initializeDatabase = async () => {
+  const iniciarApp = useCallback(async () => {
+      let fallo: string | null = null
       try {
         const res = await fetch('/api/auth/sesion', { cache: 'no-store' })
         if (res.ok) {
@@ -575,20 +598,35 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           }
           const userRole: unknown = user.rol
           setCurrentPage(paginaGuardada || (isRol(userRole) ? defaultPageByRole[userRole] : 'dashboard'))
-          await cargarDatosApp()
+          if (!(await cargarDatosApp())) fallo = MENSAJE_ERROR_CONEXION
         } else if (res.status === 401) {
           // F42: si la sesión se cerró por inactividad, el login lo avisa aunque se haya recargado la pantalla.
           await registrarMotivoCierre(res)
+        } else if (esFalloDeConexion(res.status)) {
+          // #26: la base no contestó al validar la sesión: no es lo mismo que estar deslogueado.
+          fallo = MENSAJE_ERROR_CONEXION
         }
       } catch (error) {
         console.error('Database initialization error:', error)
+        fallo = MENSAJE_ERROR_CONEXION
       }
 
+      setInitError(fallo)
       setIsInitialized(true)
-    }
-
-    initializeDatabase()
   }, [cargarDatosApp])
+
+  useEffect(() => {
+    void iniciarApp()
+  }, [iniciarApp])
+
+  const reintentarInicio = useCallback(async () => {
+    setReintentandoInicio(true)
+    try {
+      await iniciarApp()
+    } finally {
+      setReintentandoInicio(false)
+    }
+  }, [iniciarApp])
 
   // Online/offline detection
   useEffect(() => {
@@ -640,7 +678,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       setCurrentPage(defaultPage)
       
       sessionStorage.setItem('soda_master_session', JSON.stringify({ currentPage: defaultPage }))
-      await cargarDatosApp()
+      setInitError((await cargarDatosApp()) ? null : MENSAJE_ERROR_CONEXION)
 
       return { success: true, message: 'Inicio de sesión exitoso' }
     } catch (error) {
@@ -791,12 +829,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ id, ...updates }),
       })
-      if (res.ok) {
-        const mesa = await res.json()
-        dispatch({ type: 'UPDATE_MESA', payload: mesa })
-      }
+      // Sesión 15: el error del servidor (409 nombre repetido, 409 mesa con comanda, 403…) llega a quien llama.
+      if (!res.ok) throw await errorDeRespuesta(res, 'No se pudo actualizar la mesa')
+      const mesa = await res.json()
+      dispatch({ type: 'UPDATE_MESA', payload: mesa })
     } catch (error) {
       console.error('Error updating mesa:', error)
+      throw error
     }
   }, [])
 
@@ -1540,6 +1579,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       logout, 
       hasPermission, 
       isInitialized,
+      initError,
+      reintentandoInicio,
+      reintentarInicio,
       currentPage,
       setCurrentPage,
       navigateTo,

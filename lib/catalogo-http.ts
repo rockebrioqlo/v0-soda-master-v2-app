@@ -5,6 +5,7 @@
  */
 import { z } from 'zod'
 import { uuid } from '@/lib/validacion-http'
+import { normalizarNombreMesa } from '@/lib/mesas-nombre'
 
 const texto = (max: number) => z.string().trim().max(max)
 const dinero = z.number().finite().min(0).max(100_000_000)
@@ -42,7 +43,12 @@ export const ProductoClonarSchema = z
   .strict()
 
 // ── Mesas ───────────────────────────────────────────────────────────────
+// Sesión 15 (#23): el nombre llega normalizado (bordes recortados, un solo espacio entre palabras); la regla
+// "mesa <número>" y la unicidad se resuelven en la base (lib/db.ts), que conoce el número de la mesa.
+const nombreMesa = z.string().transform(normalizarNombreMesa).pipe(z.string().min(1).max(60))
+
 const MESA_CAMPOS = {
+  nombre: nombreMesa.optional(),
   capacidad: z.number().int().min(1).max(100).optional(),
   area: texto(60).nullish(),
   numero: z.number().int().min(1).max(9999).optional(),
@@ -50,14 +56,14 @@ const MESA_CAMPOS = {
 }
 
 export const MesaPostSchema = z
-  .object({ nombre: texto(60).min(1).optional(), ...MESA_CAMPOS })
+  .object({ ...MESA_CAMPOS })
   .strict()
 
 export const MesaPatchSchema = z.object({ id: uuid, ...MESA_CAMPOS }).strict()
 export const MesaPatchPorIdSchema = z.object({ ...MESA_CAMPOS }).strict()
 
 /** Campos de una mesa que solo cambia el admin (salón solo cambia `estado`). */
-export const CAMPOS_MESA_SOLO_ADMIN = ['capacidad', 'area', 'numero'] as const
+export const CAMPOS_MESA_SOLO_ADMIN = ['nombre', 'capacidad', 'area', 'numero'] as const
 
 // ── Recetas ─────────────────────────────────────────────────────────────
 const RecetaLineaSchema = z

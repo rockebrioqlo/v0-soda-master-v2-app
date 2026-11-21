@@ -18,9 +18,11 @@ import { ReportesPage } from "@/components/reportes-page"
 import { ConfiguracionPage } from "@/components/configuracion-page"
 import { ToastContainer } from "@/components/toast"
 import { NotificacionesToast } from "@/components/notificaciones-toast"
+import { Button } from "@/components/ui/button"
+import { AlertTriangle, Loader2 } from "lucide-react"
 
 function AppContent() {
-  const { state, isInitialized, currentPage } = useApp()
+  const { state, isInitialized, currentPage, initError, reintentandoInicio, reintentarInicio } = useApp()
   const [mounted, setMounted] = useState(false)
 
   useEffect(() => {
@@ -33,6 +35,27 @@ function AppContent() {
         <div className="text-center">
           <div className="h-12 w-12 animate-spin rounded-full border-4 border-amber-500 border-t-transparent mx-auto mb-4" />
           <p className="text-muted-foreground">Cargando Soda Master...</p>
+        </div>
+      </div>
+    )
+  }
+
+  // #26: si el arranque no pudo leer la base (red caída o error 5xx) se avisa en vez de mostrar una app vacía.
+  if (initError) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-background p-4">
+        <div role="alert" className="w-full max-w-md rounded-lg border border-red-500/40 bg-card p-6 text-center">
+          <AlertTriangle className="mx-auto mb-3 h-10 w-10 text-red-500" />
+          <h1 className="text-xl font-bold text-foreground">Error de conexión con la BD</h1>
+          <p className="mt-2 text-sm text-muted-foreground">{initError}</p>
+          <Button
+            onClick={() => void reintentarInicio()}
+            disabled={reintentandoInicio}
+            className="mt-5 bg-amber-500 text-zinc-900 hover:bg-amber-400"
+          >
+            {reintentandoInicio ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+            {reintentandoInicio ? "Reintentando…" : "Reintentar"}
+          </Button>
         </div>
       </div>
     )
