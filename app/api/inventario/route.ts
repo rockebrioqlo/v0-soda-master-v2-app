@@ -1,8 +1,11 @@
 import { db } from '@/lib/db'
 import { neon } from '@neondatabase/serverless'
+import { requireAcceso } from '@/lib/sesion'
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
+    const s = await requireAcceso(request)
+    if (!s.ok) return s.respuesta
     const inventario = await db.getInventarioCompleto()
     return Response.json(inventario)
   } catch (error) {
@@ -13,6 +16,8 @@ export async function GET() {
 
 export async function PATCH(request: Request) {
   try {
+    const s = await requireAcceso(request)
+    if (!s.ok) return s.respuesta
     const { producto_id, stock_actual, stock_minimo, unidad_medida } = await request.json()
     if (!producto_id) return Response.json({ error: 'producto_id requerido' }, { status: 400 })
     const unidad = typeof unidad_medida === 'string' ? unidad_medida.trim() : null

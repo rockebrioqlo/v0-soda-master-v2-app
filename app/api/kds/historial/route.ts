@@ -1,4 +1,7 @@
+import { z } from 'zod'
 import { db } from '@/lib/db'
+import { requireAcceso } from '@/lib/sesion'
+import { fechaOHoy, leerConsulta, limite } from '@/lib/validacion-http'
 
 // GET /api/kds/historial?fecha=hoy|YYYY-MM-DD&limite=N
 // Devuelve el historial de pedidos (órdenes con sus items) para que
@@ -10,10 +13,11 @@ import { db } from '@/lib/db'
 // del rol que pidió la página.
 export async function GET(request: Request) {
   try {
-    const url = new URL(request.url)
-    const fecha = url.searchParams.get('fecha') || undefined
-    const limite = Number(url.searchParams.get('limite') || 200)
-    const historial = await db.getHistorialKDS({ fecha, limite })
+    const s = await requireAcceso(request)
+    if (!s.ok) return s.respuesta
+    const q = leerConsulta(request, z.object({ fecha: fechaOHoy.optional(), limite: limite(500).optional() }).strict())
+    if (!q.ok) return q.respuesta
+    const historial = await db.getHistorialKDS({ fecha: q.datos.fecha, limite: q.datos.limite ?? 200 })
     return Response.json(historial)
   } catch (error: any) {
     console.error('GET /api/kds/historial error:', error)

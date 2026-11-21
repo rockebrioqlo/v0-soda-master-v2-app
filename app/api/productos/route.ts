@@ -1,7 +1,12 @@
 import { db } from '@/lib/db'
+import { requireAcceso } from '@/lib/sesion'
+import { ProductoPostSchema } from '@/lib/catalogo-http'
+import { leerBody } from '@/lib/validacion-http'
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
+    const s = await requireAcceso(request)
+    if (!s.ok) return s.respuesta
     const productos = await db.getProductos()
     return Response.json(productos)
   } catch (error) {
@@ -12,8 +17,11 @@ export async function GET() {
 
 export async function POST(request: Request) {
   try {
-    const producto = await request.json()
-    const newProducto = await db.crearProducto(producto)
+    const s = await requireAcceso(request)
+    if (!s.ok) return s.respuesta
+    const parsed = await leerBody(request, ProductoPostSchema, 'Datos del producto')
+    if (!parsed.ok) return parsed.respuesta
+    const newProducto = await db.crearProducto(parsed.datos as any)
     return Response.json(newProducto)
   } catch (error) {
     console.error('Create producto error:', error)

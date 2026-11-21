@@ -260,14 +260,8 @@ interface AppContextType {
     tipo: string
     valido_hasta: string
     motivo?: string | null
-    otorgado_por: string
-    otorgado_por_nombre: string
   }) => Promise<any>
-  revocarPermisoEspecialApi: (payload: {
-    id: string
-    revocado_por: string
-    revocado_por_nombre: string
-  }) => Promise<any>
+  revocarPermisoEspecialApi: (payload: { id: string }) => Promise<any>
   // Cuentas por persona (división por productos persistida en BD)
   getCuentasPersonaApi: (ordenId: string) => Promise<any[]>
   crearCuentaPersonaApi: (payload: { orden_id: string; nombre?: string | null }) => Promise<any>
@@ -1139,9 +1133,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     tipo: string
     valido_hasta: string
     motivo?: string | null
-    otorgado_por: string
-    otorgado_por_nombre: string
   }) => {
+    // Quien otorga sale de la sesión del servidor (F13/F31, 14.5b-1): el navegador ya no lo manda.
     const res = await fetch('/api/permisos-especiales', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1154,11 +1147,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     return await res.json()
   }, [])
 
-  const revocarPermisoEspecialApi = useCallback(async (payload: {
-    id: string
-    revocado_por: string
-    revocado_por_nombre: string
-  }) => {
+  const revocarPermisoEspecialApi = useCallback(async (payload: { id: string }) => {
     const res = await fetch('/api/permisos-especiales', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
@@ -1335,7 +1324,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         const res = await fetch('/api/permisos-descuento', {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ usuario_id: usuarioId, permisos: items }),
+          body: JSON.stringify({ permisos: items }),
         })
         if (!res.ok) {
           const err = await res.json().catch(() => ({}))

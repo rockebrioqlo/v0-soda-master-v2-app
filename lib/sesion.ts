@@ -17,7 +17,7 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
 import { db } from '@/lib/db'
 import type { Usuario } from '@/lib/types'
-import { rolesEfectivos, tieneAlgunRol, type RolApi } from '@/lib/permisos-api'
+import { accesoParaRuta, rolesEfectivos, tieneAlgunRol, type RolApi } from '@/lib/permisos-api'
 import {
   CODIGO_SESION_INACTIVA,
   CODIGO_SESION_VENCIDA,
@@ -212,6 +212,23 @@ export async function requireSesion(
     return { ok: false, respuesta: Response.json({ error: 'No tienes permiso para esta acción' }, { status: 403 }) }
   }
   return { ok: true, usuario }
+}
+
+/**
+ * Defensa en profundidad (F13, sesión 14.5b-1): valida sesión Y rol dentro de la ruta leyendo la
+ * MISMA tabla `accesoParaRuta` que usa el proxy (lib/permisos-api.ts), sin repetir listas de roles.
+ * Usa la ruta y el método de la propia petición, así que no puede divergir del proxy. Una ruta
+ * que la tabla marca como pública no debería llamar a esta función: si lo hace, exige sesión
+ * igual (falla cerrado). Solo valida: la actividad de la sesión la renueva únicamente el proxy.
+ *
+ *   const s = await requireAcceso(request)
+ *   if (!s.ok) return s.respuesta
+ */
+export async function requireAcceso(request: Request): Promise<ResultadoSesion> {
+  const { pathname } = new URL(request.url)
+  const metodo = request.method === 'HEAD' ? 'GET' : request.method
+  const acceso = accesoParaRuta(pathname, metodo)
+  return requireSesion(request, typeof acceso === 'string' ? undefined : acceso)
 }
 
 export function esAdminSesion(usuario: { roles: RolApi[] }): boolean {

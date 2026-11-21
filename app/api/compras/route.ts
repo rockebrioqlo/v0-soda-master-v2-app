@@ -1,16 +1,23 @@
 import { db } from '@/lib/db'
-import { requireSesion } from '@/lib/sesion'
+import { requireAcceso, requireSesion } from '@/lib/sesion'
 import { CompraPostSchema } from '@/lib/inventario-http'
-import { leerBody, respuestaDeError } from '@/lib/ordenes-http'
+import { respuestaDeError } from '@/lib/ordenes-http'
+import { leerBody, leerConsulta, limite, uuid } from '@/lib/validacion-http'
+import { z } from 'zod'
+
+const ComprasConsultaSchema = z
+  .object({ proveedor_id: uuid.optional(), limite: limite(500).optional() })
+  .strict()
 
 export async function GET(request: Request) {
   try {
-    const { searchParams } = new URL(request.url)
-    const proveedorId = searchParams.get('proveedor_id')
-    const limite = searchParams.get('limite')
+    const s = await requireAcceso(request)
+    if (!s.ok) return s.respuesta
+    const q = leerConsulta(request, ComprasConsultaSchema)
+    if (!q.ok) return q.respuesta
     const data = await db.getCompras({
-      proveedorId: proveedorId || undefined,
-      limite: limite ? Number(limite) : undefined,
+      proveedorId: q.datos.proveedor_id,
+      limite: q.datos.limite,
     })
     return Response.json(data)
   } catch (error) {

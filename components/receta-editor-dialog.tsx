@@ -168,6 +168,13 @@ export function RecetaEditorDialog({
   }
 
   const handleSave = async () => {
+    // F31: una cantidad 0 (o vacía) ya no se convierte en 1 en silencio: se pide corregirla.
+    const sinCantidad = lineas.find((l) => l.ingrediente_id && !(Number(l.cantidad) > 0))
+    if (sinCantidad) {
+      const nombre = ingredientes.find((i: any) => i.id === sinCantidad.ingrediente_id)?.nombre
+      showToast(`La cantidad${nombre ? ` de ${nombre}` : ''} debe ser mayor que 0. Corrígela o quita el insumo de la receta.`, 'error')
+      return
+    }
     setSaving(true)
     try {
       const payload = {
@@ -177,7 +184,7 @@ export function RecetaEditorDialog({
           .filter((l) => l.ingrediente_id)
           .map((l) => ({
             ingrediente_id: l.ingrediente_id,
-            cantidad: Number(l.cantidad) || 1,
+            cantidad: Number(l.cantidad),
             opcional: l.opcional,
             extra: l.extra,
             costo_adicional: Number(l.costo_adicional) || 0,

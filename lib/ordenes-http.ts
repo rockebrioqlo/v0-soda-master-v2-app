@@ -125,40 +125,8 @@ export const ItemsEstadoSchema = z
   })
   .strict()
 
-/** Lee el body JSON y lo valida; devuelve los datos o la respuesta 400 lista. */
-export async function leerBody<T extends z.ZodTypeAny>(
-  request: Request,
-  schema: T,
-  etiqueta: string,
-) {
-  return validarBody(await request.json().catch(() => null), schema, etiqueta)
-}
-
-/** Valida un body ya leído. */
-export function validarBody<T extends z.ZodTypeAny>(
-  crudo: unknown,
-  schema: T,
-  etiqueta: string,
-): { ok: true; datos: z.infer<T> } | { ok: false; respuesta: Response } {
-  const parsed = schema.safeParse(crudo)
-  if (parsed.success) return { ok: true, datos: parsed.data }
-  const motivo = parsed.error.issues
-    .slice(0, 3)
-    .map((i) => {
-      const campo = i.path.join('.') || 'body'
-      return i.code === 'unrecognized_keys'
-        ? `campo no permitido: ${(i as any).keys?.join(', ')}`
-        : `${campo}: ${i.message}`
-    })
-    .join('; ')
-  return {
-    ok: false,
-    respuesta: Response.json(
-      { error: `${etiqueta} inválidos (${motivo})`, codigo: 'DATOS_INVALIDOS' },
-      { status: 400 },
-    ),
-  }
-}
+// `leerBody` y `validarBody` viven ahora en lib/validacion-http.ts (sesión 14.5b-1); se reexportan para no tocar a quien los importa.
+export { leerBody, validarBody } from "@/lib/validacion-http"
 
 /** 403 de la matriz de estados de ítem (F11): el rol no puede pedir ese destino. */
 export function respuestaDestinoItemProhibido(destino: string): Response {

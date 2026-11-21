@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { db } from '@/lib/db'
-import { esAdminSesion, requireSesion } from '@/lib/sesion'
+import { esAdminSesion, requireAcceso, requireSesion } from '@/lib/sesion'
 
 export async function GET(request: Request) {
   try {
@@ -40,6 +40,9 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   try {
+    // F13 (14.5b-1): solo admin, por la tabla del proxy también dentro de la ruta. El esquema zod del body va con F44 (14.5b-2).
+    const s = await requireAcceso(request)
+    if (!s.ok) return s.respuesta
     const body = await request.json()
     if (!body?.email || !body?.nombre || !body?.rol) {
       return Response.json({ error: 'email, nombre y rol son requeridos' }, { status: 400 })

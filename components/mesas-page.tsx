@@ -305,14 +305,16 @@ export function MesasPage() {
                         <SelectItem value="reservada">Reservada</SelectItem>
                       </SelectContent>
                     </Select>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-8 w-8"
-                      onClick={() => handleEdit(mesa)}
-                    >
-                      <Edit className="h-4 w-4" />
-                    </Button>
+                    {esAdmin && (
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-8 w-8"
+                        onClick={() => handleEdit(mesa)}
+                      >
+                        <Edit className="h-4 w-4" />
+                      </Button>
+                    )}
                     {esAdmin && (
                       <Button
                         variant="ghost"

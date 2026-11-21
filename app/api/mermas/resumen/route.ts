@@ -1,8 +1,11 @@
 import { db } from '@/lib/db'
 import { fechaHoyZonaNegocio, normalizarFechaZonaNegocio } from '@/lib/fechas'
+import { requireAcceso } from '@/lib/sesion'
 
 export async function GET(request: Request) {
   try {
+    const s = await requireAcceso(request)
+    if (!s.ok) return s.respuesta
     const { searchParams } = new URL(request.url)
     // "Hoy" en zona del negocio (Chile). Si usamos fecha UTC, las
     // mermas registradas de noche caen en otro día y desaparecen del

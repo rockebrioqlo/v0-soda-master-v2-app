@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { db } from '@/lib/db'
-import { requireSesion } from '@/lib/sesion'
+import { requireSesion, requireAcceso } from '@/lib/sesion'
 import {
   CLAVE_INACTIVIDAD_KDS_MIN,
   CLAVE_INACTIVIDAD_MIN,
@@ -8,8 +8,10 @@ import {
   INACTIVIDAD_MIN_MINIMO,
 } from '@/lib/sesion-reglas'
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
+    const s = await requireAcceso(request)
+    if (!s.ok) return s.respuesta
     const config = await db.getConfiguracion()
     return Response.json(config)
   } catch (error) {

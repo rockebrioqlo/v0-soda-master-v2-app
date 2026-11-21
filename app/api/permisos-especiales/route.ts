@@ -1,4 +1,7 @@
+import { z } from 'zod'
 import { db } from '@/lib/db'
+import { booleanoConsulta, leerBody, leerConsulta, uuid } from '@/lib/validacion-http'
+import { PermisoEspecialPatchSchema, PermisoEspecialPostSchema } from '@/lib/catalogo-http'
 import { esAdminSesion, requireSesion } from '@/lib/sesion'
 
 /**
@@ -11,13 +14,17 @@ export async function GET(request: Request) {
   try {
     const s = await requireSesion(request)
     if (!s.ok) return s.respuesta
-    const { searchParams } = new URL(request.url)
+    const q = leerConsulta(
+      request,
+      z
+        .object({ usuario_id: uuid.optional(), tipo: z.string().max(40).optional(), solo_vigentes: booleanoConsulta.optional() })
+        .strict(),
+    )
+    if (!q.ok) return q.respuesta
     // Un usuario que no es admin solo ve sus propios permisos.
-    const usuarioId = esAdminSesion(s.usuario)
-      ? searchParams.get('usuario_id') || undefined
-      : s.usuario.id
-    const tipo = searchParams.get('tipo') || undefined
-    const soloVigentes = searchParams.get('solo_vigentes') === 'true'
+    const usuarioId = esAdminSesion(s.usuario) ? q.datos.usuario_id : s.usuario.id
+    const tipo = q.datos.tipo
+    const soloVigentes = q.datos.solo_vigentes === 'true'
     const rows = await db.getPermisosEspeciales({
       usuario_id: usuarioId,
       tipo,
@@ -35,30 +42,16 @@ export async function POST(request: Request) {
     // Quien otorga es el admin de la sesión, no `otorgado_por` del body.
     const s = await requireSesion(request, ['admin'])
     if (!s.ok) return s.respuesta
-    const body = await request.json()
-    const usuarioId = body?.usuario_id
-    const tipo = (body?.tipo || '').toString().trim()
-    const validoHasta = body?.valido_hasta
-    const motivo = body?.motivo ?? null
-    const otorgadoPor = s.usuario.id
-    const otorgadoPorNombre = s.usuario.nombre
-
-    if (!usuarioId) {
-      return Response.json({ error: 'usuario_id requerido' }, { status: 400 })
-    }
-    if (!tipo) {
-      return Response.json({ error: 'tipo requerido' }, { status: 400 })
-    }
-    if (!validoHasta) {
-      return Response.json({ error: 'valido_hasta requerido' }, { status: 400 })
-    }
+    const parsed = await leerBody(request, PermisoEspecialPostSchema, 'Datos del permiso')
+    if (!parsed.ok) return parsed.respuesta
+    const d = parsed.datos
     const row = await db.otorgarPermisoEspecial({
-      usuario_id: usuarioId,
-      tipo,
-      motivo,
-      valido_hasta: validoHasta,
-      otorgado_por: otorgadoPor,
-      otorgado_por_nombre: otorgadoPorNombre,
+      usuario_id: d.usuario_id,
+      tipo: d.tipo,
+      motivo: d.motivo ?? null,
+      valido_hasta: d.valido_hasta,
+      otorgado_por: s.usuario.id,
+      otorgado_por_nombre: s.usuario.nombre,
     })
     return Response.json(row, { status: 201 })
   } catch (error: any) {
@@ -72,17 +65,12 @@ export async function PATCH(request: Request) {
     // Quien revoca es el admin de la sesión.
     const s = await requireSesion(request, ['admin'])
     if (!s.ok) return s.respuesta
-    const body = await request.json()
-    const id = body?.id
-    const revocadoPor = s.usuario.id
-    const revocadoPorNombre = s.usuario.nombre
-    if (!id) {
-      return Response.json({ error: 'id requerido' }, { status: 400 })
-    }
+    const parsed = await leerBody(request, PermisoEspecialPatchSchema, 'Datos del permiso')
+    if (!parsed.ok) return parsed.respuesta
     const row = await db.revocarPermisoEspecial({
-      id,
-      revocado_por: revocadoPor,
-      revocado_por_nombre: revocadoPorNombre,
+      id: parsed.datos.id,
+      revocado_por: s.usuario.id,
+      revocado_por_nombre: s.usuario.nombre,
     })
     return Response.json(row)
   } catch (error: any) {

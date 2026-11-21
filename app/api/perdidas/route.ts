@@ -1,4 +1,6 @@
+import { z } from 'zod'
 import { db } from '@/lib/db'
+import { fechaOHoy, leerConsulta } from '@/lib/validacion-http'
 import { requireSesion } from '@/lib/sesion'
 import { leerBody, respuestaDeError } from '@/lib/ordenes-http'
 import { PerdidaPostSchema } from '@/lib/cuentas-http'
@@ -18,8 +20,9 @@ export async function GET(request: Request) {
   try {
     const s = await requireSesion(request, ['admin', 'cajero'])
     if (!s.ok) return s.respuesta
-    const { searchParams } = new URL(request.url)
-    const fecha = searchParams.get('fecha') || undefined
+    const q = leerConsulta(request, z.object({ fecha: fechaOHoy.optional() }).strict())
+    if (!q.ok) return q.respuesta
+    const fecha = q.datos.fecha
     const perdidas = await db.getPerdidas(fecha ? { fecha } : undefined)
     return Response.json(perdidas)
   } catch (error: any) {

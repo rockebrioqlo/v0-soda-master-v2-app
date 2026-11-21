@@ -286,8 +286,6 @@ export function UsuariosPage() {
         tipo: 'apertura_mesa',
         valido_hasta: validoHasta.toISOString(),
         motivo: permEspMotivo || null,
-        otorgado_por: usuarioActual.id,
-        otorgado_por_nombre: usuarioActual.nombre,
       })
       showToast(
         `Permiso otorgado a ${usuarioPermEsp.nombre} por ${permEspHoras}h`,
@@ -309,11 +307,7 @@ export function UsuariosPage() {
       return
     }
     try {
-      await revocarPermisoEspecialApi({
-        id,
-        revocado_por: usuarioActual.id,
-        revocado_por_nombre: usuarioActual.nombre,
-      })
+      await revocarPermisoEspecialApi({ id })
       showToast('Permiso revocado', 'success')
       if (usuarioPermEsp) await cargarPermEsp(usuarioPermEsp.id)
     } catch (error: any) {

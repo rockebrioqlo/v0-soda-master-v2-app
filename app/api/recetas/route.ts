@@ -1,21 +1,36 @@
+import { z } from 'zod'
 import { db } from '@/lib/db'
+import { requireAcceso } from '@/lib/sesion'
+import { RecetaPostSchema } from '@/lib/catalogo-http'
+import { respuestaDeError } from '@/lib/ordenes-http'
+import { booleanoConsulta, leerBody, leerConsulta, uuid } from '@/lib/validacion-http'
+
+const RecetasConsultaSchema = z
+  .object({
+    resumen: booleanoConsulta.optional(),
+    producto_id: uuid.optional(),
+    opciones: booleanoConsulta.optional(),
+  })
+  .strict()
 
 export async function GET(request: Request) {
   try {
-    const { searchParams } = new URL(request.url)
+    const s = await requireAcceso(request)
+    if (!s.ok) return s.respuesta
+    const q = leerConsulta(request, RecetasConsultaSchema)
+    if (!q.ok) return q.respuesta
     // Modo "resumen": devuelve un objeto { producto_id: {base, opcionales,
     // extras, total} } para mostrar el indicador en la tabla de inventario
     // sin tener que hacer una request por producto.
-    if (searchParams.get('resumen') === 'true') {
+    if (q.datos.resumen === 'true') {
       const data = await db.getResumenRecetasPorProducto()
       return Response.json(data)
     }
-    const productoId = searchParams.get('producto_id')
+    const productoId = q.datos.producto_id
     if (!productoId) {
-      return Response.json({ error: 'producto_id requerido' }, { status: 400 })
+      return Response.json({ error: 'producto_id requerido', codigo: 'DATOS_INVALIDOS' }, { status: 400 })
     }
-    const opciones = searchParams.get('opciones') === 'true'
-    if (opciones) {
+    if (q.datos.opciones === 'true') {
       const data = await db.getOpcionesRecetaProducto(productoId)
       return Response.json(data)
     }
@@ -27,23 +42,25 @@ export async function GET(request: Request) {
   }
 }
 
+// F31 (sesión 14.5b-1): body con zod `.strict()` (cantidad mayor que 0, uuid de producto e insumos),
+// solo admin por la tabla del proxy, y `guardarRecetaProducto` valida que el producto y los insumos
+// existan y estén activos ANTES de tocar la receta, y escribe todo en una transacción.
 export async function POST(request: Request) {
   try {
-    const body = await request.json()
-    const productoId = String(body?.producto_id || '')
-    if (!productoId) {
-      return Response.json({ error: 'producto_id requerido' }, { status: 400 })
-    }
-    if (!Array.isArray(body.ingredientes)) {
-      return Response.json({ error: 'ingredientes debe ser un array' }, { status: 400 })
-    }
-    const receta = await db.guardarRecetaProducto(productoId, {
-      nombre: body.nombre ? String(body.nombre) : undefined,
-      modo_stock: body.modo_stock ? String(body.modo_stock) : undefined,
-      ingredientes: body.ingredientes,
+    const s = await requireAcceso(request)
+    if (!s.ok) return s.respuesta
+    const parsed = await leerBody(request, RecetaPostSchema, 'Datos de la receta')
+    if (!parsed.ok) return parsed.respuesta
+    const d = parsed.datos
+    const receta = await db.guardarRecetaProducto(d.producto_id, {
+      nombre: d.nombre || undefined,
+      modo_stock: d.modo_stock,
+      ingredientes: d.ingredientes.map((l) => ({ ...l, nombre_display: l.nombre_display ?? null })),
     })
     return Response.json(receta)
   } catch (error) {
+    const resp = respuestaDeError(error)
+    if (resp) return resp
     console.error('POST recetas error:', error)
     return Response.json({ error: 'Error en servidor' }, { status: 500 })
   }

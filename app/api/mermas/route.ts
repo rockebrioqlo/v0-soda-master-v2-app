@@ -1,5 +1,7 @@
 import { db } from '@/lib/db'
-import { esAdminSesion, requireSesion } from '@/lib/sesion'
+import { z } from 'zod'
+import { esAdminSesion, requireAcceso, requireSesion } from '@/lib/sesion'
+import { fechaYmd, leerConsulta, uuid } from '@/lib/validacion-http'
 import { verificarAutorizacionAdmin } from '@/lib/autorizacion-admin'
 
 const TIPOS = [
@@ -17,11 +19,21 @@ const MOTIVOS_CNP = new Set<string>(['cliente_se_fue', 'error_mesero', 'cortesia
 
 export async function GET(request: Request) {
   try {
-    const { searchParams } = new URL(request.url)
-    const tipo = searchParams.get('tipo') || undefined
-    const desde = searchParams.get('desde') || undefined
-    const hasta = searchParams.get('hasta') || undefined
-    const responsable_id = searchParams.get('responsable_id') || undefined
+    const s = await requireAcceso(request)
+    if (!s.ok) return s.respuesta
+    const q = leerConsulta(
+      request,
+      z
+        .object({
+          tipo: z.string().max(40).optional(),
+          desde: fechaYmd.optional(),
+          hasta: fechaYmd.optional(),
+          responsable_id: uuid.optional(),
+        })
+        .strict(),
+    )
+    if (!q.ok) return q.respuesta
+    const { tipo, desde, hasta, responsable_id } = q.datos
     if (tipo && !TIPOS.includes(tipo as any)) {
       return Response.json({ error: 'Tipo inválido' }, { status: 400 })
     }

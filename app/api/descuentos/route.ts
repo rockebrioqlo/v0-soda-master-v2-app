@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { db, ErrorOrden } from '@/lib/db'
-import { requireSesion } from '@/lib/sesion'
+import { requireAcceso, requireSesion } from '@/lib/sesion'
+import { fechaYmd, leerConsulta, uuid } from '@/lib/validacion-http'
 import { verificarAutorizacionAdmin } from '@/lib/autorizacion-admin'
 
 // Sesión 12 (F17): el body se valida con zod `.strict()`: cualquier campo extra (por ejemplo
@@ -21,10 +22,14 @@ const DescuentoSchema = z
 
 export async function GET(request: Request) {
   try {
-    const { searchParams } = new URL(request.url)
-    const desde = searchParams.get('desde') || undefined
-    const hasta = searchParams.get('hasta') || undefined
-    const orden_id = searchParams.get('orden_id') || undefined
+    const s = await requireAcceso(request)
+    if (!s.ok) return s.respuesta
+    const q = leerConsulta(
+      request,
+      z.object({ desde: fechaYmd.optional(), hasta: fechaYmd.optional(), orden_id: uuid.optional() }).strict(),
+    )
+    if (!q.ok) return q.respuesta
+    const { desde, hasta, orden_id } = q.datos
     const data = await db.getDescuentos({ desde, hasta, orden_id })
     return Response.json(data)
   } catch (error) {

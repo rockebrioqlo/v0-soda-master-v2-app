@@ -1,10 +1,16 @@
+import { z } from 'zod'
 import { db } from '@/lib/db'
+import { requireAcceso } from '@/lib/sesion'
+import { EmpleadoSchema } from '@/lib/finanzas-http'
+import { booleanoConsulta, leerBody, leerConsulta } from '@/lib/validacion-http'
 
 export async function GET(request: Request) {
   try {
-    const { searchParams } = new URL(request.url)
-    const incluirInactivos = searchParams.get('incluir_inactivos') === 'true'
-    const data = await db.getEmpleados(!incluirInactivos)
+    const s = await requireAcceso(request)
+    if (!s.ok) return s.respuesta
+    const q = leerConsulta(request, z.object({ incluir_inactivos: booleanoConsulta.optional() }).strict())
+    if (!q.ok) return q.respuesta
+    const data = await db.getEmpleados(q.datos.incluir_inactivos !== 'true')
     return Response.json(data)
   } catch (error) {
     console.error('GET empleados error:', error)
@@ -14,26 +20,22 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   try {
-    const body = await request.json()
-    const nombre = String(body?.nombre || '').trim()
-    if (!nombre) {
-      return Response.json({ error: 'nombre requerido' }, { status: 400 })
-    }
-    const sueldo = Number(body.sueldo_base)
-    if (!Number.isFinite(sueldo) || sueldo < 0) {
-      return Response.json({ error: 'sueldo_base inválido' }, { status: 400 })
-    }
+    const s = await requireAcceso(request)
+    if (!s.ok) return s.respuesta
+    const parsed = await leerBody(request, EmpleadoSchema, 'Datos del empleado')
+    if (!parsed.ok) return parsed.respuesta
+    const d = parsed.datos
     const row = await db.crearEmpleado({
-      nombre,
-      cargo: body.cargo,
-      documento: body.documento,
-      telefono: body.telefono,
-      email: body.email,
-      sueldo_base: sueldo,
-      periodicidad: body.periodicidad || 'mensual',
-      fecha_ingreso: body.fecha_ingreso,
-      usuario_id: body.usuario_id || null,
-      notas: body.notas,
+      nombre: d.nombre,
+      cargo: d.cargo ?? undefined,
+      documento: d.documento ?? undefined,
+      telefono: d.telefono ?? undefined,
+      email: d.email ?? undefined,
+      sueldo_base: d.sueldo_base,
+      periodicidad: d.periodicidad || 'mensual',
+      fecha_ingreso: d.fecha_ingreso ?? undefined,
+      usuario_id: null,
+      notas: d.notas ?? undefined,
     })
     return Response.json(row, { status: 201 })
   } catch (error) {

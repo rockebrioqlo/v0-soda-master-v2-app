@@ -1,10 +1,10 @@
 import { db } from '@/lib/db'
-import { requireSesion } from '@/lib/sesion'
-
-const TIPOS = ['problema', 'listo', 'nueva_orden'] as const
+import { requireAcceso, requireSesion } from '@/lib/sesion'
+import { NotificacionConsultaSchema, NotificacionPostSchema } from '@/lib/catalogo-http'
+import { leerBody, leerConsulta } from '@/lib/validacion-http'
 
 /**
- * GET /api/notificaciones?usuario_id=...&rol=...&solo_pendientes=true&limite=100
+ * GET /api/notificaciones?solo_pendientes=true&limite=100
  *
  * Devuelve las notificaciones para un usuario y/o rol. Diseñado para
  * polling ligero del cliente: por defecto sólo devuelve las pendientes
@@ -12,20 +12,20 @@ const TIPOS = ['problema', 'listo', 'nueva_orden'] as const
  */
 export async function GET(request: Request) {
   try {
-    // Solo las notificaciones del usuario de la sesión y de su rol; los
-    // parámetros usuario_id y rol de la URL ya no se usan.
+    // Solo las notificaciones del usuario de la sesión y de su rol (usuario_id y rol de la URL se rechazan: 400).
     const s = await requireSesion(request)
     if (!s.ok) return s.respuesta
-    const { searchParams } = new URL(request.url)
+    const q = leerConsulta(request, NotificacionConsultaSchema)
+    if (!q.ok) return q.respuesta
     const usuario_id = s.usuario.id
     const rol = s.usuario.rol
 
-    const solo_pendientes_raw = searchParams.get('solo_pendientes')
-    const solo_pendientes = solo_pendientes_raw === null
+    const solo_pendientes_raw = q.datos.solo_pendientes
+    const solo_pendientes = solo_pendientes_raw === undefined
       ? true
       : !(solo_pendientes_raw === 'false' || solo_pendientes_raw === '0')
 
-    const limite = Number(searchParams.get('limite')) || 100
+    const limite = q.datos.limite ?? 100
 
     const data = await db.listarNotificacionesPara({
       usuario_id,
@@ -54,33 +54,19 @@ export async function GET(request: Request) {
  */
 export async function POST(request: Request) {
   try {
-    const body = await request.json()
-    const tipo = String(body?.tipo || '')
-    if (!TIPOS.includes(tipo as any)) {
-      return Response.json({ error: 'Tipo inválido' }, { status: 400 })
-    }
-    const mensaje = String(body?.mensaje || '').trim()
-    if (!mensaje) {
-      return Response.json({ error: 'mensaje requerido' }, { status: 400 })
-    }
-    const destinatario_usuario_id = body?.destinatario_usuario_id
-      ? String(body.destinatario_usuario_id)
-      : null
-    const destinatario_rol = body?.destinatario_rol ? String(body.destinatario_rol) : null
-    if (!destinatario_usuario_id && !destinatario_rol) {
-      return Response.json(
-        { error: 'Se requiere destinatario_usuario_id o destinatario_rol' },
-        { status: 400 },
-      )
-    }
+    const s = await requireAcceso(request)
+    if (!s.ok) return s.respuesta
+    const parsed = await leerBody(request, NotificacionPostSchema, 'Datos de la notificación')
+    if (!parsed.ok) return parsed.respuesta
+    const d = parsed.datos
 
     const row = await db.crearNotificacion({
-      tipo: tipo as any,
-      orden_id: body?.orden_id ? String(body.orden_id) : null,
-      mesa_nombre: body?.mesa_nombre ? String(body.mesa_nombre) : null,
-      mensaje,
-      destinatario_usuario_id,
-      destinatario_rol,
+      tipo: d.tipo,
+      orden_id: d.orden_id ?? null,
+      mesa_nombre: d.mesa_nombre ?? null,
+      mensaje: d.mensaje,
+      destinatario_usuario_id: d.destinatario_usuario_id ?? null,
+      destinatario_rol: d.destinatario_rol ?? null,
     })
 
     return Response.json(row, { status: 201 })

@@ -1,10 +1,12 @@
 import { db } from '@/lib/db'
-import { requireSesion } from '@/lib/sesion'
+import { requireSesion, requireAcceso } from '@/lib/sesion'
 import { IngredientePostSchema } from '@/lib/inventario-http'
 import { leerBody, respuestaDeError } from '@/lib/ordenes-http'
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
+    const s = await requireAcceso(request)
+    if (!s.ok) return s.respuesta
     const data = await db.getIngredientes(true)
     return Response.json(data)
   } catch (error) {

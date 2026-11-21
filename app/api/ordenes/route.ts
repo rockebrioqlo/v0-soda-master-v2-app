@@ -1,16 +1,28 @@
 import { db } from '@/lib/db'
-import { esAdminSesion, requireSesion } from '@/lib/sesion'
+import { z } from 'zod'
+import { esAdminSesion, requireAcceso, requireSesion } from '@/lib/sesion'
+import { booleanoConsulta, fechaOHoy, leerConsulta, limite as limiteConsulta, uuid } from '@/lib/validacion-http'
 import { manejarPatchOrden } from '@/lib/ordenes-patch'
 import { IdSchema, OrdenPostSchema, leerBody, respuestaDeError } from '@/lib/ordenes-http'
 
+// Consulta de GET /api/ordenes (F14, sesión 14.5b-1): uuid, fecha y límite validados, un valor mal escrito da 400.
+const OrdenesConsultaSchema = z
+  .object({
+    mesa_id: uuid.optional(),
+    kds: booleanoConsulta.optional(),
+    fecha: fechaOHoy.optional(),
+    limite: limiteConsulta(500).optional(),
+    orden: z.enum(['asc', 'desc']).optional(),
+  })
+  .strict()
+
 export async function GET(request: Request) {
   try {
-    const { searchParams } = new URL(request.url)
-    const mesaId = searchParams.get('mesa_id')
-    const kds = searchParams.get('kds')
-    const fecha = searchParams.get('fecha')
-    const limiteParam = searchParams.get('limite')
-    const ordenParam = searchParams.get('orden')
+    const s = await requireAcceso(request)
+    if (!s.ok) return s.respuesta
+    const q = leerConsulta(request, OrdenesConsultaSchema)
+    if (!q.ok) return q.respuesta
+    const { mesa_id: mesaId, kds, fecha, limite: limiteParam, orden: ordenParam } = q.datos
 
     if (kds === 'true') {
       const ordenes = await db.getOrdenesParaKDS()
@@ -23,7 +35,7 @@ export async function GET(request: Request) {
     }
 
     if (fecha || limiteParam || ordenParam) {
-      const limite = limiteParam ? parseInt(limiteParam, 10) || undefined : undefined
+      const limite = limiteParam
       const orden = ordenParam === 'asc' ? 'asc' : ordenParam === 'desc' ? 'desc' : undefined
       const ordenes = await db.getOrdenes({
         fecha: fecha || undefined,

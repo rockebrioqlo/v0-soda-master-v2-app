@@ -1,16 +1,18 @@
 import { db } from '@/lib/db'
-import { requireSesion } from '@/lib/sesion'
+import { requireAcceso, requireSesion } from '@/lib/sesion'
+import { GastoPostSchema, GastosConsultaSchema } from '@/lib/finanzas-http'
+import { leerBody, leerConsulta } from '@/lib/validacion-http'
 
 export async function GET(request: Request) {
   try {
-    const { searchParams } = new URL(request.url)
-    const desde = searchParams.get('desde') || undefined
-    const hasta = searchParams.get('hasta') || undefined
-    const tipo = searchParams.get('tipo') || undefined
-    const limite = searchParams.get('limite') ? Number(searchParams.get('limite')) : undefined
-    if (searchParams.get('resumen') === 'true') {
-      const resumen = await db.getResumenGastos({ desde, hasta })
-      return Response.json(resumen)
+    const s = await requireAcceso(request)
+    if (!s.ok) return s.respuesta
+    const q = leerConsulta(request, GastosConsultaSchema)
+    if (!q.ok) return q.respuesta
+    const { desde, hasta, tipo, limite, resumen } = q.datos
+    if (resumen === 'true') {
+      const r = await db.getResumenGastos({ desde, hasta })
+      return Response.json(r)
     }
     const data = await db.getGastos({ desde, hasta, tipo, limite })
     return Response.json(data)
@@ -24,24 +26,22 @@ export async function POST(request: Request) {
   try {
     const s = await requireSesion(request, ['admin'])
     if (!s.ok) return s.respuesta
-    const body = await request.json()
-    const monto = Number(body.monto)
-    if (!Number.isFinite(monto) || monto <= 0) {
-      return Response.json({ error: 'monto inválido' }, { status: 400 })
-    }
+    const parsed = await leerBody(request, GastoPostSchema, 'Datos del gasto')
+    if (!parsed.ok) return parsed.respuesta
+    const d = parsed.datos
     const row = await db.crearGasto({
-      fecha: body.fecha,
-      categoria: body.categoria || 'otros',
-      descripcion: body.descripcion,
-      monto,
-      tipo: body.tipo || 'operativo',
-      recurrente: !!body.recurrente,
-      periodicidad: body.periodicidad,
-      proveedor_id: body.proveedor_id || null,
-      empleado_id: body.empleado_id || null,
-      activo_id: body.activo_id || null,
+      fecha: d.fecha,
+      categoria: d.categoria || 'otros',
+      descripcion: d.descripcion ?? undefined,
+      monto: d.monto,
+      tipo: d.tipo || 'operativo',
+      recurrente: !!d.recurrente,
+      periodicidad: d.periodicidad ?? undefined,
+      proveedor_id: d.proveedor_id || null,
+      empleado_id: d.empleado_id || null,
+      activo_id: d.activo_id || null,
       usuario_id: s.usuario.id, // de la sesión, no del body
-      notas: body.notas,
+      notas: d.notas ?? undefined,
     })
     return Response.json(row, { status: 201 })
   } catch (error) {

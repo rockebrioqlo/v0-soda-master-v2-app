@@ -1,7 +1,10 @@
 import { db } from '@/lib/db'
+import { requireAcceso } from '@/lib/sesion'
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
+    const s = await requireAcceso(request)
+    if (!s.ok) return s.respuesta
     const productos = await db.getProductosEspeciales()
     return Response.json(productos)
   } catch (error) {

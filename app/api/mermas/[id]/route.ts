@@ -1,5 +1,6 @@
 import { db } from '@/lib/db'
 import { requireSesion } from '@/lib/sesion'
+import { IdRutaSchema, leerParamsRuta } from '@/lib/validacion-http'
 
 const CONSECUENCIAS = new Set<string>(['descuento_liquidacion', 'solo_registro', 'amonestacion'])
 
@@ -8,12 +9,13 @@ export async function PATCH(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const { id } = await params
-    const body = await request.json()
-
     // Solo admin, según la sesión (ya no se acepta `usuario_id` del body).
     const s = await requireSesion(request, ['admin'])
     if (!s.ok) return s.respuesta
+    const p = await leerParamsRuta(params, IdRutaSchema)
+    if (!p.ok) return p.respuesta
+    const id = p.datos.id
+    const body = await request.json()
 
     const updates: { responsable_id?: string | null; consecuencia?: string | null; monto_descuento?: number } = {}
     if (body.responsable_id !== undefined) {

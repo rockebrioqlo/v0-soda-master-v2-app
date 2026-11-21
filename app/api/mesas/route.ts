@@ -1,7 +1,12 @@
 import { db } from '@/lib/db'
+import { esAdminSesion, requireAcceso } from '@/lib/sesion'
+import { CAMPOS_MESA_SOLO_ADMIN, MesaPatchSchema, MesaPostSchema } from '@/lib/catalogo-http'
+import { leerBody } from '@/lib/validacion-http'
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
+    const s = await requireAcceso(request)
+    if (!s.ok) return s.respuesta
     const mesas = await db.getMesas()
     return Response.json(mesas)
   } catch (error) {
@@ -10,13 +15,22 @@ export async function GET() {
   }
 }
 
+// Salón (mesero y cajero) solo cambia el `estado` de la mesa; capacidad, área y número son del admin
+// (sesión 14.5b-1: antes cualquier rol de salón podía renumerar o redimensionar mesas).
 export async function PATCH(request: Request) {
   try {
-    const { id, ...updates } = await request.json()
-    if (!id) {
-      return Response.json({ error: 'ID requerido' }, { status: 400 })
+    const s = await requireAcceso(request)
+    if (!s.ok) return s.respuesta
+    const parsed = await leerBody(request, MesaPatchSchema, 'Datos de la mesa')
+    if (!parsed.ok) return parsed.respuesta
+    const { id, ...updates } = parsed.datos
+    if (!esAdminSesion(s.usuario) && CAMPOS_MESA_SOLO_ADMIN.some((c) => updates[c] !== undefined)) {
+      return Response.json(
+        { error: 'Solo el administrador puede cambiar la capacidad, el área o el número de una mesa.', codigo: 'ROL_SIN_PERMISO' },
+        { status: 403 },
+      )
     }
-    const mesa = await db.actualizarMesa(id, updates)
+    const mesa = await db.actualizarMesa(id, { ...updates, area: updates.area ?? undefined })
     return Response.json(mesa)
   } catch (error) {
     console.error('Update mesa error:', error)
@@ -26,8 +40,11 @@ export async function PATCH(request: Request) {
 
 export async function POST(request: Request) {
   try {
-    const body = await request.json()
-    const mesa = await db.crearMesa(body || {})
+    const s = await requireAcceso(request)
+    if (!s.ok) return s.respuesta
+    const parsed = await leerBody(request, MesaPostSchema, 'Datos de la mesa')
+    if (!parsed.ok) return parsed.respuesta
+    const mesa = await db.crearMesa({ ...parsed.datos, area: parsed.datos.area ?? null })
     return Response.json(mesa, { status: 201 })
   } catch (error: any) {
     console.error('Create mesa error:', error)

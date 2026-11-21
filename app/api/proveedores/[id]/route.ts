@@ -1,21 +1,29 @@
 import { db } from '@/lib/db'
+import { requireAcceso } from '@/lib/sesion'
+import { ProveedorPatchSchema } from '@/lib/finanzas-http'
+import { IdRutaSchema, leerBody, leerParamsRuta } from '@/lib/validacion-http'
 
 export async function PATCH(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
   try {
-    const { id } = await params
-    const body = await request.json()
-    const updated = await db.actualizarProveedor(id, {
-      nombre: typeof body.nombre === 'string' ? body.nombre : undefined,
-      rut: typeof body.rut === 'string' ? body.rut : undefined,
-      contacto: typeof body.contacto === 'string' ? body.contacto : undefined,
-      telefono: typeof body.telefono === 'string' ? body.telefono : undefined,
-      email: typeof body.email === 'string' ? body.email : undefined,
-      direccion: typeof body.direccion === 'string' ? body.direccion : undefined,
-      notas: typeof body.notas === 'string' ? body.notas : undefined,
-      activo: typeof body.activo === 'boolean' ? body.activo : undefined,
+    const s = await requireAcceso(request)
+    if (!s.ok) return s.respuesta
+    const p = await leerParamsRuta(params, IdRutaSchema)
+    if (!p.ok) return p.respuesta
+    const parsed = await leerBody(request, ProveedorPatchSchema, 'Datos del proveedor')
+    if (!parsed.ok) return parsed.respuesta
+    const body = parsed.datos
+    const updated = await db.actualizarProveedor(p.datos.id, {
+      nombre: body.nombre,
+      rut: body.rut ?? undefined,
+      contacto: body.contacto ?? undefined,
+      telefono: body.telefono ?? undefined,
+      email: body.email ?? undefined,
+      direccion: body.direccion ?? undefined,
+      notas: body.notas ?? undefined,
+      activo: body.activo,
     })
     if (!updated) {
       return Response.json({ error: 'Proveedor no encontrado' }, { status: 404 })

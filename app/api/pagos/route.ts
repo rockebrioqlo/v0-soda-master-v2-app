@@ -1,12 +1,16 @@
 import { z } from 'zod'
 import { db, ErrorCobro } from '@/lib/db'
 import { ERRORES_COBRO } from '@/lib/cobro'
-import { requireSesion } from '@/lib/sesion'
+import { requireAcceso, requireSesion } from '@/lib/sesion'
+import { fechaOHoy, leerConsulta } from '@/lib/validacion-http'
 
 export async function GET(request: Request) {
   try {
-    const { searchParams } = new URL(request.url)
-    const fecha = searchParams.get('fecha') || undefined
+    const s = await requireAcceso(request)
+    if (!s.ok) return s.respuesta
+    const q = leerConsulta(request, z.object({ fecha: fechaOHoy.optional() }).strict())
+    if (!q.ok) return q.respuesta
+    const fecha = q.datos.fecha
     const pagos = await db.getPagos(fecha ? { fecha } : undefined)
     return Response.json(pagos)
   } catch (error) {

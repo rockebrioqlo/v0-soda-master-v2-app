@@ -1,5 +1,7 @@
 import { db } from '@/lib/db'
-import { esAdminSesion, requireSesion } from '@/lib/sesion'
+import { esAdminSesion, requireAcceso, requireSesion } from '@/lib/sesion'
+import { ProductoPatchSchema } from '@/lib/catalogo-http'
+import { IdRutaSchema, leerBody, leerParamsRuta } from '@/lib/validacion-http'
 
 // Tipos válidos para mermas de productos. Mantener en sync con el
 // endpoint /api/mermas (TIPOS_ADMIN_ONLY) para no permitir que un cajero
@@ -20,7 +22,9 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const { id } = await params
+    const p = await leerParamsRuta(params, IdRutaSchema)
+    if (!p.ok) return p.respuesta
+    const id = p.datos.id
     const body = await request.json().catch(() => ({}))
     const motivo = String(body.motivo || '')
     if (motivo !== 'merma' && motivo !== 'correccion_admin') {
@@ -86,47 +90,26 @@ export async function PATCH(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const { id } = await params
-    const body = await request.json()
+    const s = await requireAcceso(request)
+    if (!s.ok) return s.respuesta
+    const p = await leerParamsRuta(params, IdRutaSchema)
+    if (!p.ok) return p.respuesta
+    const parsed = await leerBody(request, ProductoPatchSchema, 'Datos del producto')
+    if (!parsed.ok) return parsed.respuesta
+    const body = parsed.datos
 
     const updates: Record<string, unknown> = {}
-    if (typeof body.nombre === 'string') updates.nombre = body.nombre
-    if (typeof body.descripcion === 'string') updates.descripcion = body.descripcion
-    if (body.precio !== undefined) {
-      const n = Number(body.precio)
-      if (!Number.isFinite(n) || n < 0) {
-        return Response.json({ error: 'precio inválido' }, { status: 400 })
-      }
-      updates.precio = n
-    }
-    if (typeof body.categoria === 'string') updates.categoria = body.categoria
-    if (typeof body.activo === 'boolean') updates.activo = body.activo
-    if (body.es_ingrediente_especial !== undefined || body.esIngredienteEspecial !== undefined) {
-      updates.esIngredienteEspecial = !!(body.es_ingrediente_especial ?? body.esIngredienteEspecial)
-    }
-    if (body.costo_adicional !== undefined || body.costoAdicional !== undefined) {
-      const raw = body.costo_adicional ?? body.costoAdicional
-      const n = Number(raw)
-      if (!Number.isFinite(n) || n < 0) {
-        return Response.json({ error: 'costo_adicional inválido' }, { status: 400 })
-      }
-      updates.costoAdicional = n
-    }
-    if (typeof body.imagen_url === 'string') updates.imagen_url = body.imagen_url
-    const modoRaw = body.modo_stock ?? body.modoStock
-    if (modoRaw !== undefined) {
-      const modo = String(modoRaw)
-      if (!['producto', 'receta', 'producto_y_receta'].includes(modo)) {
-        return Response.json({ error: 'modo_stock inválido' }, { status: 400 })
-      }
-      updates.modoStock = modo
-    }
+    if (body.nombre !== undefined) updates.nombre = body.nombre
+    if (body.descripcion !== undefined) updates.descripcion = body.descripcion
+    if (body.precio !== undefined) updates.precio = body.precio
+    if (body.categoria !== undefined) updates.categoria = body.categoria
+    if (body.activo !== undefined) updates.activo = body.activo
+    if (body.es_ingrediente_especial !== undefined) updates.esIngredienteEspecial = body.es_ingrediente_especial
+    if (body.costo_adicional !== undefined) updates.costoAdicional = body.costo_adicional
+    if (body.imagen_url !== undefined) updates.imagen_url = body.imagen_url
+    if (body.modo_stock !== undefined) updates.modoStock = body.modo_stock
 
-    if (Object.keys(updates).length === 0) {
-      return Response.json({ error: 'Sin campos a actualizar' }, { status: 400 })
-    }
-
-    const updated = await db.actualizarProducto(id, updates as any)
+    const updated = await db.actualizarProducto(p.datos.id, updates as any)
     if (!updated) {
       return Response.json({ error: 'Producto no encontrado' }, { status: 404 })
     }

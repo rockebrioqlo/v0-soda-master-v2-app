@@ -1,12 +1,14 @@
 import { db } from '@/lib/db'
-import { requireSesion } from '@/lib/sesion'
+import { requireSesion, requireAcceso } from '@/lib/sesion'
 
 // GET /api/caja — estado de la caja abierta (si hay) + resumen con
 // totales (fondo, ventas en efectivo, vuelto entregado, retiros,
 // depósitos, efectivo esperado). El frontend usa esto para decidir si
 // mostrar el botón "Abrir caja" o el panel de operaciones.
-export async function GET() {
+export async function GET(request: Request) {
   try {
+    const s = await requireAcceso(request)
+    if (!s.ok) return s.respuesta
     const caja = await db.getCajaAbierta()
     if (!caja) {
       return Response.json({ abierta: false })

@@ -1,10 +1,16 @@
+import { z } from 'zod'
 import { db } from '@/lib/db'
+import { requireAcceso } from '@/lib/sesion'
+import { ActivoSchema } from '@/lib/finanzas-http'
+import { booleanoConsulta, leerBody, leerConsulta } from '@/lib/validacion-http'
 
 export async function GET(request: Request) {
   try {
-    const { searchParams } = new URL(request.url)
-    const incluirBaja = searchParams.get('incluir_baja') === 'true'
-    const data = await db.getActivos(!incluirBaja)
+    const s = await requireAcceso(request)
+    if (!s.ok) return s.respuesta
+    const q = leerConsulta(request, z.object({ incluir_baja: booleanoConsulta.optional() }).strict())
+    if (!q.ok) return q.respuesta
+    const data = await db.getActivos(q.datos.incluir_baja !== 'true')
     return Response.json(data)
   } catch (error) {
     console.error('GET activos error:', error)
@@ -14,32 +20,24 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   try {
-    const body = await request.json()
-    const nombre = String(body?.nombre || '').trim()
-    if (!nombre) {
-      return Response.json({ error: 'nombre requerido' }, { status: 400 })
-    }
-    const costo = Number(body.costo_compra)
-    if (!Number.isFinite(costo) || costo < 0) {
-      return Response.json({ error: 'costo_compra inválido' }, { status: 400 })
-    }
-    const vida = Number(body.vida_util_meses)
-    if (!Number.isFinite(vida) || vida < 1) {
-      return Response.json({ error: 'vida_util_meses inválido' }, { status: 400 })
-    }
+    const s = await requireAcceso(request)
+    if (!s.ok) return s.respuesta
+    const parsed = await leerBody(request, ActivoSchema, 'Datos del activo')
+    if (!parsed.ok) return parsed.respuesta
+    const d = parsed.datos
     const row = await db.crearActivo({
-      nombre,
-      categoria: body.categoria || 'maquinaria',
-      descripcion: body.descripcion,
-      fecha_compra: body.fecha_compra,
-      costo_compra: costo,
-      vida_util_meses: vida,
-      valor_residual: Number(body.valor_residual) || 0,
-      metodo_depreciacion: body.metodo_depreciacion || 'lineal',
-      proveedor_id: body.proveedor_id || null,
-      ubicacion: body.ubicacion,
-      numero_serie: body.numero_serie,
-      notas: body.notas,
+      nombre: d.nombre,
+      categoria: d.categoria || 'maquinaria',
+      descripcion: d.descripcion ?? undefined,
+      fecha_compra: d.fecha_compra,
+      costo_compra: d.costo_compra,
+      vida_util_meses: d.vida_util_meses,
+      valor_residual: d.valor_residual ?? 0,
+      metodo_depreciacion: d.metodo_depreciacion || 'lineal',
+      proveedor_id: d.proveedor_id || null,
+      ubicacion: d.ubicacion ?? undefined,
+      numero_serie: d.numero_serie ?? undefined,
+      notas: d.notas ?? undefined,
     })
     return Response.json(row, { status: 201 })
   } catch (error) {

@@ -6308,6 +6308,14 @@ export const db = {
     }
   },
 
+  /**
+   * Guarda la receta de un producto (F31, sesión 14.5b-1). Antes de tocar nada valida que el producto
+   * exista, que cada cantidad sea mayor que 0 (ya no se convierte en 1), que no haya insumos repetidos
+   * (la tabla lo prohíbe) y que todos los insumos existan y estén activos. Después escribe todo en UNA
+   * transacción: si algo falla, la receta anterior queda intacta (antes se borraba y se reinsertaba
+   * línea por línea, y un error a mitad dejaba la receta vacía o incompleta). El
+   * `INSERT … ON CONFLICT (producto_id)` bloquea la fila de la receta y serializa dos guardados a la vez.
+   */
   async guardarRecetaProducto(
     productoId: string,
     payload: {
@@ -6328,49 +6336,79 @@ export const db = {
     const modo = payload.modo_stock && MODOS_STOCK_VALIDOS.includes(payload.modo_stock as any)
       ? payload.modo_stock
       : null
-    if (modo) {
-      await sql`
-        UPDATE soda_master.productos SET modo_stock = ${modo}, updated_at = CURRENT_TIMESTAMP
-        WHERE id = ${productoId}::uuid
-      `
+
+    const prod = (await sql`
+      SELECT id FROM soda_master.productos WHERE id = ${productoId}::uuid
+    `) as any[]
+    if (!prod[0]) throw new ErrorOrden('PRODUCTO_NO_ENCONTRADO', 404, 'El producto no existe.')
+
+    const lineas = payload.ingredientes
+    for (const l of lineas) {
+      const c = Number(l.cantidad)
+      if (!Number.isFinite(c) || c <= 0) {
+        throw new ErrorOrden('CANTIDAD_INVALIDA', 400, 'La cantidad de cada insumo debe ser mayor que 0.')
+      }
+    }
+    const ids = lineas.map((l) => l.ingrediente_id)
+    if (new Set(ids).size !== ids.length) {
+      throw new ErrorOrden('INSUMO_DUPLICADO', 400, 'Un insumo aparece más de una vez en la receta.')
+    }
+    if (ids.length > 0) {
+      const filas = (await sql`
+        SELECT id, nombre, activo FROM soda_master.ingredientes WHERE id = ANY(${ids}::uuid[])
+      `) as any[]
+      const porId = new Map(filas.map((f) => [String(f.id), f]))
+      const malos = ids.filter((id) => !porId.get(id)?.activo)
+      if (malos.length > 0) {
+        const nombres = malos.map((id) => porId.get(id)?.nombre ?? '(no existe)').join(', ')
+        throw new ErrorOrden(
+          'INSUMO_NO_ENCONTRADO',
+          404,
+          `Insumo inexistente o dado de baja: ${nombres}. Quítalo de la receta y vuelve a guardar.`,
+        )
+      }
     }
 
-    const existing = await sql`
-      SELECT id FROM soda_master.recetas WHERE producto_id = ${productoId}::uuid LIMIT 1
-    `
-    let recetaId: string
-    if (existing[0]) {
-      recetaId = (existing[0] as any).id
-      await sql`
-        UPDATE soda_master.recetas
-        SET nombre = COALESCE(${payload.nombre ?? null}, nombre), updated_at = now()
-        WHERE id = ${recetaId}::uuid
-      `
-      await sql`DELETE FROM soda_master.receta_ingredientes WHERE receta_id = ${recetaId}::uuid`
-    } else {
-      const ins = await sql`
+    const sentencias = [
+      sql`
         INSERT INTO soda_master.recetas (producto_id, nombre, activo)
         VALUES (${productoId}::uuid, ${payload.nombre ?? null}, true)
-        RETURNING id
-      `
-      recetaId = (ins[0] as any).id
-    }
-
-    for (const line of payload.ingredientes) {
-      await sql`
+        ON CONFLICT (producto_id) DO UPDATE
+        SET nombre = COALESCE(${payload.nombre ?? null}, soda_master.recetas.nombre), updated_at = now()
+      `,
+      sql`
+        DELETE FROM soda_master.receta_ingredientes
+        WHERE receta_id = (SELECT id FROM soda_master.recetas WHERE producto_id = ${productoId}::uuid)
+      `,
+    ]
+    if (lineas.length > 0) {
+      const json = JSON.stringify(
+        lineas.map((l) => ({
+          ingrediente_id: l.ingrediente_id,
+          cantidad: Number(l.cantidad),
+          opcional: !!l.opcional,
+          extra: !!l.extra,
+          costo_adicional: Number(l.costo_adicional) || 0,
+          nombre_display: l.nombre_display ?? null,
+        })),
+      )
+      sentencias.push(sql`
         INSERT INTO soda_master.receta_ingredientes
           (receta_id, ingrediente_id, cantidad, opcional, extra, costo_adicional, nombre_display)
-        VALUES (
-          ${recetaId}::uuid,
-          ${line.ingrediente_id}::uuid,
-          ${Number(line.cantidad) || 1},
-          ${!!line.opcional},
-          ${!!line.extra},
-          ${Number(line.costo_adicional) || 0},
-          ${line.nombre_display ?? null}
-        )
-      `
+        SELECT (SELECT id FROM soda_master.recetas WHERE producto_id = ${productoId}::uuid),
+               l.ingrediente_id, l.cantidad, l.opcional, l.extra, l.costo_adicional, l.nombre_display
+        FROM jsonb_to_recordset(${json}::jsonb)
+          AS l(ingrediente_id uuid, cantidad numeric, opcional boolean, extra boolean,
+               costo_adicional numeric, nombre_display text)
+      `)
     }
+    if (modo) {
+      sentencias.push(sql`
+        UPDATE soda_master.productos SET modo_stock = ${modo}, updated_at = CURRENT_TIMESTAMP
+        WHERE id = ${productoId}::uuid
+      `)
+    }
+    await sql.transaction(sentencias)
     return this.getRecetaProducto(productoId)
   },
 
@@ -7102,6 +7140,24 @@ export const db = {
       LIMIT ${limite}
     `
     return rows as any[]
+  },
+
+  /** Destinatario de una notificación (usuario y/o rol), o null si no existe. */
+  async getDestinatarioNotificacion(
+    id: string,
+  ): Promise<{ destinatario_usuario_id: string | null; destinatario_rol: string | null } | null> {
+    await ensureNotificacionesTable()
+    const sql = getSql()
+    const rows = (await sql`
+      SELECT destinatario_usuario_id, destinatario_rol
+      FROM soda_master.notificaciones
+      WHERE id = ${id}::uuid
+    `) as any[]
+    if (!rows[0]) return null
+    return {
+      destinatario_usuario_id: rows[0].destinatario_usuario_id ? String(rows[0].destinatario_usuario_id) : null,
+      destinatario_rol: rows[0].destinatario_rol ?? null,
+    }
   },
 
   async marcarNotificacionVista(id: string): Promise<boolean> {

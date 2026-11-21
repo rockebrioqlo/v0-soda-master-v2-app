@@ -1,10 +1,16 @@
+import { z } from 'zod'
 import { db } from '@/lib/db'
+import { requireAcceso } from '@/lib/sesion'
+import { ProveedorSchema } from '@/lib/finanzas-http'
+import { booleanoConsulta, leerBody, leerConsulta } from '@/lib/validacion-http'
 
 export async function GET(request: Request) {
   try {
-    const { searchParams } = new URL(request.url)
-    const incluirInactivos = searchParams.get('incluir_inactivos') === 'true'
-    const data = await db.getProveedores(!incluirInactivos)
+    const s = await requireAcceso(request)
+    if (!s.ok) return s.respuesta
+    const q = leerConsulta(request, z.object({ incluir_inactivos: booleanoConsulta.optional() }).strict())
+    if (!q.ok) return q.respuesta
+    const data = await db.getProveedores(q.datos.incluir_inactivos !== 'true')
     return Response.json(data)
   } catch (error) {
     console.error('GET proveedores error:', error)
@@ -14,19 +20,19 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   try {
-    const body = await request.json()
-    const nombre = String(body?.nombre || '').trim()
-    if (!nombre) {
-      return Response.json({ error: 'nombre requerido' }, { status: 400 })
-    }
+    const s = await requireAcceso(request)
+    if (!s.ok) return s.respuesta
+    const parsed = await leerBody(request, ProveedorSchema, 'Datos del proveedor')
+    if (!parsed.ok) return parsed.respuesta
+    const d = parsed.datos
     const row = await db.crearProveedor({
-      nombre,
-      rut: body.rut ? String(body.rut) : undefined,
-      contacto: body.contacto ? String(body.contacto) : undefined,
-      telefono: body.telefono ? String(body.telefono) : undefined,
-      email: body.email ? String(body.email) : undefined,
-      direccion: body.direccion ? String(body.direccion) : undefined,
-      notas: body.notas ? String(body.notas) : undefined,
+      nombre: d.nombre,
+      rut: d.rut || undefined,
+      contacto: d.contacto || undefined,
+      telefono: d.telefono || undefined,
+      email: d.email || undefined,
+      direccion: d.direccion || undefined,
+      notas: d.notas || undefined,
     })
     return Response.json(row, { status: 201 })
   } catch (error) {

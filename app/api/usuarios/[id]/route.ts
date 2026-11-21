@@ -1,4 +1,6 @@
 import { db } from '@/lib/db'
+import { requireAcceso } from '@/lib/sesion'
+import { IdRutaSchema, leerParamsRuta } from '@/lib/validacion-http'
 
 const ROLES_VALIDOS = ['admin', 'administrador', 'mesero', 'cocina', 'bar', 'cajero']
 
@@ -7,7 +9,11 @@ export async function PATCH(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const { id } = await params
+    const s = await requireAcceso(request)
+    if (!s.ok) return s.respuesta
+    const p = await leerParamsRuta(params, IdRutaSchema)
+    if (!p.ok) return p.respuesta
+    const id = p.datos.id
     const updates = await request.json()
     if (updates.rol !== undefined && !ROLES_VALIDOS.includes(String(updates.rol))) {
       return Response.json({ error: 'Rol inválido' }, { status: 400 })
@@ -44,12 +50,15 @@ export async function PATCH(
 }
 
 export async function DELETE(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const { id } = await params
-    const ok = await db.eliminarUsuario(id)
+    const s = await requireAcceso(request)
+    if (!s.ok) return s.respuesta
+    const p = await leerParamsRuta(params, IdRutaSchema)
+    if (!p.ok) return p.respuesta
+    const ok = await db.eliminarUsuario(p.datos.id)
     if (!ok) {
       return Response.json({ error: 'Usuario no encontrado' }, { status: 404 })
     }
