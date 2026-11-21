@@ -13,6 +13,9 @@ const TIPOS = [
   'comanda_no_pagada',
   'error_preparacion',
   'robo',
+  // Sesión 14c (F21): solo lo escribe el servidor al borrar o cancelar un ítem ya preparado; se puede
+  // filtrar, pero POST no lo acepta (MermaPostSchema usa TIPOS_MERMA_ROUTE, sin este tipo).
+  'item_preparado',
 ] as const
 
 const TIPOS_ADMIN_ONLY = new Set<string>(['robo', 'perdida_sin_explicacion'])

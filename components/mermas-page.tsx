@@ -43,6 +43,9 @@ type TipoMerma =
   | 'error_preparacion'
   | 'robo'
 
+// Lo que muestra el listado: además de los tipos manuales, el que escribe el servidor (sesión 14c, F21).
+type TipoMermaFila = TipoMerma | 'item_preparado'
+
 const TIPOS: { value: TipoMerma; label: string }[] = [
   { value: 'accidente', label: 'Accidente / Daño físico' },
   { value: 'vencido', label: 'Producto vencido o en mal estado' },
@@ -51,6 +54,13 @@ const TIPOS: { value: TipoMerma; label: string }[] = [
   { value: 'comanda_no_pagada', label: 'Comanda no pagada' },
   { value: 'error_preparacion', label: 'Error de preparación' },
   { value: 'robo', label: 'Robo' },
+]
+
+// Sesión 14c (F21): el tipo `item_preparado` lo escribe el servidor al borrar o cancelar un ítem ya preparado.
+// Se puede filtrar y se muestra, pero no se ofrece al registrar una merma a mano (`TIPOS`).
+const TIPOS_FILTRO: { value: TipoMermaFila; label: string }[] = [
+  ...TIPOS,
+  { value: 'item_preparado', label: 'Ítem preparado eliminado' },
 ]
 
 const MOTIVOS_CNP: { value: 'cliente_se_fue' | 'error_mesero' | 'cortesia'; label: string }[] = [
@@ -69,9 +79,13 @@ const TIPOS_ADMIN_ONLY = new Set<TipoMerma>(['robo', 'perdida_sin_explicacion'])
 
 interface MermaRow {
   id: string
-  tipo: TipoMerma
+  tipo: TipoMermaFila
   producto_id: string | null
   producto_nombre: string | null
+  ingrediente_id: string | null
+  ingrediente_nombre: string | null
+  orden_id: string | null
+  item_orden_id: string | null
   cantidad: number
   descripcion: string | null
   registrado_por: string | null
@@ -92,7 +106,7 @@ interface OrdenLista {
 }
 
 function tipoLabel(tipo: string) {
-  return TIPOS.find((t) => t.value === tipo)?.label ?? tipo
+  return TIPOS_FILTRO.find((t) => t.value === tipo)?.label ?? tipo
 }
 
 function consecuenciaLabel(c: string | null) {
@@ -510,7 +524,7 @@ export function MermasPage() {
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">Todos los tipos</SelectItem>
-                  {TIPOS.map((t) => (
+                  {TIPOS_FILTRO.map((t) => (
                     <SelectItem key={t.value} value={t.value}>
                       {t.label}
                     </SelectItem>
@@ -592,7 +606,20 @@ export function MermasPage() {
                         </Badge>
                       </TableCell>
                       <TableCell className="font-medium">
-                        {m.producto_nombre || '—'}
+                        {m.producto_nombre ||
+                          (m.ingrediente_nombre ? (
+                            <>
+                              {m.ingrediente_nombre}
+                              <span className="ml-1 text-xs font-normal text-muted-foreground">(insumo)</span>
+                            </>
+                          ) : (
+                            '—'
+                          ))}
+                        {m.descripcion && (
+                          <p className="max-w-xs whitespace-normal text-xs font-normal text-muted-foreground">
+                            {m.descripcion}
+                          </p>
+                        )}
                       </TableCell>
                       <TableCell className="text-right">{m.cantidad}</TableCell>
                       <TableCell>{m.registrado_por_nombre || '—'}</TableCell>
@@ -675,7 +702,7 @@ export function MermasPage() {
           <div className="space-y-3 py-2">
             {assignMerma && (
               <p className="text-xs text-muted-foreground">
-                {tipoLabel(assignMerma.tipo)} — {assignMerma.producto_nombre || 'sin producto'} · {assignMerma.cantidad} u.
+                {tipoLabel(assignMerma.tipo)} — {assignMerma.producto_nombre || assignMerma.ingrediente_nombre || 'sin producto'} · {assignMerma.cantidad} u.
               </p>
             )}
             <div className="space-y-2">

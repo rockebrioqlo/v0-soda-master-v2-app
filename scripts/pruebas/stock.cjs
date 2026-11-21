@@ -191,4 +191,7 @@ exports.correr = async function (ctx) {
 
   // Sesión 11: unidad de compra y de consumo, factor por compra, rendimiento y ajuste de stock.
   await require('./unidades.cjs').correr(ctx)
+
+  // Sesión 14c (F21): la merma de un ítem ya preparado que se borra o cancela queda en la tabla `mermas`.
+  await require('./mermas-item.cjs').correr(ctx)
 }

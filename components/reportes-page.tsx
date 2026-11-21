@@ -136,6 +136,7 @@ const MERMA_TIPOS_LABEL: Record<string, string> = {
   comanda_no_pagada: 'Comanda no pagada',
   error_preparacion: 'Error de preparación',
   robo: 'Robo',
+  item_preparado: 'Ítem preparado eliminado',
 }
 
 const MOTIVOS_CNP_LABEL: Record<string, string> = {

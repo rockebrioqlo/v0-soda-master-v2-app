@@ -137,7 +137,8 @@ export function getTipoMermaLabel(tipo: string): string {
     consumo_interno: 'Consumo interno',
     comanda_no_pagada: 'Comanda no pagada',
     error_preparacion: 'Error de preparación',
-    robo: 'Robo'
+    robo: 'Robo',
+    item_preparado: 'Ítem preparado eliminado'
   }
   return labels[tipo] || tipo
 }

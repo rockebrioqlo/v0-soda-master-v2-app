@@ -891,8 +891,22 @@ function sentenciaTraspasoRegistro(
  *    descontado).
  * Un ítem sin registro (anterior a la sesión 8 o derivado de una división de
  * cuenta) no devuelve nada. Antes se bloquean las filas de stock en orden.
+ *
+ * Sesión 14c (F21): cada ítem ya preparado deja además UNA fila en `mermas` (tipo `item_preparado`, producto y
+ * unidades del ítem, `registrado_por` = el usuario de la sesión, sin responsable, con su orden e ítem de
+ * origen) ANTES de los movimientos `merma`, que la enlazan con `merma_id`. Va en el mismo statement-lote que
+ * la devolución: con la orden bloqueada, ni un cobro ni un cambio de estado de la cocina pueden cambiar qué
+ * ítems cuentan como preparados entre un statement y otro. `ON CONFLICT DO NOTHING` + el índice único por
+ * ítem hacen imposible duplicarla. El stock no se toca: la merma es solo el registro de lo perdido.
+ * `usuarioId` sale de la sesión, nunca del navegador.
  */
-function sentenciasRetornoStock(sql: Sql, ordenId: string, itemId: string | null, nota: string): any[] {
+function sentenciasRetornoStock(
+  sql: Sql,
+  ordenId: string,
+  itemId: string | null,
+  nota: string,
+  usuarioId: string | null,
+): any[] {
   const O = ordenId
   const I = itemId
   return [
@@ -951,11 +965,24 @@ function sentenciasRetornoStock(sql: Sql, ordenId: string, itemId: string | null
       SELECT ingrediente_id, producto_id, 'devolucion', neto, ${O}::uuid, item_orden_id, ${nota}::text
       FROM netos`,
     sql`
+      INSERT INTO soda_master.mermas
+        (tipo, producto_id, cantidad, descripcion, registrado_por, orden_id, item_orden_id)
+      SELECT 'item_preparado', it.producto_id, it.cantidad,
+             ${nota}::text || ': ' || it.cantidad::text || ' × ' || COALESCE(p.nombre, 'producto') || ' ('
+               || CASE it.estado_item WHEN 'en_preparacion' THEN 'en preparación' ELSE it.estado_item END || ')',
+             ${usuarioId}::uuid, ${O}::uuid, it.id
+      FROM soda_master.items_orden it
+      LEFT JOIN soda_master.productos p ON p.id = it.producto_id
+      WHERE it.orden_id = ${O}::uuid AND (${I}::uuid IS NULL OR it.id = ${I}::uuid)
+        AND COALESCE(it.estado_item, 'pendiente') <> 'pendiente'
+      ON CONFLICT DO NOTHING`,
+    sql`
       INSERT INTO soda_master.movimientos_inventario
-        (ingrediente_id, producto_id, tipo, cantidad, orden_id, item_orden_id, notas)
+        (ingrediente_id, producto_id, tipo, cantidad, orden_id, item_orden_id, notas, merma_id)
       SELECT m.ingrediente_id, m.producto_id, 'merma',
              SUM(CASE WHEN m.tipo = 'venta' THEN m.cantidad ELSE -m.cantidad END),
-             ${O}::uuid, m.item_orden_id, ${nota + ' (ya preparado: no se devuelve)'}::text
+             ${O}::uuid, m.item_orden_id, ${nota + ' (ya preparado: no se devuelve)'}::text,
+             (SELECT me.id FROM soda_master.mermas me WHERE me.item_orden_id = m.item_orden_id)
       FROM soda_master.movimientos_inventario m
       JOIN soda_master.items_orden it ON it.id = m.item_orden_id
       WHERE it.orden_id = ${O}::uuid AND (${I}::uuid IS NULL OR it.id = ${I}::uuid)
@@ -1373,6 +1400,43 @@ async function ensureMermasIngredienteSchema(): Promise<void> {
       ON soda_master.mermas (ingrediente_id)
   `
   _mermasIngSchemaReady = true
+}
+
+/**
+ * Sesión 14c (F21): la merma de un ítem ya preparado que se borra o cancela se anota en `mermas` (una fila
+ * por ítem, tipo `item_preparado`) en la misma transacción que el borrado o la cancelación. Idempotente:
+ *  - `orden_id` e `item_orden_id`: origen de la merma. Sin clave foránea: el ítem (y a veces la orden)
+ *    se borra en esa misma transacción; `movimientos_inventario` los guarda igual;
+ *  - el CHECK de `tipo` admite `item_preparado` (solo lo escribe el servidor: `POST /api/mermas` no lo acepta);
+ *  - índice único parcial por ítem: una merma por ítem, nunca duplicada.
+ */
+let _mermasItemSchemaReady = false
+async function ensureMermasItemSchema(): Promise<void> {
+  if (_mermasItemSchemaReady) return
+  const sql = getSql()
+  await sql`ALTER TABLE soda_master.mermas ADD COLUMN IF NOT EXISTS orden_id UUID`
+  await sql`ALTER TABLE soda_master.mermas ADD COLUMN IF NOT EXISTS item_orden_id UUID`
+  await sql`
+    DO $$ BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'mermas_tipo_check' AND conrelid = 'soda_master.mermas'::regclass
+          AND pg_get_constraintdef(oid) LIKE '%item_preparado%'
+      ) THEN
+        ALTER TABLE soda_master.mermas DROP CONSTRAINT IF EXISTS mermas_tipo_check;
+        ALTER TABLE soda_master.mermas
+          ADD CONSTRAINT mermas_tipo_check
+          CHECK (tipo::text IN ('accidente','vencido','perdida_sin_explicacion','consumo_interno',
+                                'comanda_no_pagada','error_preparacion','robo','item_preparado'));
+      END IF;
+    EXCEPTION WHEN duplicate_object THEN NULL;
+    END $$
+  `
+  await sql`
+    CREATE UNIQUE INDEX IF NOT EXISTS mermas_item_orden_uk
+      ON soda_master.mermas (item_orden_id) WHERE item_orden_id IS NOT NULL
+  `
+  _mermasItemSchemaReady = true
 }
 
 let _auditoriaAdminReady = false
@@ -3296,6 +3360,7 @@ export const db = {
     await ensureOrdenEstadoSchema()
     await ensurePagoSchema()
     await ensureOrdenesAtomicasSchema()
+    await ensureMermasItemSchema()
     const sql = getSql()
     const O = id
     const origenes = [...ORIGENES_VALIDOS.cancelado]
@@ -3314,7 +3379,7 @@ export const db = {
               'ORDEN_CON_ITEMS_PAGADOS')`,
         // F10: el stock de los ítems que cocina aún no tocó vuelve en la misma transacción.
         // Los montos de la orden no se recalculan: una orden cancelada conserva sus montos.
-        ...sentenciasRetornoStock(sql, O, null, 'Orden cancelada'),
+        ...sentenciasRetornoStock(sql, O, null, 'Orden cancelada', usuario.id),
         sql`UPDATE soda_master.ordenes
             SET estado = 'cancelado', notas = ${motivo}, updated_at = CURRENT_TIMESTAMP
             WHERE id = ${O}::uuid
@@ -3352,6 +3417,7 @@ export const db = {
     await ensureItemPagoSchema()
     await ensurePagoSchema()
     await ensureOrdenesAtomicasSchema()
+    await ensureMermasItemSchema()
     const sql = getSql()
     const O = id
     const origenes = [...ORIGENES_VALIDOS.cancelado]
@@ -3381,7 +3447,7 @@ export const db = {
     consultas.push(
       // F10: devuelve el stock de los ítems sin preparar (y anota la merma de los ya preparados)
       // antes de borrarlos. La orden desaparece, así que no hay montos que recalcular.
-      ...sentenciasRetornoStock(sql, O, null, usuario.esAdmin ? 'Orden borrada por el administrador' : 'Orden borrada'),
+      ...sentenciasRetornoStock(sql, O, null, usuario.esAdmin ? 'Orden borrada por el administrador' : 'Orden borrada', usuario.id),
       sql`DELETE FROM soda_master.items_orden WHERE orden_id = ${O}::uuid`,
       // `descuentos.orden_id` no tiene ON DELETE CASCADE: sin esto, una orden con descuento no se podía borrar.
       sql`DELETE FROM soda_master.descuentos WHERE orden_id = ${O}::uuid`,
@@ -4096,6 +4162,7 @@ export const db = {
     await ensureItemPagoSchema()
     await ensurePagoSchema()
     await ensureOrdenesAtomicasSchema()
+    await ensureMermasItemSchema()
     await ensureEstadoOrdenFuncion()
     const sql = getSql()
     const filas = (await sql`
@@ -4128,7 +4195,7 @@ export const db = {
                 (SELECT pagado FROM soda_master.items_orden WHERE id = ${id}::uuid) = FALSE,
                 'ITEM_PAGADO')`,
           sentenciaHuellaOrden(sql, O, ctx),
-          ...sentenciasRetornoStock(sql, O, id, 'Ítem eliminado'),
+          ...sentenciasRetornoStock(sql, O, id, 'Ítem eliminado', opts.usuario?.id ?? null),
           sql`DELETE FROM soda_master.items_orden WHERE id = ${id}::uuid`,
           sql`UPDATE soda_master.ordenes
               SET subtotal = ${calc.subtotal}, impuesto = ${calc.impuesto}, total = ${calc.total}
@@ -5590,6 +5657,7 @@ export const db = {
     hasta?: string
     responsable_id?: string
   }) {
+    await ensureMermasItemSchema()
     const sql = getSql()
     const tipo = filtros?.tipo || null
     const desde = filtros?.desde || null
@@ -5601,6 +5669,10 @@ export const db = {
         m.tipo,
         m.producto_id,
         p.nombre AS producto_nombre,
+        m.ingrediente_id,
+        ing.nombre AS ingrediente_nombre,
+        m.orden_id,
+        m.item_orden_id,
         m.cantidad,
         m.descripcion,
         m.registrado_por,
@@ -5612,6 +5684,7 @@ export const db = {
         m.created_at
       FROM soda_master.mermas m
       LEFT JOIN soda_master.productos p ON p.id = m.producto_id
+      LEFT JOIN soda_master.ingredientes ing ON ing.id = m.ingrediente_id
       LEFT JOIN soda_master.usuarios ur ON ur.id = m.registrado_por
       LEFT JOIN soda_master.usuarios ures ON ures.id = m.responsable_id
       WHERE (${tipo}::text IS NULL OR m.tipo = ${tipo})
@@ -5625,6 +5698,10 @@ export const db = {
       tipo: r.tipo,
       producto_id: r.producto_id,
       producto_nombre: r.producto_nombre,
+      ingrediente_id: r.ingrediente_id,
+      ingrediente_nombre: r.ingrediente_nombre,
+      orden_id: r.orden_id,
+      item_orden_id: r.item_orden_id,
       cantidad: Number(r.cantidad) || 0,
       descripcion: r.descripcion,
       registrado_por: r.registrado_por,

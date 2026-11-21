@@ -30,6 +30,7 @@ export type TipoMerma =
   | 'comanda_no_pagada' 
   | 'error_preparacion' 
   | 'robo'
+  | 'item_preparado'
 
 export type TipoDescuento = 'porcentaje' | 'monto_fijo' | 'cortesia_parcial' | 'cortesia_total'
 

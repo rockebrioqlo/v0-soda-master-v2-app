@@ -90,6 +90,7 @@ async function fixtureInsumo(ctx, nombre, rendimiento, receta, stock = 3000) {
   await api(admin, 'POST', '/api/recetas', { producto_id: prod.json.id, nombre: marca, modo_stock: 'receta', ingredientes: [{ ingrediente_id: ing.json.id, cantidad: receta }] })
   return { ing: ing.json.id, prod: prod.json.id }
 }
+exports.fixtureInsumo = fixtureInsumo
 const stockIng = async (ctx, id) => Number((await ctx.db`SELECT stock_actual::float AS s FROM soda_master.ingredientes WHERE id = ${id}::uuid`)[0].s)
 
 // ════════════════════════════════════════════════════════════════════

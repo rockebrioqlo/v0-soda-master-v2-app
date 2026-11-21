@@ -19,13 +19,15 @@ const MODULOS = {
   sondeo: require('./sondeo.cjs'),
   unidades: require('./unidades.cjs'),
   registro: require('./registro-corte.cjs'),
+  mermas: require('./mermas-item.cjs'),
   kds: require('./kds.cjs'),
   sesion: require('./sesion.cjs'),
   usuarios: require('./usuarios.cjs'),
 }
 // `unidades` ya corre dentro de `stock` (la sesión 11 toca stock) y `registro` (sesión 14b, F19) dentro de `stock`
-// (los cortes) y de `asignaciones` (los clones): solo se piden por nombre para correrlos solos.
-const SOLO_POR_NOMBRE = ['unidades', 'registro']
+// (los cortes) y de `asignaciones` (los clones); `mermas` (sesión 14c, F21) también corre dentro de `stock`:
+// solo se piden por nombre para correrlos solos.
+const SOLO_POR_NOMBRE = ['unidades', 'registro', 'mermas']
 
 ;(async () => {
   const t0 = Date.now()

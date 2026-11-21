@@ -350,8 +350,12 @@ async function limpiar(ctx) {
     // insumos y productos de módulos que crean los suyos (unidades)
     for (const id of ctx.limpiezaProd || []) await api(ctx.admin, 'PATCH', '/api/productos/' + id, { activo: false })
     for (const id of ctx.limpiezaIng || []) await api(ctx.admin, 'PATCH', '/api/ingredientes/' + id, { activo: false })
-    // mermas que registraron las pruebas (14.5b-2, F45): llevan la marca de la corrida en la descripción
-    try { await ctx.db`DELETE FROM soda_master.mermas WHERE descripcion = ${ctx.marca}` } catch (e) { avisos.push('no se pudieron borrar las mermas de prueba: ' + e.message) }
+    // mermas que registraron las pruebas (14.5b-2, F45): llevan la marca de la corrida en la descripción. Sesión 14c (F21):
+    // las de ítems preparados que se borran o cancelan (tipo item_preparado) llevan una descripción generada por el servidor;
+    // se reconocen por el producto (o insumo) de la marca. Van ANTES de borrar los usuarios temporales: `registrado_por` los dejaría con historial (F50).
+    try { await ctx.db`DELETE FROM soda_master.mermas WHERE descripcion = ${ctx.marca}
+      OR producto_id IN (SELECT id FROM soda_master.productos WHERE starts_with(nombre, ${ctx.marca}))
+      OR ingrediente_id IN (SELECT id FROM soda_master.ingredientes WHERE starts_with(nombre, ${ctx.marca}))` } catch (e) { avisos.push('no se pudieron borrar las mermas de prueba: ' + e.message) }
     // usuarios de prueba (sesión 14.5a): se borran (sus sesiones caen en cascada)
     for (const id of ctx.usuariosPrueba || []) {
       const d = await api(ctx.admin, 'DELETE', '/api/usuarios/' + id)
