@@ -2,7 +2,7 @@ import { z } from 'zod'
 import { db } from '@/lib/db'
 import { ipDePeticion, requireSesion } from '@/lib/sesion'
 import { rolesEfectivos } from '@/lib/permisos-api'
-import { registrarExito, registrarFallo, respuestaSiBloqueado } from '@/lib/intentos-login'
+import { exitoIntento, falloIntento, iniciarIntento } from '@/lib/intentos-login'
 import { emitirAutorizacionAdmin } from '@/lib/autorizacion-admin'
 
 const Schema = z.object({
@@ -26,16 +26,17 @@ export async function POST(request: Request) {
     const { email, pin } = parsed.data
     const ip = ipDePeticion(request)
 
-    const bloqueo = await respuestaSiBloqueado(email, ip)
-    if (bloqueo) return bloqueo
+    // F46 (14.5b-2): se cuenta el intento antes de verificar; mismas claves que el login (usuario + IP, global e IP).
+    const { respuesta, intento } = await iniciarIntento(email, ip)
+    if (respuesta) return respuesta
 
     const usuario = await db.verificarPIN(email, pin)
     if (!usuario) {
-      const recienBloqueado = await registrarFallo(email, ip)
+      const recienBloqueado = falloIntento(intento)
       if (recienBloqueado) return recienBloqueado
       return Response.json({ valido: false }, { status: 401 })
     }
-    await registrarExito(email)
+    await exitoIntento(intento)
 
     const esAdmin = rolesEfectivos(usuario.rol, usuario.roles_adicionales).includes('admin')
     const autorizacion = esAdmin ? emitirAutorizacionAdmin(usuario.id) : null

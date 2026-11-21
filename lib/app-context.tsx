@@ -16,7 +16,7 @@ import { showToast } from '@/components/toast'
 import { errorDeRespuesta } from '@/lib/api-error'
 import { enPausaPorLimite, registrarLimite, segundosDePausa } from '@/lib/pausa-limite'
 import { CABECERA_SONDEO } from '@/lib/sesion-reglas'
-import { MENSAJES_CIERRE, registrarMotivoCierre } from '@/lib/sesion-cliente'
+import { MENSAJES_CIERRE, registrarMotivoCierre, esErrorDePin } from '@/lib/sesion-cliente'
 
 type PageType = 'dashboard' | 'mesas' | 'pos' | 'kds' | 'inventario' | 'finanzas' | 'usuarios' | 'pagos' | 'caja' | 'mermas' | 'reportes' | 'configuracion'
 
@@ -710,7 +710,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     const fetchOriginal = window.fetch
     const fetchConSesion: typeof window.fetch = async (input, init) => {
       const res = await fetchOriginal(input, init)
-      if (res.status === 401 && sesionActivaRef.current) {
+      // PIN actual equivocado al cambiar el propio PIN (14.5b-2): es un 401 de datos, no una sesión cerrada.
+      if (res.status === 401 && sesionActivaRef.current && !(await esErrorDePin(res))) {
         const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
         let ruta = url
         try {
@@ -729,7 +730,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       // 429 del límite general de la API (sesión 4): aviso único y se
       // pausan los sondeos hasta que pase el Retry-After. No se reintentan
       // escrituras solas. El 429 del login (/api/auth/) tiene su propio mensaje.
-      if (res.status === 429) {
+      if (res.status === 429 && !(await esErrorDePin(res))) {
         const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
         let ruta = url
         try {

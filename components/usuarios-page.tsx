@@ -36,7 +36,6 @@ import { Plus, Edit, Trash2, UserCheck, UserX, Shield, KeyRound, Ban, LockOpen }
 import { enPausaPorLimite } from '@/lib/pausa-limite'
 import { showToast } from '@/components/toast'
 import { Usuario, Rol, PermisosDescuento } from '@/lib/types'
-import { hash } from 'bcryptjs'
 
 export function UsuariosPage() {
   const {
@@ -94,6 +93,7 @@ export function UsuariosPage() {
     rol: 'mesero' as Rol,
     rolesAdicionales: [] as Rol[],
     pin: '',
+    pinActual: '',
     activo: true
   })
 
@@ -108,6 +108,7 @@ export function UsuariosPage() {
       rol: 'mesero',
       rolesAdicionales: [],
       pin: '',
+      pinActual: '',
       activo: true
     })
     setShowDialog(true)
@@ -121,6 +122,7 @@ export function UsuariosPage() {
       rol: usuario.rol,
       rolesAdicionales: (usuario.roles_adicionales || []) as Rol[],
       pin: '',
+      pinActual: '',
       activo: usuario.activo
     })
     setShowDialog(true)
@@ -196,20 +198,28 @@ export function UsuariosPage() {
           roles_adicionales: rolesAdicLimpios,
           activo: formData.activo,
         }
+        // F44 (14.5b-2): se manda el PIN en claro y el servidor lo hashea (nunca un hash del navegador).
+        // Al cambiar el PROPIO PIN el servidor exige el PIN actual.
         if (formData.pin) {
-          updates.pinHash = await hash(formData.pin, 10)
+          updates.pin = formData.pin
+          if (editingUsuario.id === usuarioActual?.id) {
+            if (!formData.pinActual) {
+              showToast('Escribe tu PIN actual para cambiar tu propio PIN', 'error')
+              return
+            }
+            updates.pin_actual = formData.pinActual
+          }
         }
         await actualizarUsuarioApi(editingUsuario.id, updates)
         showToast('Usuario actualizado', 'success')
       } else {
-        const pinHash = await hash(formData.pin, 10)
         await crearUsuarioApi({
           nombre: formData.nombre,
           email: formData.email,
           rol: formData.rol,
           roles_adicionales: rolesAdicLimpios,
           activo: formData.activo,
-          pinHash,
+          pin: formData.pin,
         })
         showToast('Usuario creado', 'success')
       }
@@ -556,6 +566,22 @@ export function UsuariosPage() {
                   className="border-border bg-muted"
                 />
               </div>
+              {editingUsuario && editingUsuario.id === usuarioActual?.id && formData.pin && (
+                <div className="space-y-2">
+                  <label className="text-sm text-muted-foreground">
+                    Tu PIN actual (obligatorio para cambiar tu propio PIN)
+                  </label>
+                  <Input
+                    type="password"
+                    value={formData.pinActual}
+                    onChange={(e) => setFormData({ ...formData, pinActual: e.target.value.replace(/\D/g, '') })}
+                    placeholder="••••"
+                    maxLength={8}
+                    autoComplete="off"
+                    className="border-border bg-muted"
+                  />
+                </div>
+              )}
               <div className="space-y-2">
                 <label className="text-sm text-muted-foreground">Rol principal</label>
                 <Select

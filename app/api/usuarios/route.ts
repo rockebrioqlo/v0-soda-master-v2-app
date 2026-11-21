@@ -1,6 +1,8 @@
 import { z } from 'zod'
 import { db } from '@/lib/db'
 import { esAdminSesion, requireAcceso, requireSesion } from '@/lib/sesion'
+import { UsuarioPostSchema } from '@/lib/usuarios-http'
+import { leerBody } from '@/lib/validacion-http'
 
 export async function GET(request: Request) {
   try {
@@ -40,22 +42,19 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   try {
-    // F13 (14.5b-1): solo admin, por la tabla del proxy también dentro de la ruta. El esquema zod del body va con F44 (14.5b-2).
+    // F13 (14.5b-1): solo admin, por la tabla del proxy también dentro de la ruta.
+    // F44 (14.5b-2): esquema .strict() con `pin` en claro (4 a 8 dígitos); `pinHash`, `pin_hash` e `id` se
+    // rechazan con 400 y su nombre: el servidor hashea y nunca acepta un hash del cliente. El email se normaliza.
     const s = await requireAcceso(request)
     if (!s.ok) return s.respuesta
-    const body = await request.json()
-    if (!body?.email || !body?.nombre || !body?.rol) {
-      return Response.json({ error: 'email, nombre y rol son requeridos' }, { status: 400 })
-    }
-    if (!body.pin && !body.pinHash && !body.pin_hash) {
-      return Response.json({ error: 'PIN requerido' }, { status: 400 })
-    }
-    const newUsuario = await db.crearUsuario(body)
+    const parsed = await leerBody(request, UsuarioPostSchema, 'Datos del usuario')
+    if (!parsed.ok) return parsed.respuesta
+    const newUsuario = await db.crearUsuario(parsed.datos)
     return Response.json(newUsuario, { status: 201 })
   } catch (error: any) {
     console.error('Create usuario error:', error)
     const message = String(error?.message ?? '')
-    if (message.includes('usuarios_email_key') || message.includes('duplicate key')) {
+    if (message.includes('usuarios_email_key') || message.includes('usuarios_email_norm_uk') || message.includes('duplicate key')) {
       return Response.json({ error: 'Email ya registrado' }, { status: 409 })
     }
     return Response.json({ error: 'Error en servidor' }, { status: 500 })

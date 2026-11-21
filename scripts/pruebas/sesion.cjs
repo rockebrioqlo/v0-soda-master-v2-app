@@ -23,8 +23,12 @@ exports.nombre = 'sesion'
 const RAIZ = path.resolve(__dirname, '..', '..')
 const P_DEV = Number(process.env.PRUEBAS_PUERTO_SESION || 3012)
 const P_VERCEL = Number(process.env.PRUEBAS_PUERTO_VERCEL || 3013)
-const MINUTO_DEV = 2
-const TOPE_DEV = 45
+// 14.5b-2: la línea de tiempo se escaló x2 (un "minuto" de 4 s, límite de 20 s) porque la latencia de Neon (p50 ~190 ms
+// desde el PC del desarrollador, cada petición hace varias lecturas) hacía caer las comprobaciones de 10 s. Todos los
+// tiempos de esta prueba están multiplicados por ESC.
+const MINUTO_DEV = 4
+const ESC = MINUTO_DEV / 2
+const TOPE_DEV = 45 * ESC
 
 function levantar(puerto, extra) {
   const env = { ...process.env, SESION_MINUTO_SEG_DEV: String(MINUTO_DEV), SESION_TOPE_SEG_DEV: String(TOPE_DEV), ...extra }
@@ -107,15 +111,18 @@ exports.correr = async function (ctx) {
       await mk('cocina', { roles_adicionales: ['mesero'] }), await mk('mesero'),
     ]
     // Primero las sesiones de larga vida (y de paso se calientan los dos servidores); después, en un grupo corto,
-    // las que dependen de los 10 s de inactividad (A, B, C y F): si el grupo tarda más de 2,5 s se repite.
+    // las que dependen de los 10 s de inactividad (A, B, C y F): si el grupo tarda más de 1,8 s se repite (hasta 8 veces).
     const [sD, sE] = await Promise.all([uD, uE].map((u) => u.reingresar(BASE_DEV)))
     const sG = await uG.reingresar(BASE_VERCEL)
     let sA, sB, sC, sF
-    for (let intento = 0; intento < 4; intento++) {
+    let ms = 0
+    for (let intento = 0; intento < 8; intento++) {
       const t1 = Date.now()
       ;[sA, sB, sC, sF] = await Promise.all([uA, uB, uC, uF].map((u) => u.reingresar(BASE_DEV)))
-      if (Date.now() - t1 < 2500) break
+      ms = Date.now() - t1
+      if (ms < 1800 * ESC) break
     }
+    check('el grupo de 4 logins cortos tardó menos de 2,5 s (si no, las comprobaciones de tiempo no son confiables; Neon lento)', ms < 2500 * ESC, ms)
     // T0 va DESPUÉS de los logins: cada sesión tiene al menos t segundos de inactividad en el segundo t.
     const T0 = Date.now()
     const t = () => (Date.now() - T0) / 1000
@@ -127,7 +134,7 @@ exports.correr = async function (ctx) {
     check('login con el ajuste: la cookie dura el tope de desarrollo; con VERCEL se ignora y dura 16 h', maxAge(sA) === TOPE_DEV && maxAge(sG) === 57600, [maxAge(sA), maxAge(sG)])
     check('VERCEL definida: el tope guardado en la base es de 16 h, no el de desarrollo', Math.abs((await topeBase(uG.usuario.id)) - 57600) < 5)
 
-    await hasta(3.5)
+    await hasta(3.5 * ESC)
     // C: una ráfaga de 6 acciones reales con la última actividad ya "vieja" (> 2 s): escribe UNA vez.
     const c0 = await actividad(ids.C)
     const r1 = await Promise.all(Array.from({ length: 6 }, () => get(sC, '/api/mesas')))
@@ -137,30 +144,32 @@ exports.correr = async function (ctx) {
     check('acciones reales: las 12 responden 200', [...r1, ...r2].every((r) => r.status === 200))
     check('la primera ráfaga renueva la actividad y la segunda (al instante) no la vuelve a escribir', c1 > c0 && c2 === c1, [c0, c1, c2])
 
-    await hasta(4)
+    await hasta(4 * ESC)
     const sa1 = await get(sA, SONDEO)
     const sb1 = await get(sB, '/api/mesas', { 'x-sm-sondeo': '1' })
     check('antes de vencer, el sondeo (A) y una recarga con x-sm-sondeo (B) responden 200', sa1.status === 200 && sb1.status === 200, [sa1.status, sb1.status])
 
     const accionesC = []
     const accionC = async () => accionesC.push((await get(sC, '/api/mesas')).status)
-    await hasta(7.5)
+    // 14.5b-2: el login hace ahora algo más de trabajo (cuenta el intento antes de verificar), así que el grupo de
+    // sesiones tarda ~0,3 s más; la comprobación de "siguen vivas" se adelantó de 7,5 s a 6,3 s para conservar el margen.
+    await hasta(6 * ESC)
     await accionC()
-    await hasta(5.5)
+    await hasta(6.3 * ESC)
     const sa2 = await get(sA, SONDEO)
     const sb2 = await get(sB, '/api/mesas', { 'x-sm-sondeo': '1' })
     const sf1 = await get(sF, SONDEO)
-    check('hacia el segundo 5,5 siguen vivos (la demora de los logins suma pocos segundos, aún bajo los 10 s)', sa2.status === 200 && sb2.status === 200 && sf1.status === 200, [sa2.status, sb2.status, sf1.status])
+    check(`hacia el segundo ${6.3 * ESC} siguen vivos (la demora de los logins suma pocos segundos, aún bajo los ${10 * ESC} s)`, sa2.status === 200 && sb2.status === 200 && sf1.status === 200, [sa2.status, sb2.status, sf1.status, sf1.json, t()])
     check('el sondeo y la recarga marcada NO renuevan: la última actividad de A y B no cambió', (await actividad(ids.A)) === act0.A && (await actividad(ids.B)) === act0.B)
 
-    await hasta(11.5)
+    await hasta(11.5 * ESC)
     await accionC()
-    await hasta(12.5)
+    await hasta(12.5 * ESC)
     const sa3 = await get(sA, SONDEO)
     const sb3 = await get(sB, '/api/mesas')
     const sf2 = await get(sF, SONDEO)
     const sg = await get(sG, SONDEO)
-    check('A: tras 10 s sin acciones, aunque siguió el sondeo, → 401 SESION_INACTIVA', sa3.status === 401 && sa3.json.codigo === 'SESION_INACTIVA', sa3)
+    check(`A: tras ${10 * ESC} s sin acciones, aunque siguió el sondeo, → 401 SESION_INACTIVA`, sa3.status === 401 && sa3.json.codigo === 'SESION_INACTIVA', sa3)
     check('B: la recarga marcada tampoco la mantuvo viva (la siguiente petición → 401 SESION_INACTIVA)', sb3.status === 401 && sb3.json.codigo === 'SESION_INACTIVA', sb3)
     check('F (cocina + mesero): al tener un rol de salón aplica el límite general → 401 SESION_INACTIVA', sf2.status === 401 && sf2.json.codigo === 'SESION_INACTIVA', sf2)
     check('con VERCEL el ajuste se ignora: la misma inactividad NO cierra la sesión (200)', sg.status === 200, sg)
@@ -171,31 +180,31 @@ exports.correr = async function (ctx) {
     const otra = await get(sA, '/api/mesas')
     check('una sesión vencida no se revive con más peticiones (sigue 401 SESION_INACTIVA)', otra.status === 401 && otra.json.codigo === 'SESION_INACTIVA')
 
-    await hasta(14)
+    await hasta(14 * ESC)
     const d1 = await get(sD, SONDEO)
-    check('cocina con "sin cierre": a los 14 s sin acciones sigue viva (200)', d1.status === 200, d1)
-    await hasta(15.5)
+    check(`cocina con "sin cierre": a los ${14 * ESC} s sin acciones sigue viva (200)`, d1.status === 200, d1)
+    await hasta(15.5 * ESC)
     await accionC()
 
-    await hasta(20)
+    await hasta(20 * ESC)
     const d2 = await get(sD, SONDEO)
     const cambio = await cfg({ sesion_inactividad_kds_min: 5 })
     const d3 = await get(sD, SONDEO)
     await cfg({ sesion_inactividad_kds_min: 0 })
-    check('cocina sin cierre sigue viva a los 20 s', d2.status === 200)
+    check(`cocina sin cierre sigue viva a los ${20 * ESC} s`, d2.status === 200)
     check('el admin pasa el KDS a 5 min (10 s de prueba) y se aplica a la sesión vigente sin reiniciar nada: → 401 SESION_INACTIVA', cambio.status === 200 && d3.status === 401 && d3.json.codigo === 'SESION_INACTIVA', [cambio.status, d3])
     await accionC()
 
-    await hasta(25)
+    await hasta(25 * ESC)
     const e1 = await get(sE, SONDEO)
-    check('bar con "sin cierre" sigue vivo a los 25 s (el tope es de 45 s)', e1.status === 200, e1)
+    check(`bar con "sin cierre" sigue vivo a los ${25 * ESC} s (el tope es de ${TOPE_DEV} s)`, e1.status === 200, e1)
 
-    await hasta(36)
+    await hasta(36 * ESC)
     const c3 = await get(sC, '/api/mesas')
-    check('renovación por acciones reales: C hizo una acción cada ~4 s durante 20 s (el doble del límite de 10 s) y todas dieron 200', accionesC.length >= 4 && accionesC.every((s) => s === 200), accionesC)
-    check('C dejó de actuar: pasados los 10 s sin acciones → 401 SESION_INACTIVA', c3.status === 401 && c3.json.codigo === 'SESION_INACTIVA', c3)
+    check(`renovación por acciones reales: C hizo una acción cada ~${4 * ESC} s durante ${20 * ESC} s (el doble del límite de ${10 * ESC} s) y todas dieron 200`, accionesC.length >= 4 && accionesC.every((s) => s === 200), accionesC)
+    check(`C dejó de actuar: pasados los ${10 * ESC} s sin acciones → 401 SESION_INACTIVA`, c3.status === 401 && c3.json.codigo === 'SESION_INACTIVA', c3)
 
-    await hasta(TOPE_DEV + 2.5)
+    await hasta(TOPE_DEV + 2.5 * ESC)
     const e2 = await get(sE, SONDEO)
     const e3 = await get(sE, '/api/mesas')
     const g2 = await get(sG, '/api/mesas')

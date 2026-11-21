@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import { db } from '@/lib/db'
 import { crearSesion, ipDePeticion, revocarSesionDePeticion } from '@/lib/sesion'
-import { registrarExito, registrarFallo, respuestaSiBloqueado } from '@/lib/intentos-login'
+import { exitoIntento, falloIntento, iniciarIntento } from '@/lib/intentos-login'
 
 const LoginSchema = z.object({
   email: z.string().trim().min(1).max(254),
@@ -17,21 +17,25 @@ export async function POST(request: Request) {
     const { email, pin } = parsed.data
     const ip = ipDePeticion(request)
 
-    const bloqueo = await respuestaSiBloqueado(email, ip)
-    if (bloqueo) return bloqueo
+    // F46 (14.5b-2): el intento se cuenta ANTES de verificar (un statement atómico por clave); si alguna
+    // clave está bloqueada se responde 429 sin gastar bcrypt.
+    const { respuesta, intento } = await iniciarIntento(email, ip)
+    if (respuesta) return respuesta
 
-    // verificarPIN ya rechaza usuarios desactivados (activo = false).
+    // verificarPIN ya rechaza usuarios desactivados (activo = false) y no distingue mayúsculas en el email.
     const usuario = await db.verificarPIN(email, pin)
     if (!usuario) {
-      const recienBloqueado = await registrarFallo(email, ip)
+      const recienBloqueado = falloIntento(intento)
       if (recienBloqueado) return recienBloqueado
       return Response.json({ error: 'Credenciales inválidas' }, { status: 401 })
     }
 
-    await registrarExito(email)
-    // Si el dispositivo traía otra sesión, se cierra antes de abrir la nueva.
-    await revocarSesionDePeticion(request)
-    const cookie = await crearSesion(usuario.id)
+    // El éxito (reiniciar usuario + IP y devolver cupo) corre en paralelo con la apertura de la sesión: no suma
+    // un viaje a la base al login. Si el dispositivo traía otra sesión, se cierra antes de abrir la nueva.
+    const [, cookie] = await Promise.all([
+      exitoIntento(intento),
+      revocarSesionDePeticion(request).then(() => crearSesion(usuario.id)),
+    ])
 
     return Response.json(usuario, { headers: { 'Set-Cookie': cookie } })
   } catch (error) {

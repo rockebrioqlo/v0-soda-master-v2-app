@@ -52,3 +52,16 @@ export function borrarAvisoLogin(): void {
     // ignorar
   }
 }
+
+/**
+ * Errores de PIN de rutas que no son de /api/auth/ (cambio del propio PIN con `pin_actual`, 14.5b-2): un 401
+ * `PIN_ACTUAL_INCORRECTO` no es una sesión cerrada y un 429 `PIN_BLOQUEADO` no es el límite general de la API.
+ */
+export async function esErrorDePin(res: Response): Promise<boolean> {
+  try {
+    const codigo = (await res.clone().json())?.codigo
+    return codigo === 'PIN_ACTUAL_INCORRECTO' || codigo === 'PIN_BLOQUEADO'
+  } catch {
+    return false
+  }
+}

@@ -1,12 +1,11 @@
 import { z } from 'zod'
 import { db } from '@/lib/db'
 import { requireSesion } from '@/lib/sesion'
-import { claveUsuario } from '@/lib/intentos-login'
 
-const Schema = z.object({ usuario_id: z.string().uuid() })
+const Schema = z.object({ usuario_id: z.string().uuid() }).strict()
 
-// Solo admin: quita el bloqueo por PIN fallidos de un usuario y reinicia su
-// contador. (La interfaz en usuarios-page llega en la sesión 4.)
+// Solo admin: quita el bloqueo por PIN fallidos de un usuario (todas sus claves: cada IP y la global) y reinicia sus
+// contadores. Es la ÚNICA ruta que reinicia contadores además del ingreso correcto. (La interfaz en usuarios-page llega en la sesión 4.)
 export async function POST(request: Request) {
   try {
     const s = await requireSesion(request, ['admin'])
@@ -20,7 +19,7 @@ export async function POST(request: Request) {
     if (!usuario) {
       return Response.json({ error: 'Usuario no encontrado' }, { status: 404 })
     }
-    const habiaRegistro = await db.limpiarIntentos(claveUsuario(usuario.email))
+    const habiaRegistro = await db.desbloquearUsuario(usuario.email)
     return Response.json({ ok: true, usuario_id: usuario.id, tenia_intentos: habiaRegistro })
   } catch (error) {
     console.error('Desbloquear error:', error)

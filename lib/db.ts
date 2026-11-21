@@ -1,6 +1,7 @@
 import { neon, NeonQueryFunction } from '@neondatabase/serverless'
 import bcryptjs from 'bcryptjs'
-import type { Usuario, Mesa, Producto, Orden, ItemOrden, Pago, Inventario } from './types'
+import type { Usuario, UsuarioNuevo, UsuarioCambios, Mesa, Producto, Orden, ItemOrden, Pago, Inventario } from './types'
+import { mapUsuario, ROLES_VALIDOS } from './usuario-map'
 import {
   calcularCobro,
   propinaPermitida,
@@ -47,34 +48,6 @@ function mapMesa(row: any): Mesa {
 // Hash bcrypt de un valor aleatorio descartado; solo se usa para igualar tiempos en verificarPIN.
 const HASH_RELLENO = '$2b$10$icawp9UmJE0PBbIsfgs..e2FY0BvOF5MEZLd8QBGd0kj/gDC3PiJC'
 
-const ROLES_VALIDOS = new Set(['admin', 'administrador', 'mesero', 'cocina', 'bar', 'cajero'])
-
-// C11 (sesión 14.5a): lista BLANCA. Lo que la API devuelve de un usuario es exactamente esto; una
-// columna nueva en la tabla (hash, token, dato personal) no sale hacia afuera por defecto. Todo lo
-// que lee el cliente está aquí (id, nombre, email, rol, roles_adicionales, activo, bloqueo por PIN);
-// `created_at` y `updated_at` no los lee ninguna pantalla pero van en todos los SELECT y no son sensibles.
-function mapUsuario(row: any): Usuario {
-  const { roles_adicionales, bloqueado_hasta, fallidos } = row
-  const rolesAdicionales: string[] = Array.isArray(roles_adicionales)
-    ? roles_adicionales.filter((r) => typeof r === 'string' && ROLES_VALIDOS.has(r))
-    : []
-  const safeUsuario = {
-    id: row.id,
-    email: row.email,
-    nombre: row.nombre,
-    rol: row.rol,
-    activo: row.activo,
-    created_at: row.created_at,
-    updated_at: row.updated_at,
-  }
-  return {
-    ...safeUsuario,
-    roles_adicionales: rolesAdicionales,
-    // Solo getUsuarios trae estos datos (join con intentos_login, sesión 4).
-    intentosFallidos: Number(fallidos) || 0,
-    bloqueadoHasta: bloqueado_hasta ? new Date(bloqueado_hasta).getTime() : null,
-  } as Usuario
-}
 
 function normalizarRol(rol?: string | null): string | null {
   if (!rol) return null
@@ -1453,6 +1426,17 @@ async function ensureRolesAdicionalesSchema(): Promise<void> {
     ALTER TABLE soda_master.usuarios
       ADD COLUMN IF NOT EXISTS roles_adicionales TEXT[] NOT NULL DEFAULT '{}'::text[]
   `
+  // Sesión 14.5b-2 (F47): un email es único sin distinguir mayúsculas ni espacios en los bordes
+  // (`verificarPIN` y el contador de bloqueo comparan igual). Idempotente. Si ya hubiera dos usuarios
+  // que chocan al normalizar el índice no se crea: se avisa en el log y no se corrige nada por SQL.
+  try {
+    await sql`
+      CREATE UNIQUE INDEX IF NOT EXISTS usuarios_email_norm_uk
+        ON soda_master.usuarios (lower(btrim(email)))
+    `
+  } catch (error) {
+    console.error('[usuarios] no se pudo crear usuarios_email_norm_uk (¿emails duplicados al normalizar?):', error)
+  }
   _rolesAdicionalesReady = true
 }
 
@@ -1494,6 +1478,12 @@ async function ensureSesionesSchema(): Promise<void> {
       bloqueado_hasta TIMESTAMPTZ NULL,
       actualizado TIMESTAMPTZ NOT NULL DEFAULT now()
     )
+  `
+  // Sesión 14.5b-2 (F48): último ingreso correcto desde esa combinación usuario + IP (`ui:<email>|<ip>`);
+  // la IP con un éxito reciente queda fuera del tope global del usuario (lib/intentos-login.ts).
+  await sql`
+    ALTER TABLE soda_master.intentos_login
+    ADD COLUMN IF NOT EXISTS ultimo_exito TIMESTAMPTZ NULL
   `
   // Contador de peticiones por sesión y minuto (sesión 4, lib/limite-api.ts).
   await sql`
@@ -1999,11 +1989,17 @@ export const db = {
       SELECT u.id, u.email, u.nombre, u.rol,
              COALESCE(u.roles_adicionales, '{}'::text[]) AS roles_adicionales,
              u.activo, u.created_at, u.updated_at,
-             CASE WHEN il.bloqueado_hasta > now() THEN il.bloqueado_hasta END AS bloqueado_hasta,
+             il.bloqueado_hasta AS bloqueado_hasta,
              COALESCE(il.fallidos, 0) AS fallidos
       FROM soda_master.usuarios u
-      LEFT JOIN soda_master.intentos_login il
-        ON il.clave = 'u:' || lower(btrim(u.email))
+      LEFT JOIN LATERAL (
+        -- F48 (14.5b-2): el bloqueo es por usuario + IP (ui:email|ip) y global por usuario (ug:email)
+        SELECT MAX(i.bloqueado_hasta) FILTER (WHERE i.bloqueado_hasta > now()) AS bloqueado_hasta,
+               COALESCE(SUM(i.fallidos), 0) AS fallidos
+        FROM soda_master.intentos_login i
+        WHERE starts_with(i.clave, 'ui:' || lower(btrim(u.email)) || '|')
+           OR i.clave = 'ug:' || lower(btrim(u.email))
+      ) il ON TRUE
       ORDER BY u.nombre
     `
     return result.map(mapUsuario)
@@ -2025,7 +2021,16 @@ export const db = {
   async verificarPIN(email: string, pin: string): Promise<Usuario | null> {
     await ensureRolesAdicionalesSchema()
     const sql = getSql()
-    const result = await sql`SELECT * FROM soda_master.usuarios WHERE email = ${email} AND activo = true`
+    // F47 (14.5b-2): sin distinguir mayúsculas ni espacios en los bordes, igual que el contador de bloqueo.
+    // Columnas explícitas (no `SELECT *`): `mapUsuario` es la lista blanca de lo que sale, y aquí además
+    // solo entra lo que hace falta (el hash solo para comparar, no sale de esta función).
+    const result = await sql`
+      SELECT id, email, nombre, pin_hash, rol,
+             COALESCE(roles_adicionales, '{}'::text[]) AS roles_adicionales,
+             activo, created_at, updated_at
+      FROM soda_master.usuarios
+      WHERE lower(btrim(email)) = lower(btrim(${email})) AND activo = true
+    `
     if (!result[0]) {
       // Comparación de relleno: que un email inexistente tarde lo mismo
       // que un PIN errado y la respuesta no revele qué cuentas existen.
@@ -2039,27 +2044,18 @@ export const db = {
     return esValido ? mapUsuario(usuario) : null
   },
 
-  async crearUsuario(usuario: Omit<Usuario, 'id' | 'created_at' | 'updated_at'> & { pin?: string }) {
+  /** F44 (14.5b-2): recibe el PIN en claro y lo hashea aquí; nunca se acepta un hash que venga del cliente. */
+  async crearUsuario(usuario: UsuarioNuevo) {
     const sql = getSql()
-    const providedHash = usuario.pin_hash ?? usuario.pinHash
-    const plainPin = (usuario as any).pin
-    let pinHash: string
-    if (providedHash && providedHash.startsWith('$2')) {
-      pinHash = providedHash
-    } else if (plainPin) {
-      pinHash = await bcryptjs.hash(plainPin, 10)
-    } else if (providedHash) {
-      pinHash = await bcryptjs.hash(providedHash, 10)
-    } else {
-      throw new Error('PIN requerido')
-    }
+    if (!usuario.pin) throw new Error('PIN requerido')
+    const pinHash = await bcryptjs.hash(usuario.pin, 10)
     await ensureRolesAdicionalesSchema()
     const rol = normalizarRol(usuario.rol)
-    const rolesAdic = normalizarRolesAdicionales(rol, (usuario as any).roles_adicionales)
+    const rolesAdic = normalizarRolesAdicionales(rol, usuario.roles_adicionales)
     const result = await sql`
       INSERT INTO soda_master.usuarios (email, nombre, pin_hash, rol, roles_adicionales, activo)
       VALUES (
-        ${usuario.email},
+        lower(btrim(${usuario.email})),
         ${usuario.nombre},
         ${pinHash},
         ${rol},
@@ -2073,27 +2069,21 @@ export const db = {
     return mapUsuario(result[0])
   },
 
+  /**
+   * Actualiza un usuario. Con `pin` (en claro; se hashea aquí) cierra TODAS las sesiones del usuario en la
+   * MISMA transacción que el UPDATE, salvo `conservarSesionId` (la sesión desde la que el propio usuario se
+   * cambia el PIN): así no queda un PIN nuevo con la sesión vieja viva.
+   */
   async actualizarUsuario(
     id: string,
-    updates: Partial<Usuario> & {
-      pin?: string
-      pinHash?: string
-      pin_hash?: string
-      roles_adicionales?: unknown
-    }
+    updates: UsuarioCambios,
+    opciones: { conservarSesionId?: string | null } = {}
   ) {
     await ensureRolesAdicionalesSchema()
+    await ensureSesionesSchema()
     const sql = getSql()
     const rol = normalizarRol(updates.rol)
-    let nuevoPinHash: string | null = null
-    const providedHash = updates.pinHash ?? updates.pin_hash
-    if (providedHash && providedHash.startsWith('$2')) {
-      nuevoPinHash = providedHash
-    } else if (updates.pin) {
-      nuevoPinHash = await bcryptjs.hash(updates.pin, 10)
-    } else if (providedHash) {
-      nuevoPinHash = await bcryptjs.hash(providedHash, 10)
-    }
+    const nuevoPinHash: string | null = updates.pin ? await bcryptjs.hash(updates.pin, 10) : null
     // Para roles_adicionales necesitamos saber qué rol principal va a
     // quedar después del update; si no cambia, lo leemos de la fila
     // actual. Sólo procesamos roles_adicionales si vino en updates.
@@ -2108,10 +2098,10 @@ export const db = {
       }
       rolesAdicNormalizados = normalizarRolesAdicionales(principal, updates.roles_adicionales)
     }
-    const result = await sql`
+    const actualizar = sql`
       UPDATE soda_master.usuarios
       SET nombre = COALESCE(${updates.nombre ?? null}, nombre),
-          email = COALESCE(${updates.email ?? null}, email),
+          email = COALESCE(lower(btrim(${updates.email ?? null})), email),
           rol = COALESCE(${rol}, rol),
           roles_adicionales = COALESCE(${rolesAdicNormalizados}::text[], roles_adicionales),
           activo = COALESCE(${updates.activo ?? null}, activo),
@@ -2122,8 +2112,19 @@ export const db = {
                 COALESCE(roles_adicionales, '{}'::text[]) AS roles_adicionales,
                 activo, created_at, updated_at
     `
-    if (!result[0]) return null
-    return mapUsuario(result[0])
+    let filas: any[]
+    if (nuevoPinHash) {
+      const revocar = sql`
+        UPDATE soda_master.sesiones SET revocada_at = now()
+        WHERE usuario_id = ${id}::uuid AND revocada_at IS NULL
+          AND (${opciones.conservarSesionId ?? null}::uuid IS NULL OR id <> ${opciones.conservarSesionId ?? null}::uuid)
+      `
+      filas = (await sql.transaction([actualizar, revocar]))[0] as any[]
+    } else {
+      filas = (await actualizar) as any[]
+    }
+    if (!filas[0]) return null
+    return mapUsuario(filas[0])
   },
 
   async eliminarUsuario(id: string) {
@@ -2237,41 +2238,43 @@ export const db = {
     return rows.length
   },
 
-  // Intentos de login (sesión 3). Ver lib/intentos-login.ts.
-  /** Bloqueo vigente más largo entre las claves dadas, o null. */
-  async getBloqueoVigente(claves: string[]): Promise<Date | null> {
-    await ensureSesionesSchema()
-    const sql = getSql()
-    const rows = await sql`
-      SELECT MAX(bloqueado_hasta) AS hasta
-      FROM soda_master.intentos_login
-      WHERE clave = ANY(${claves}::text[]) AND bloqueado_hasta > now()
-    `
-    const hasta = (rows[0] as any)?.hasta
-    return hasta ? new Date(hasta) : null
-  },
-
+  // Intentos de login (sesión 3, rehechos en la 14.5b-2: F46 y F48). Ver lib/intentos-login.ts.
   /**
-   * Suma un fallo en un solo statement (atómico por fila). Si llega al
-   * umbral, bloquea por base * 2^bloqueos (hasta el tope) y reinicia el
-   * contador. Los bloqueos previos se olvidan tras 24 h sin fallos.
-   * Devuelve el fin del bloqueo si esta llamada lo activó.
+   * Cuenta UN intento ANTES de verificar el PIN, en un solo statement atómico (F46). La clave es
+   * `pre || lower(btrim(email)) || post` y se arma EN SQL, con la misma normalización que `verificarPIN`
+   * (`ui:<email>|<ip>`, `ug:<email>`, `ip:<ip>`). Si la clave ya está bloqueada NO toca nada y devuelve
+   * `bloqueado` con el fin del bloqueo (el `WHERE` del `DO UPDATE` se evalúa con la fila bloqueada, así que una
+   * ráfaga en paralelo se serializa: solo `umbral` intentos pasan a verificarse). El intento que llega al umbral
+   * SÍ se verifica, pero deja el bloqueo puesto desde ya (`activadoAhora`): si falla responde 429 y si acierta
+   * el éxito lo deshace. Bloquea por base × 2^bloqueos (hasta el tope); los bloqueos previos se olvidan tras 24 h.
+   * `exento` = la clave tiene un éxito (`ultimo_exito`) de los últimos `exencionDias` días.
    */
-  async registrarIntentoFallido(clave: string, regla: ReglaIntentos): Promise<Date | null> {
+  async contarIntento(
+    pre: string,
+    email: string,
+    post: string,
+    regla: ReglaIntentos,
+    exencionDias: number,
+  ): Promise<{ bloqueado: boolean; hasta: Date | null; activadoAhora: boolean; exento: boolean }> {
     await ensureSesionesSchema()
     const sql = getSql()
     const rows = await sql`
-      INSERT INTO soda_master.intentos_login AS il (clave, fallidos, bloqueos, bloqueado_hasta, actualizado)
-      VALUES (
-        ${clave},
-        CASE WHEN 1 >= ${regla.umbral}::int THEN 0 ELSE 1 END,
-        CASE WHEN 1 >= ${regla.umbral}::int THEN 1 ELSE 0 END,
-        CASE WHEN 1 >= ${regla.umbral}::int
-             THEN now() + make_interval(secs => ${regla.bloqueoBaseSeg}::int) ELSE NULL END,
-        now()
+      WITH k AS (
+        SELECT ${pre}::text || lower(btrim(${email}::text)) || ${post}::text AS clave
       )
+      INSERT INTO soda_master.intentos_login AS il (clave, fallidos, bloqueos, bloqueado_hasta, actualizado)
+      SELECT k.clave,
+             CASE WHEN 1 >= ${regla.umbral}::int THEN 0 ELSE 1 END,
+             CASE WHEN 1 >= ${regla.umbral}::int THEN 1 ELSE 0 END,
+             CASE WHEN 1 >= ${regla.umbral}::int
+                  THEN now() + make_interval(secs => ${regla.bloqueoBaseSeg}::float8) ELSE NULL END,
+             now()
+      FROM k
       ON CONFLICT (clave) DO UPDATE SET
+        -- Con la fila bloqueada no se cuenta nada y actualizado no se mueve (así el RETURNING distingue
+        -- "bloqueado" de "contado" con la versión MÁS RECIENTE de la fila, no con la del inicio del statement).
         bloqueado_hasta = CASE
+          WHEN il.bloqueado_hasta > now() THEN il.bloqueado_hasta
           WHEN (CASE WHEN il.actualizado < now() - make_interval(secs => ${regla.ventanaSeg}::int)
                      THEN 0 ELSE il.fallidos END) + 1 >= ${regla.umbral}::int
           THEN now() + make_interval(secs => LEAST(
@@ -2280,21 +2283,72 @@ export const db = {
                  ${regla.bloqueoMaxSeg}::float8))
           ELSE il.bloqueado_hasta END,
         bloqueos = CASE
+          WHEN il.bloqueado_hasta > now() THEN il.bloqueos
           WHEN (CASE WHEN il.actualizado < now() - make_interval(secs => ${regla.ventanaSeg}::int)
                      THEN 0 ELSE il.fallidos END) + 1 >= ${regla.umbral}::int
           THEN (CASE WHEN il.actualizado < now() - interval '24 hours' THEN 0 ELSE il.bloqueos END) + 1
           ELSE (CASE WHEN il.actualizado < now() - interval '24 hours' THEN 0 ELSE il.bloqueos END) END,
         fallidos = CASE
+          WHEN il.bloqueado_hasta > now() THEN il.fallidos
           WHEN (CASE WHEN il.actualizado < now() - make_interval(secs => ${regla.ventanaSeg}::int)
                      THEN 0 ELSE il.fallidos END) + 1 >= ${regla.umbral}::int
           THEN 0
           ELSE (CASE WHEN il.actualizado < now() - make_interval(secs => ${regla.ventanaSeg}::int)
                      THEN 0 ELSE il.fallidos END) + 1 END,
-        actualizado = now()
-      RETURNING bloqueado_hasta, (bloqueado_hasta > now() AND fallidos = 0) AS recien_bloqueado
+        actualizado = CASE WHEN il.bloqueado_hasta > now() THEN il.actualizado ELSE now() END
+      RETURNING il.bloqueado_hasta,
+                (il.actualizado <> now()) AS bloqueado,
+                (il.actualizado = now() AND il.bloqueado_hasta > now()) AS activado_ahora,
+                COALESCE(il.ultimo_exito > now() - make_interval(days => ${exencionDias}::int), false) AS exento
     `
     const row = rows[0] as any
-    return row?.recien_bloqueado && row.bloqueado_hasta ? new Date(row.bloqueado_hasta) : null
+    return {
+      bloqueado: row?.bloqueado === true,
+      hasta: row?.bloqueado_hasta ? new Date(row.bloqueado_hasta) : null,
+      activadoAhora: row?.activado_ahora === true,
+      exento: row?.exento === true,
+    }
+  },
+
+  /**
+   * Devuelve el cupo que gastó un intento que resultó correcto (el éxito no debe sumar al contador de la IP
+   * ni al global): resta 1 y, si ese mismo intento fue el que activó el bloqueo, lo deshace.
+   */
+  async devolverCupoIntento(pre: string, email: string, post: string, activadoAhora: boolean, umbral: number): Promise<void> {
+    await ensureSesionesSchema()
+    const sql = getSql()
+    await sql`
+      UPDATE soda_master.intentos_login il SET
+        fallidos = CASE WHEN ${activadoAhora}::boolean THEN GREATEST(${umbral}::int - 1, 0) ELSE GREATEST(il.fallidos - 1, 0) END,
+        bloqueos = CASE WHEN ${activadoAhora}::boolean THEN GREATEST(il.bloqueos - 1, 0) ELSE il.bloqueos END,
+        bloqueado_hasta = CASE WHEN ${activadoAhora}::boolean THEN NULL ELSE il.bloqueado_hasta END,
+        actualizado = now()
+      WHERE il.clave = ${pre}::text || lower(btrim(${email}::text)) || ${post}::text
+    `
+  },
+
+  /** Ingreso correcto: reinicia la clave usuario + IP y anota el éxito (esa IP queda exenta del tope global). */
+  async registrarExitoUsuarioIp(email: string, ip: string): Promise<void> {
+    await ensureSesionesSchema()
+    const sql = getSql()
+    await sql`
+      INSERT INTO soda_master.intentos_login AS il (clave, fallidos, bloqueos, bloqueado_hasta, actualizado, ultimo_exito)
+      VALUES ('ui:' || lower(btrim(${email}::text)) || '|' || ${ip}::text, 0, 0, NULL, now(), now())
+      ON CONFLICT (clave) DO UPDATE SET
+        fallidos = 0, bloqueos = 0, bloqueado_hasta = NULL, actualizado = now(), ultimo_exito = now()
+    `
+  },
+
+  /** Borra contadores viejos (se llama de forma oportunista desde el login; sin tareas periódicas). */
+  async limpiarIntentosViejos(exencionDias: number): Promise<void> {
+    await ensureSesionesSchema()
+    const sql = getSql()
+    await sql`
+      DELETE FROM soda_master.intentos_login
+      WHERE (bloqueado_hasta IS NULL OR bloqueado_hasta <= now())
+        AND actualizado < now() - interval '24 hours'
+        AND (ultimo_exito IS NULL OR ultimo_exito < now() - make_interval(days => ${exencionDias}::int))
+    `
   },
 
   /**
@@ -2325,14 +2379,21 @@ export const db = {
     `
   },
 
-  /** Reinicia el contador y quita el bloqueo de una clave (login correcto o desbloqueo de admin). */
-  async limpiarIntentos(clave: string): Promise<boolean> {
+  /**
+   * Desbloqueo de un admin: reinicia TODAS las claves del usuario (cada IP `ui:<email>|*`, la global
+   * `ug:<email>` y la antigua `u:<email>`). No toca `ultimo_exito` (la exención sigue) ni las claves por IP.
+   * Solo lo llama `POST /api/auth/desbloquear`.
+   */
+  async desbloquearUsuario(email: string): Promise<boolean> {
     await ensureSesionesSchema()
     const sql = getSql()
     const rows = await sql`
       UPDATE soda_master.intentos_login
       SET fallidos = 0, bloqueos = 0, bloqueado_hasta = NULL, actualizado = now()
-      WHERE clave = ${clave}
+      WHERE (starts_with(clave, 'ui:' || lower(btrim(${email}::text)) || '|')
+             OR clave = 'ug:' || lower(btrim(${email}::text))
+             OR clave = 'u:' || lower(btrim(${email}::text)))
+        AND (fallidos > 0 OR bloqueos > 0 OR bloqueado_hasta IS NOT NULL)
       RETURNING clave
     `
     return rows.length > 0

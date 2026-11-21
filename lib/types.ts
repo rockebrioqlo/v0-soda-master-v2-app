@@ -47,12 +47,26 @@ export interface Usuario {
    * `hasPermission` junto con el rol principal.
    */
   roles_adicionales?: Rol[]
-  pinHash?: string
-  pin_hash?: string
   activo: boolean
   intentosFallidos: number
   bloqueadoHasta: number | null
 }
+
+/**
+ * Lo que recibe `db.crearUsuario` (sesión 14.5b-2, F44/C11): el PIN en claro, que el servidor hashea.
+ * El tipo público `Usuario` ya no lleva hash alguno, y la base nunca recibe uno que venga del cliente.
+ */
+export interface UsuarioNuevo {
+  email: string
+  nombre: string
+  rol: string
+  roles_adicionales?: string[]
+  activo?: boolean
+  pin: string
+}
+
+/** Lo que recibe `db.actualizarUsuario`: los mismos campos, todos opcionales. */
+export type UsuarioCambios = Partial<UsuarioNuevo>
 
 export interface Mesa {
   id: string
