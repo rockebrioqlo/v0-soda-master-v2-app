@@ -7,6 +7,7 @@ import { Input } from '@/components/ui/input'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Delete, Loader2 } from 'lucide-react'
 import { showToast } from '@/components/toast'
+import { borrarAvisoLogin, leerAvisoLogin, MENSAJES_CIERRE, type MotivoCierre } from '@/lib/sesion-cliente'
 
 export function LoginForm() {
   const { login, isInitialized } = useApp()
@@ -30,6 +31,11 @@ export function LoginForm() {
   const [pin, setPin] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  // F42: si el servidor cerró la sesión por inactividad (o por el tope), se avisa aquí.
+  const [avisoCierre, setAvisoCierre] = useState<MotivoCierre | null>(null)
+  useEffect(() => {
+    if (isInitialized) setAvisoCierre(leerAvisoLogin())
+  }, [isInitialized])
 
   const handlePinChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const value = e.target.value.replace(/\D/g, '').slice(0, 6)
@@ -67,6 +73,7 @@ export function LoginForm() {
       const result = await login(email, pin)
       
       if (result.success) {
+        borrarAvisoLogin()
         showToast('Bienvenido a Soda Master', 'success')
       } else {
         setError(result.message)
@@ -105,6 +112,15 @@ export function LoginForm() {
           <CardTitle className="text-center text-white">Iniciar Sesion</CardTitle>
         </CardHeader>
         <CardContent>
+          {avisoCierre && (
+            <div
+              role="status"
+              data-testid="aviso-cierre-sesion"
+              className="mb-4 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-center text-sm text-amber-400"
+            >
+              {MENSAJES_CIERRE[avisoCierre]}
+            </div>
+          )}
           <form onSubmit={handleSubmit} className="space-y-6">
             <div className="space-y-2">
               <label className="text-sm text-zinc-400">Email</label>

@@ -1,3 +1,4 @@
+import { z } from 'zod'
 import { db } from '@/lib/db'
 import { esAdminSesion, requireSesion } from '@/lib/sesion'
 import {
@@ -8,18 +9,26 @@ import {
   respuestaDeError,
   respuestaDestinoItemProhibido,
 } from '@/lib/ordenes-http'
-import { origenesPermitidos } from '@/lib/items-reglas'
+import { estacionesPermitidas, origenesPermitidos } from '@/lib/items-reglas'
+
+// F14: `orden_id` se valida como uuid (antes un valor inválido llegaba a Postgres y daba 500).
+const GetQuerySchema = z.object({ orden_id: z.string().uuid() }).strict()
 
 export async function GET(request: Request) {
   try {
+    // F13: la ruta valida la sesión por su cuenta (acceso 'sesion': cualquier usuario logueado).
+    const s = await requireSesion(request)
+    if (!s.ok) return s.respuesta
     const { searchParams } = new URL(request.url)
-    const ordenId = searchParams.get('orden_id')
-
-    if (!ordenId) {
-      return Response.json({ error: 'orden_id requerido' }, { status: 400 })
+    const query = GetQuerySchema.safeParse(Object.fromEntries(searchParams))
+    if (!query.success) {
+      return Response.json(
+        { error: 'orden_id requerido y debe ser un identificador válido', codigo: 'DATOS_INVALIDOS' },
+        { status: 400 },
+      )
     }
 
-    const items = await db.getItemsOrden(ordenId)
+    const items = await db.getItemsOrden(query.data.orden_id)
     return Response.json(items)
   } catch (error) {
     console.error('Get items error:', error)
@@ -70,15 +79,19 @@ export async function PATCH(request: Request) {
     // Sesión 13 (F11): matriz de estados por rol. Un rol que no puede pedir ese destino → 403; el
     // estado actual del ítem se verifica dentro de la transacción (409 TRANSICION_ITEM_INVALIDA).
     let origenesEstado: string[] | undefined
+    let estaciones: ReturnType<typeof estacionesPermitidas> = null
     if (updates.estado_item !== undefined) {
       const origenes = origenesPermitidos(s.usuario.roles, updates.estado_item)
       if (!origenes) return respuestaDestinoItemProhibido(updates.estado_item)
       origenesEstado = origenes
+      // Sesión 14.5a (F39): cocina solo mueve ítems de cocina y bar los de bar (en la transacción).
+      estaciones = estacionesPermitidas(s.usuario.roles, updates.estado_item)
     }
     const item = await db.actualizarItemOrden(id, updates, {
       esAdmin: esAdminSesion(s.usuario),
       usuario: { id: s.usuario.id, nombre: s.usuario.nombre, rol: s.usuario.rol },
       origenesEstado,
+      estaciones: estaciones ?? undefined,
     })
     return Response.json(item)
   } catch (error) {

@@ -18,6 +18,7 @@
  * tiene que prepararse.
  */
 import type { RolApi } from './permisos-api'
+import type { Estacion } from './estaciones'
 
 export const ESTADOS_ITEM = ['pendiente', 'en_preparacion', 'listo', 'entregado', 'problema'] as const
 export type EstadoItem = (typeof ESTADOS_ITEM)[number]
@@ -67,6 +68,32 @@ export function origenesPermitidos(
     }
   }
   return alguno ? [...union] : null
+}
+
+/**
+ * Estaciones cuyos ítems pueden mover los roles dados hacia `destino` (sesión 14.5a, F39).
+ * admin, mesero y cajero (los que entregan o corrigen) mueven las dos; `cocina` solo la cocina y
+ * `bar` solo el bar. Con roles mezclados cuenta solo el rol que concede ese destino: un usuario
+ * cocina + mesero pasa a `listo` solo ítems de cocina, pero entrega los de las dos estaciones.
+ * `null` = ningún rol concede el destino (el 403 de la matriz ya lo cubre).
+ */
+export function estacionesPermitidas(
+  roles: readonly RolApi[],
+  destino: EstadoItem,
+): Estacion[] | null {
+  const set = new Set<Estacion>()
+  let alguno = false
+  for (const rol of roles) {
+    if (!MATRIZ_POR_ROL[rol]?.[destino]) continue
+    alguno = true
+    if (rol === 'cocina') set.add('cocina')
+    else if (rol === 'bar') set.add('bar')
+    else {
+      set.add('cocina')
+      set.add('bar')
+    }
+  }
+  return alguno ? [...set] : null
 }
 
 /** Cantidad, extras, notas y modificadores solo se editan mientras cocina no haya empezado. */

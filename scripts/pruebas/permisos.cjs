@@ -54,4 +54,32 @@ exports.correr = async function (ctx) {
     }
   }
   check(`ninguna de ${leidas} respuestas GET (4 roles) trae hashes ni campos de PIN`, hallazgos.length === 0 && leidas > 20, hallazgos)
+
+  // ───────── Sesión 14.5a: F14, C11 y F16 ─────────
+  console.log('\n[permisos] F14: GET /api/items-orden valida el orden_id')
+  const malo = await api(mesero, 'GET', '/api/items-orden?orden_id=hola')
+  check('orden_id que no es uuid → 400 con código (antes 500)', malo.status === 400 && malo.json.codigo === 'DATOS_INVALIDOS', malo)
+  check('sin orden_id, con parámetro extra o con comillas → 400', (await api(mesero, 'GET', '/api/items-orden')).status === 400 && (await api(admin, 'GET', '/api/items-orden?orden_id=' + L.UUID_FALSO + '&x=1')).status === 400 && (await api(cocina, 'GET', "/api/items-orden?orden_id=1'%20OR%201=1")).status === 400)
+  const vacio = await api(cajero, 'GET', '/api/items-orden?orden_id=' + L.UUID_FALSO)
+  check('uuid válido de una orden inexistente → 200 con lista vacía', vacio.status === 200 && Array.isArray(vacio.json) && vacio.json.length === 0, vacio)
+  check('sin sesión → 401', (await api(null, 'GET', '/api/items-orden?orden_id=' + L.UUID_FALSO)).status === 401)
+
+  console.log('\n[permisos] C11 y F16: lista blanca de campos y bloqueo por PIN solo para el admin')
+  const PERMITIDOS = new Set(['id', 'email', 'nombre', 'rol', 'roles_adicionales', 'activo', 'created_at', 'updated_at', 'intentosFallidos', 'bloqueadoHasta'])
+  const lista = await api(admin, 'GET', '/api/usuarios')
+  const idUsuario = (lista.json.find((u) => u.rol === 'mesero') || lista.json[0]).id
+  const extras = new Set()
+  const revisar = (u) => Object.keys(u || {}).forEach((k) => { if (!PERMITIDOS.has(k)) extras.add(k) })
+  lista.json.forEach(revisar)
+  const unoAdmin = await api(admin, 'GET', '/api/usuarios?id=' + idUsuario)
+  const unoMesero = await api(mesero, 'GET', '/api/usuarios?id=' + idUsuario)
+  const listaMesero = await api(mesero, 'GET', '/api/usuarios')
+  revisar(unoAdmin.json); revisar(unoMesero.json); listaMesero.json.forEach(revisar)
+  const miSesion = await api(cajero, 'GET', '/api/auth/sesion')
+  revisar(miSesion.json)
+  check('ningún usuario devuelto trae campos fuera de la lista blanca (lista, uno, mesero y /auth/sesion)', extras.size === 0 && lista.json.length > 0, [...extras])
+  check('los campos que usa la app siguen presentes (id, nombre, email, rol, roles_adicionales, activo, bloqueo)', lista.json.every((u) => u.id && u.nombre && u.email && u.rol && Array.isArray(u.roles_adicionales) && typeof u.activo === 'boolean' && 'intentosFallidos' in u && 'bloqueadoHasta' in u), lista.json[0])
+  check('GET /api/usuarios?id=: admin lo ve con sus contadores y el mesero con el bloqueo en 0 y sin fecha', unoAdmin.status === 200 && typeof unoAdmin.json.intentosFallidos === 'number' && unoMesero.status === 200 && unoMesero.json.intentosFallidos === 0 && unoMesero.json.bloqueadoHasta === null, [unoAdmin.status, unoMesero.status])
+  check('la lista completa para el mesero también va con el bloqueo enmascarado', listaMesero.json.every((u) => u.intentosFallidos === 0 && u.bloqueadoHasta === null))
+  check('?id= sin sesión → 401 (antes respondía sin llamar a requireSesion) y con un id inválido → 400', (await api(null, 'GET', '/api/usuarios?id=' + idUsuario)).status === 401 && (await api(admin, 'GET', '/api/usuarios?id=hola')).status === 400 && (await api(admin, 'GET', '/api/usuarios?id=' + L.UUID_FALSO)).status === 404)
 }

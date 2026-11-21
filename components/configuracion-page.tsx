@@ -33,11 +33,19 @@ import {
   Trash2, 
   Edit,
   Save,
-  MapPin
+  MapPin,
+  Timer
 } from "lucide-react"
 import { Mesa } from "@/lib/types"
 import { showToast } from "@/components/toast"
 import { PrintPreviewDialog } from "@/components/print-preview-dialog"
+import {
+  CLAVE_INACTIVIDAD_KDS_MIN,
+  CLAVE_INACTIVIDAD_MIN,
+  INACTIVIDAD_MIN_DEFECTO,
+  INACTIVIDAD_MIN_MAXIMO,
+  INACTIVIDAD_MIN_MINIMO,
+} from "@/lib/sesion-reglas"
 import {
   DEFAULT_PRINT_CONFIG,
   FUENTES_DISPONIBLES,
@@ -83,6 +91,10 @@ export function ConfiguracionPage() {
   const [soundEnabled, setSoundEnabled] = useState(true)
   const [kdsAutoComplete, setKdsAutoComplete] = useState(false)
   const [kdsAutoCompleteTime, setKdsAutoCompleteTime] = useState("30")
+  // Cierre de sesión por inactividad (F42): POS, Pagos y Caja; y cocina y bar aparte ("sin cierre" por defecto).
+  const [sesionMin, setSesionMin] = useState(String(INACTIVIDAD_MIN_DEFECTO))
+  const [sesionKdsMin, setSesionKdsMin] = useState(String(INACTIVIDAD_MIN_DEFECTO))
+  const [sesionKdsSinCierre, setSesionKdsSinCierre] = useState(true)
 
   type PermisoRow = { rol: string; puede_aplicar: boolean; limite_maximo: number; requiere_motivo: boolean }
   const [permisosForm, setPermisosForm] = useState<PermisoRow[]>([])
@@ -154,6 +166,15 @@ export function ConfiguracionPage() {
       if (config.kds_auto_completar !== undefined) setKdsAutoComplete(!!config.kds_auto_completar)
       if (config.kds_tiempo_auto_completar !== undefined)
         setKdsAutoCompleteTime(String(config.kds_tiempo_auto_completar))
+      if (Number(config[CLAVE_INACTIVIDAD_MIN]) >= INACTIVIDAD_MIN_MINIMO)
+        setSesionMin(String(config[CLAVE_INACTIVIDAD_MIN]))
+      const kds = Number(config[CLAVE_INACTIVIDAD_KDS_MIN])
+      if (kds >= INACTIVIDAD_MIN_MINIMO) {
+        setSesionKdsSinCierre(false)
+        setSesionKdsMin(String(kds))
+      } else {
+        setSesionKdsSinCierre(true)
+      }
     })()
   }, [cargarConfiguracion])
 
@@ -167,6 +188,17 @@ export function ConfiguracionPage() {
   })
 
   const handleSaveSettings = async () => {
+    const minGeneral = Number(sesionMin)
+    const minKds = Number(sesionKdsMin)
+    const minimoOk = (n: number) =>
+      Number.isInteger(n) && n >= INACTIVIDAD_MIN_MINIMO && n <= INACTIVIDAD_MIN_MAXIMO
+    if (esAdmin && (!minimoOk(minGeneral) || (!sesionKdsSinCierre && !minimoOk(minKds)))) {
+      showToast(
+        `Los minutos de inactividad deben ser un número entero entre ${INACTIVIDAD_MIN_MINIMO} y ${INACTIVIDAD_MIN_MAXIMO}`,
+        "error",
+      )
+      return
+    }
     const ok = await guardarConfiguracion({
       nombre_negocio: businessName,
       direccion: businessAddress,
@@ -190,6 +222,8 @@ export function ConfiguracionPage() {
       sonido_habilitado: soundEnabled,
       kds_auto_completar: kdsAutoComplete,
       kds_tiempo_auto_completar: Number(kdsAutoCompleteTime) || 0,
+      [CLAVE_INACTIVIDAD_MIN]: minGeneral,
+      [CLAVE_INACTIVIDAD_KDS_MIN]: sesionKdsSinCierre ? 0 : minKds,
     })
     if (ok) {
       showToast("Configuracion guardada exitosamente", "success")
@@ -625,6 +659,66 @@ export function ConfiguracionPage() {
               )}
             </CardContent>
           </Card>
+
+          {esAdmin && (
+            <Card className="mt-4" data-testid="tarjeta-inactividad">
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <Timer className="h-5 w-5" />
+                  Cierre de sesion por inactividad
+                </CardTitle>
+                <CardDescription>
+                  La sesion se cierra sola si el usuario no hace nada durante este tiempo. Se aplica de inmediato a las sesiones abiertas.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="space-y-2">
+                  <Label htmlFor="sesionInactividadMin">
+                    Minutos de inactividad (POS, Pagos y Caja)
+                  </Label>
+                  <Input
+                    id="sesionInactividadMin"
+                    type="number"
+                    min={INACTIVIDAD_MIN_MINIMO}
+                    max={INACTIVIDAD_MIN_MAXIMO}
+                    value={sesionMin}
+                    onChange={(e) => setSesionMin(e.target.value)}
+                  />
+                  <p className="text-sm text-muted-foreground">
+                    Minimo {INACTIVIDAD_MIN_MINIMO} minutos. Por defecto {INACTIVIDAD_MIN_DEFECTO}.
+                  </p>
+                </div>
+                <div className="flex items-center justify-between rounded-lg border p-4">
+                  <div className="space-y-0.5">
+                    <Label htmlFor="sesionKdsSinCierre">Cocina y bar: sin cierre por inactividad</Label>
+                    <p className="text-sm text-muted-foreground">
+                      La pantalla de cocina y bar es pasiva y se queda abierta. Igual se cierra a las 16 horas por seguridad.
+                    </p>
+                  </div>
+                  <Switch
+                    id="sesionKdsSinCierre"
+                    checked={sesionKdsSinCierre}
+                    onCheckedChange={setSesionKdsSinCierre}
+                  />
+                </div>
+                {!sesionKdsSinCierre && (
+                  <div className="space-y-2">
+                    <Label htmlFor="sesionInactividadKdsMin">
+                      Minutos de inactividad (cocina y bar)
+                    </Label>
+                    <Input
+                      id="sesionInactividadKdsMin"
+                      type="number"
+                      min={INACTIVIDAD_MIN_MINIMO}
+                      max={INACTIVIDAD_MIN_MAXIMO}
+                      value={sesionKdsMin}
+                      onChange={(e) => setSesionKdsMin(e.target.value)}
+                    />
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          )}
         </TabsContent>
 
         {esAdmin && (

@@ -6,8 +6,8 @@
  *   2. Si la cookie no existe o su firma HMAC no es válida (se revisa en
  *      memoria, sin tocar la base) → 401. Estas peticiones tampoco se cuentan:
  *      su límite por IP lo hace la regla de Vercel WAF (README).
- *   3. Con firma válida, en paralelo: validar la sesión en la base (vigente
- *      + usuario activo) y contar la petición de esa sesión (240/min, sesión 4).
+ *   3. Con firma válida, en paralelo: validar la sesión en la base (vigente,
+ *      sin inactividad vencida, usuario activo; una acción real renueva la actividad, F42) y contar la petición de esa sesión (240/min, sesión 4).
  *      Sobre el límite → 429 con Retry-After. Sin sesión vigente → 401.
  *   4. Si el rol no tiene permiso para esa ruta y método → 403.
  *
@@ -17,7 +17,8 @@
  */
 import { NextResponse, type NextRequest } from 'next/server'
 import { accesoParaRuta, tieneAlgunRol } from '@/lib/permisos-api'
-import { COOKIE_SESION, hashToken, leerCookie, obtenerSesionDeToken, tokenDeCookie } from '@/lib/sesion'
+import { COOKIE_SESION, hashToken, leerCookie, resolverSesion, respuestaSesionInvalida, tokenDeCookie } from '@/lib/sesion'
+import { esPeticionSondeo } from '@/lib/sesion-reglas'
 import { contarYLimitar } from '@/lib/limite-api'
 
 export async function proxy(request: NextRequest) {
@@ -32,11 +33,14 @@ export async function proxy(request: NextRequest) {
     return NextResponse.json({ error: 'Sesión requerida' }, { status: 401 })
   }
 
-  let usuario
+  // F42: solo una acción real renueva la actividad de la sesión; el sondeo y las recargas
+  // automáticas (cabecera x-sm-sondeo) la validan pero no la renuevan.
+  const renovar = !esPeticionSondeo(pathname, request.headers)
+  let resuelta
   let limite: Response | null
   try {
-    ;[usuario, limite] = await Promise.all([
-      obtenerSesionDeToken(token),
+    ;[resuelta, limite] = await Promise.all([
+      resolverSesion(token, { renovar }),
       contarYLimitar(hashToken(token)),
     ])
   } catch (error) {
@@ -46,9 +50,10 @@ export async function proxy(request: NextRequest) {
 
   if (limite) return limite
 
-  if (!usuario) {
-    return NextResponse.json({ error: 'Sesión requerida' }, { status: 401 })
+  if (!resuelta.ok) {
+    return respuestaSesionInvalida(resuelta.motivo)
   }
+  const usuario = resuelta.usuario
 
   if (acceso !== 'sesion' && !tieneAlgunRol(usuario.roles, acceso)) {
     return NextResponse.json({ error: 'No tienes permiso para esta acción' }, { status: 403 })

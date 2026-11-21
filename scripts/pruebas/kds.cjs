@@ -30,12 +30,13 @@ exports.correr = async function (ctx) {
     const o = await estadoOrden(id)
     return o === derivar(await estadosItems(id))
   }
-  // Segunda estación: el usuario de bar si existe; si no, el admin (la matriz del admin lo permite todo).
+  // Segunda estación de las carreras: el admin (su matriz lo permite todo). Desde la sesión 14.5a (F39) el
+  // usuario de bar solo mueve ítems de BAR, y estas carreras usan ítems de cocina; el bar real se prueba en F39.
   let bar = null
   if (ctx.usuarios.bar) {
     try { bar = await L.iniciarSesion(ctx.usuarios.bar) } catch { bar = null }
   }
-  const estacionB = bar || admin
+  const estacionB = admin
 
   console.log('\n[kds] B5: el estado de la orden es el del peor ítem')
   await L.limpiarMesas(ctx)
@@ -325,5 +326,53 @@ exports.correr = async function (ctx) {
   }
   check(`una sola respuesta produce el aviso y la orden sigue pagado y fuera del KDS (${3 - malosP}/3, avisos únicos ${unaSolaP}/3)`, malosP === 0 && unaSolaP === 3)
   check('sin ítems huérfanos', (await L.huerfanos(ctx)) === 0)
+
+  // ───────── Sesión 14.5a, F39: la estación de cada ítem (la sale de la categoría del producto) ─────────
+  console.log('\n[kds] F39: cocina solo mueve ítems de cocina, bar solo los de bar, admin y salón todos')
+  await L.limpiarMesas(ctx)
+  await L.reponer(ctx, L.BIG)
+  const barF39 = bar || (await L.crearUsuarioPrueba(ctx, 'bar')).sesion
+  const nuevaOrden = async (mesaN) => {
+    const r = await enviar(maria, { mesa_id: mesa[mesaN], items: [it(f.pP, 1), it(f.pBar, 1)] })
+    const itemC = (r.json.items || []).find((i) => i.producto_id === f.pP)
+    const itemB = (r.json.items || []).find((i) => i.producto_id === f.pBar)
+    return { r, O: r.json.orden && r.json.orden.id, itemC, itemB }
+  }
+  const EE = await nuevaOrden(2)
+  check('orden con un ítem de cocina y uno de bar (el producto de bar es de una categoría de bar)', EE.r.status === 200 && !!EE.itemC && !!EE.itemB, EE.r)
+  const estadoDe = async (id) => (await L.itemsDe(ctx, EE.O)).find((i) => i.id === id).estado_item
+  const h1 = await cambiar(ezio, EE.itemB.id, 'en_preparacion')
+  check('cocina moviendo un ítem de BAR → 403 ROL_SIN_PERMISO y el ítem no cambió', h1.status === 403 && h1.json.codigo === 'ROL_SIN_PERMISO' && (await estadoDe(EE.itemB.id)) === 'pendiente', h1)
+  const h2 = await cambiar(barF39, EE.itemC.id, 'en_preparacion')
+  check('bar moviendo un ítem de COCINA → 403 ROL_SIN_PERMISO y el ítem no cambió', h2.status === 403 && h2.json.codigo === 'ROL_SIN_PERMISO' && (await estadoDe(EE.itemC.id)) === 'pendiente', h2)
+  check('cocina mueve su ítem y bar el suyo → 200', (await cambiar(ezio, EE.itemC.id, 'en_preparacion')).status === 200 && (await cambiar(barF39, EE.itemB.id, 'en_preparacion')).status === 200)
+  const hb1 = await bulk(ezio, EE.O, [EE.itemC.id, EE.itemB.id], 'listo')
+  check('POST bulk de cocina con un ítem de cocina y uno de bar → 403 y no cambia NINGUNO (todo o nada)', hb1.status === 403 && hb1.json.codigo === 'ROL_SIN_PERMISO' && (await estadoDe(EE.itemC.id)) === 'en_preparacion' && (await estadoDe(EE.itemB.id)) === 'en_preparacion', hb1)
+  const hb2 = await bulk(barF39, EE.O, [EE.itemC.id], 'listo')
+  check('POST bulk de bar sobre un ítem de cocina → 403', hb2.status === 403 && hb2.json.codigo === 'ROL_SIN_PERMISO', hb2)
+  check('POST bulk de cada estación sobre lo suyo → 200', (await bulk(ezio, EE.O, [EE.itemC.id], 'listo')).status === 200 && (await bulk(barF39, EE.O, [EE.itemB.id], 'listo')).status === 200)
+  const tresF39 = await Promise.all([1, 2, 3].map(() => cambiar(ezio, EE.itemB.id, 'problema')))
+  check('3 intentos simultáneos de cocina sobre el ítem de bar → los 3 dan 403 y el ítem sigue listo', tresF39.every((x) => x.status === 403) && (await estadoDe(EE.itemB.id)) === 'listo', tresF39.map((x) => x.status))
+  check('el salón entrega las dos estaciones: mesero entrega el ítem de bar y cajero el de cocina → 200', (await cambiar(maria, EE.itemB.id, 'entregado')).status === 200 && (await cambiar(carlos, EE.itemC.id, 'entregado')).status === 200)
+  check('admin mueve las dos estaciones: vuelve a preparación un ítem de bar y otro de cocina → 200', (await cambiar(admin, EE.itemB.id, 'en_preparacion')).status === 200 && (await cambiar(admin, EE.itemC.id, 'en_preparacion')).status === 200)
+  const sinProd = await L.itemsDe(ctx, EE.O)
+  check('la orden queda coherente con sus ítems', await coherente(EE.O) && sinProd.length === 2)
+  await L.limpiarMesas(ctx, [2])
+
+  console.log('\n[kds] F39: usuarios con varios roles')
+  const dualF39 = await L.crearUsuarioPrueba(ctx, 'cocina', { roles_adicionales: ['bar'] })
+  const mixtoF39 = await L.crearUsuarioPrueba(ctx, 'cocina', { roles_adicionales: ['mesero'] })
+  const GG = await nuevaOrden(3)
+  check('orden de prueba creada', GG.r.status === 200 && !!GG.itemC && !!GG.itemB, GG.r)
+  check('cocina + bar mueve ítems de las dos estaciones → 200', (await cambiar(dualF39.sesion, GG.itemC.id, 'en_preparacion')).status === 200 && (await cambiar(dualF39.sesion, GG.itemB.id, 'en_preparacion')).status === 200)
+  const hm1 = await cambiar(mixtoF39.sesion, GG.itemB.id, 'listo')
+  check('cocina + mesero: pasar a listo un ítem de bar lo concede solo su rol de cocina → 403', hm1.status === 403 && hm1.json.codigo === 'ROL_SIN_PERMISO', hm1)
+  check('cocina + mesero: su ítem de cocina sí → 200', (await cambiar(mixtoF39.sesion, GG.itemC.id, 'listo')).status === 200)
+  await cambiar(admin, GG.itemB.id, 'listo')
+  check('cocina + mesero: entregar un ítem de bar lo concede su rol de mesero (todas las estaciones) → 200', (await cambiar(mixtoF39.sesion, GG.itemB.id, 'entregado')).status === 200)
+  const sinSesion = await api(null, 'POST', '/api/items-orden/estado', { orden_id: GG.O, item_ids: [GG.itemC.id], estado_item: 'listo' })
+  check('sin sesión → 401 en el POST bulk y orden_id que no es uuid → 400', sinSesion.status === 401 && (await bulk(ezio, 'hola', [GG.itemC.id], 'listo')).status === 400)
+  await L.limpiarMesas(ctx, [3])
+  check('sin ítems huérfanos al terminar F39', (await L.huerfanos(ctx)) === 0)
   if (bar) await api(bar, 'POST', '/api/auth/logout', {}).catch(() => {})
 }

@@ -10,14 +10,23 @@
  * - `proxy.ts` valida sesión y rol en cada petición a /api/**; las rutas
  *   que necesitan saber QUIÉN hace la acción llaman `requireSesion()`,
  *   que vuelve a validar por su cuenta y entrega el usuario real.
+ * - Cierre por inactividad (sesión 14.5a, F42): la sesión vence X minutos después de la última
+ *   acción del usuario (reglas en lib/sesion-reglas.ts). Solo el proxy renueva la actividad, y no
+ *   con sondeos; `requireSesion` y `/api/auth/sesion` solo validan.
  */
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
 import { db } from '@/lib/db'
 import type { Usuario } from '@/lib/types'
 import { rolesEfectivos, tieneAlgunRol, type RolApi } from '@/lib/permisos-api'
+import {
+  CODIGO_SESION_INACTIVA,
+  CODIGO_SESION_VENCIDA,
+  escrituraActividadSeg,
+  limiteInactividadSeg,
+  topeAbsolutoSeg,
+} from '@/lib/sesion-reglas'
 
 export const COOKIE_SESION = 'sm_sesion'
-export const DURACION_SESION_SEG = 12 * 60 * 60 // 12 horas: un turno
 
 export type UsuarioSesion = Usuario & { sesion_id: string; roles: RolApi[] }
 
@@ -86,31 +95,85 @@ function opcionesCookie(maxAge: number) {
 /** Crea la sesión en la base y devuelve el valor del header Set-Cookie. */
 export async function crearSesion(usuarioId: string): Promise<string> {
   const token = randomBytes(32).toString('base64url')
-  const expira = new Date(Date.now() + DURACION_SESION_SEG * 1000)
+  // `expira` es el tope absoluto de seguridad (16 h); la inactividad la decide `resolverSesion`.
+  const tope = topeAbsolutoSeg()
+  const expira = new Date(Date.now() + tope * 1000)
   await db.crearSesion(usuarioId, hashToken(token), expira)
   const valor = `${token}.${firmar('sesion', token)}`
-  return `${COOKIE_SESION}=${valor}; ${opcionesCookie(DURACION_SESION_SEG)}`
+  return `${COOKIE_SESION}=${valor}; ${opcionesCookie(tope)}`
 }
 
 export function cookieBorrada(): string {
   return `${COOKIE_SESION}=; ${opcionesCookie(0)}`
 }
 
+export type MotivoSesionInvalida = 'invalida' | 'inactiva' | 'vencida'
+
+export type ResultadoResolverSesion =
+  | { ok: true; usuario: UsuarioSesion }
+  | { ok: false; motivo: MotivoSesionInvalida }
+
 /**
- * Sesión vigente de la petición, o null. Consulta la base: sesión no
- * revocada ni expirada y usuario activo (los roles se leen frescos).
+ * Decide el estado de una sesión por su token (con firma ya verificada): no revocada, usuario activo,
+ * dentro del tope absoluto y dentro del tiempo de inactividad configurado. Con `renovar`, una acción
+ * real deja registrada su última actividad (como máximo una vez por minuto; el UPDATE trae la
+ * condición). Una sesión ya vencida por inactividad no se renueva nunca.
  */
-export async function obtenerSesion(request: Request): Promise<UsuarioSesion | null> {
-  const token = tokenDeCookie(leerCookie(request, COOKIE_SESION))
-  if (!token) return null
-  return obtenerSesionDeToken(token)
+export async function resolverSesion(
+  token: string,
+  opciones: { renovar?: boolean } = {},
+): Promise<ResultadoResolverSesion> {
+  const fila = await db.getSesionPorToken(hashToken(token))
+  if (!fila) return { ok: false, motivo: 'invalida' }
+  if (fila.tope_vencido) return { ok: false, motivo: 'vencida' }
+  const usuario: UsuarioSesion = {
+    ...fila.usuario,
+    roles: rolesEfectivos(fila.usuario.rol, fila.usuario.roles_adicionales),
+  }
+  const limite = limiteInactividadSeg(usuario.roles, fila.cfg)
+  if (limite !== null && fila.inactivo_seg > limite) return { ok: false, motivo: 'inactiva' }
+  if (opciones.renovar && fila.inactivo_seg >= escrituraActividadSeg()) {
+    try {
+      await db.renovarActividadSesion(usuario.sesion_id, escrituraActividadSeg())
+    } catch (error) {
+      // No renovar no debe tumbar la petición: lo peor es un cierre por inactividad un poco antes.
+      console.error('[sesion] error registrando la actividad:', error)
+    }
+  }
+  return { ok: true, usuario }
 }
 
-/** Igual que obtenerSesion, con un token cuya firma ya se verificó. */
-export async function obtenerSesionDeToken(token: string): Promise<UsuarioSesion | null> {
-  const fila = await db.getSesionActiva(hashToken(token))
-  if (!fila) return null
-  return { ...fila, roles: rolesEfectivos(fila.rol, fila.roles_adicionales) }
+/** 401 con el código que distingue el cierre por inactividad o por tope del resto. */
+export function respuestaSesionInvalida(motivo: MotivoSesionInvalida): Response {
+  if (motivo === 'inactiva') {
+    return Response.json(
+      { error: 'Sesión cerrada por inactividad', codigo: CODIGO_SESION_INACTIVA },
+      { status: 401 },
+    )
+  }
+  if (motivo === 'vencida') {
+    return Response.json(
+      { error: 'La sesión venció. Vuelve a ingresar.', codigo: CODIGO_SESION_VENCIDA },
+      { status: 401 },
+    )
+  }
+  return Response.json({ error: 'Sesión requerida' }, { status: 401 })
+}
+
+/** Resultado de validar la cookie de una petición (sin renovar la actividad). */
+export async function resolverSesionDePeticion(request: Request): Promise<ResultadoResolverSesion> {
+  const token = tokenDeCookie(leerCookie(request, COOKIE_SESION))
+  if (!token) return { ok: false, motivo: 'invalida' }
+  return resolverSesion(token)
+}
+
+/**
+ * Sesión vigente de la petición, o null. Consulta la base: sesión no revocada, dentro del tope y de
+ * la inactividad, y usuario activo (los roles se leen frescos). No renueva la actividad.
+ */
+export async function obtenerSesion(request: Request): Promise<UsuarioSesion | null> {
+  const r = await resolverSesionDePeticion(request)
+  return r.ok ? r.usuario : null
 }
 
 export async function revocarSesionDePeticion(request: Request): Promise<void> {
@@ -134,16 +197,17 @@ export async function requireSesion(
   request: Request,
   roles?: readonly RolApi[],
 ): Promise<ResultadoSesion> {
-  let usuario: UsuarioSesion | null
+  let resuelta: ResultadoResolverSesion
   try {
-    usuario = await obtenerSesion(request)
+    resuelta = await resolverSesionDePeticion(request)
   } catch (error) {
     console.error('[sesion] error validando sesión:', error)
     return { ok: false, respuesta: Response.json({ error: 'Error en servidor' }, { status: 500 }) }
   }
-  if (!usuario) {
-    return { ok: false, respuesta: Response.json({ error: 'Sesión requerida' }, { status: 401 }) }
+  if (!resuelta.ok) {
+    return { ok: false, respuesta: respuestaSesionInvalida(resuelta.motivo) }
   }
+  const usuario = resuelta.usuario
   if (roles && !tieneAlgunRol(usuario.roles, roles)) {
     return { ok: false, respuesta: Response.json({ error: 'No tienes permiso para esta acción' }, { status: 403 }) }
   }

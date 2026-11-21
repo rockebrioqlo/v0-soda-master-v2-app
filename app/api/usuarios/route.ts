@@ -1,3 +1,4 @@
+import { z } from 'zod'
 import { db } from '@/lib/db'
 import { esAdminSesion, requireSesion } from '@/lib/sesion'
 
@@ -6,19 +7,25 @@ export async function GET(request: Request) {
     // Si pasan ?id=..., devolvemos solo ese usuario. Lo usa el polling
     // de verificación de sesión para no traer la lista completa cada
     // minuto y evitar falsos positivos por respuestas inconsistentes.
+    // F16 (sesión 14.5a): la sesión se valida antes de cualquier rama y el estado de bloqueo por PIN
+    // (sesión 4) solo lo ve el admin, también en la consulta de un solo usuario.
+    const s = await requireSesion(request)
+    if (!s.ok) return s.respuesta
     const url = new URL(request.url)
     const id = url.searchParams.get('id')
     if (id) {
+      if (!z.string().uuid().safeParse(id).success) {
+        return Response.json({ error: 'id inválido', codigo: 'DATOS_INVALIDOS' }, { status: 400 })
+      }
       const usuario = await db.getUsuarioById(id)
       if (!usuario) {
         return Response.json({ error: 'Usuario no encontrado' }, { status: 404 })
       }
-      return Response.json(usuario)
+      return Response.json(
+        esAdminSesion(s.usuario) ? usuario : { ...usuario, intentosFallidos: 0, bloqueadoHasta: null },
+      )
     }
     const usuarios = await db.getUsuarios()
-    // El estado de bloqueo por PIN solo lo ve el admin (sesión 4).
-    const s = await requireSesion(request)
-    if (!s.ok) return s.respuesta
     if (!esAdminSesion(s.usuario)) {
       return Response.json(
         usuarios.map((u) => ({ ...u, intentosFallidos: 0, bloqueadoHasta: null })),

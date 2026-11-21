@@ -59,7 +59,7 @@ export function UsuariosPage() {
     if (!esAdmin) return
     void recargarUsuarios()
     const id = window.setInterval(() => {
-      if (document.visibilityState === 'visible' && !enPausaPorLimite()) void recargarUsuarios()
+      if (document.visibilityState === 'visible' && !enPausaPorLimite()) void recargarUsuarios(true)
     }, 30_000)
     return () => window.clearInterval(id)
   }, [esAdmin, recargarUsuarios])

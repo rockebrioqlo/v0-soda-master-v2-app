@@ -62,8 +62,9 @@ export const REGLAS: readonly Regla[] = [
   { ruta: r('permisos-especiales'), metodos: ['GET'], acceso: 'sesion' }, // no admin: solo los propios
 
   // ── Salón, POS y KDS ──────────────────────────────────────────────
-  { ruta: r('ordenes'), metodos: ['PATCH'], acceso: SALON_Y_COCINA },
-  { ruta: r(`ordenes/${ID}`), metodos: ['PATCH'], acceso: SALON_Y_COCINA },
+  // Sesión 14.5a (F38): cocina y bar ya no usan PATCH /api/ordenes (el KDS usa items-orden/estado).
+  { ruta: r('ordenes'), metodos: ['PATCH'], acceso: SALON },
+  { ruta: r(`ordenes/${ID}`), metodos: ['PATCH'], acceso: SALON },
   { ruta: r('items-orden'), metodos: ['PATCH'], acceso: SALON_Y_COCINA },
   { ruta: r('items-orden/estado'), metodos: ['POST'], acceso: SALON_Y_COCINA }, // varios ítems de una orden a un estado, todo o nada (sesión 13); la matriz por rol está en lib/items-reglas.ts
   { ruta: r('ordenes'), metodos: ['POST', 'DELETE'], acceso: SALON },

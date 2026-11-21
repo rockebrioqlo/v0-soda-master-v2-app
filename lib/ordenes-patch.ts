@@ -4,7 +4,7 @@
  * R3/A7). El usuario sale de la sesión, nunca del body.
  */
 import { db } from '@/lib/db'
-import { requireSesion } from '@/lib/sesion'
+import { esAdminSesion, requireSesion } from '@/lib/sesion'
 import { OrdenPatchSchema, respuestaDeError, validarBody } from '@/lib/ordenes-http'
 import { puedeCambiarAEstado, puedeEditarNotas } from '@/lib/ordenes-reglas'
 
@@ -35,6 +35,17 @@ export async function manejarPatchOrden(
     }
 
     const roles = s.usuario.roles
+    // Sesión 14.5a (F38): fijar el estado de la orden a mano es solo del admin. El estado normal lo
+    // calcula el servidor a partir de sus ítems (sesión 13); salón solo usa `action: 'enviar_cocina'`.
+    if (d.estado !== undefined && !d.action && !esAdminSesion(s.usuario)) {
+      return Response.json(
+        {
+          error: 'Solo el administrador puede fijar el estado de una orden: el sistema lo calcula según sus ítems.',
+          codigo: 'ROL_SIN_PERMISO',
+        },
+        { status: 403 },
+      )
+    }
     if (destino && !puedeCambiarAEstado(roles, destino)) {
       return Response.json(
         {

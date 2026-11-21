@@ -11,6 +11,7 @@ import { Check, ChefHat, Wine, Clock, AlertCircle, Zap, RefreshCw, Printer, Hist
 import { showToast } from '@/components/toast'
 import { mensajeAccionable } from '@/lib/api-error'
 import type { Comanda, ItemComanda } from '@/lib/types'
+import { CATEGORIAS_BAR } from '@/lib/estaciones'
 import { PrintPreviewDialog } from '@/components/print-preview-dialog'
 import { KDSHistorialDialog } from '@/components/kds-historial-dialog'
 import {
@@ -71,8 +72,6 @@ export function KDSPage() {
       c.items.some((item) => item.estado !== 'listo' && item.estado !== 'entregado')
     ),
   ]
-
-  const CATEGORIAS_BAR = ['bebidas', 'cervezas', 'jugos_bebidas', 'tragos']
 
   const isBarItem = (item: ItemComanda) => {
     if (item.categoria) return CATEGORIAS_BAR.includes(item.categoria)

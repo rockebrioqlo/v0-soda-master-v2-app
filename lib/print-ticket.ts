@@ -20,6 +20,7 @@
 
 import type { Comanda, ItemComanda, EstadoItem, Producto } from './types'
 import { formatCurrency } from './helpers'
+import { CATEGORIAS_BAR } from './estaciones'
 
 // ── Configuración persistible ────────────────────────────────────────────────
 export interface TicketPrintConfig {
@@ -71,8 +72,8 @@ export const FUENTES_DISPONIBLES = [
   { value: "'Times New Roman', Times, serif", label: 'Times New Roman' },
 ]
 
-/** Categorías de producto que se enrutan a la estación BAR (las demás van a cocina). */
-export const CATEGORIAS_BAR = ['bebidas', 'cervezas', 'jugos_bebidas', 'tragos']
+// La clasificación cocina / bar vive en lib/estaciones.ts (fuente única, sesión 14.5a / F39).
+export { CATEGORIAS_BAR }
 
 // ── Datos del ticket ─────────────────────────────────────────────────────────
 export interface TicketItem {

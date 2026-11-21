@@ -15,6 +15,8 @@ import {
 import { showToast } from '@/components/toast'
 import { errorDeRespuesta } from '@/lib/api-error'
 import { enPausaPorLimite, registrarLimite, segundosDePausa } from '@/lib/pausa-limite'
+import { CABECERA_SONDEO } from '@/lib/sesion-reglas'
+import { MENSAJES_CIERRE, registrarMotivoCierre } from '@/lib/sesion-cliente'
 
 type PageType = 'dashboard' | 'mesas' | 'pos' | 'kds' | 'inventario' | 'finanzas' | 'usuarios' | 'pagos' | 'caja' | 'mermas' | 'reportes' | 'configuracion'
 
@@ -221,7 +223,7 @@ interface AppContextType {
   crearUsuarioApi: (payload: any) => Promise<any>
   actualizarUsuarioApi: (id: string, updates: any) => Promise<any>
   eliminarUsuarioApi: (id: string) => Promise<boolean>
-  recargarUsuarios: () => Promise<void>
+  recargarUsuarios: (sondeo?: boolean) => Promise<void>
   crearPagoApi: (pago: any) => Promise<any>
   registrarPerdidaApi: (payload: {
     orden_id: string
@@ -580,6 +582,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           const userRole: unknown = user.rol
           setCurrentPage(paginaGuardada || (isRol(userRole) ? defaultPageByRole[userRole] : 'dashboard'))
           await cargarDatosApp()
+        } else if (res.status === 401) {
+          // F42: si la sesión se cerró por inactividad, el login lo avisa aunque se haya recargado la pantalla.
+          await registrarMotivoCierre(res)
         }
       } catch (error) {
         console.error('Database initialization error:', error)
@@ -670,11 +675,15 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     const verifyActiveUser = async () => {
       if (enPausaPorLimite()) return
       try {
-        const res = await fetch('/api/auth/sesion', { cache: 'no-store' })
+        const res = await fetch('/api/auth/sesion', { cache: 'no-store', headers: { [CABECERA_SONDEO]: '1' } })
         if (cancelled) return
         if (res.status === 401) {
           console.warn('[auth] Sesión cerrada por el servidor', { id: usuarioActualId })
-          showToast('Tu sesión se cerró (venció o ingresaste desde otro dispositivo). Vuelve a ingresar.', 'error')
+          const motivo = await registrarMotivoCierre(res)
+          showToast(
+            motivo ? MENSAJES_CIERRE[motivo] : 'Tu sesión se cerró (venció o ingresaste desde otro dispositivo). Vuelve a ingresar.',
+            'error',
+          )
           logout()
         }
       } catch {
@@ -715,7 +724,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         } catch {}
         if (ruta.startsWith('/api/') && !ruta.startsWith('/api/auth/')) {
           sesionActivaRef.current = false
-          showToast('Tu sesión se cerró (venció o ingresaste desde otro dispositivo). Vuelve a ingresar.', 'error')
+          const motivo = await registrarMotivoCierre(res)
+          showToast(
+            motivo ? MENSAJES_CIERRE[motivo] : 'Tu sesión se cerró (venció o ingresaste desde otro dispositivo). Vuelve a ingresar.',
+            'error',
+          )
           logoutRef.current()
         }
       }
@@ -970,9 +983,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     return { orden_cerrada: data?.orden_cerrada === true }
   }, [])
 
-  const recargarUsuarios = useCallback(async () => {
+  // `sondeo`: recarga automática de fondo (la pantalla Usuarios cada 30 s); no cuenta como actividad (F42).
+  const recargarUsuarios = useCallback(async (sondeo = false) => {
     try {
-      const res = await fetch('/api/usuarios')
+      const res = await fetch('/api/usuarios', { headers: sondeo === true ? { [CABECERA_SONDEO]: '1' } : undefined })
       if (res.ok) {
         const usuarios = await res.json()
         if (Array.isArray(usuarios)) {
@@ -1445,7 +1459,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       estado.running = true
       estado.ultimo = ahora
       try {
-        const res = await fetch(`/api/sondeo?secciones=${secciones}`, { cache: 'no-store' })
+        const res = await fetch(`/api/sondeo?secciones=${secciones}`, { cache: 'no-store', headers: { [CABECERA_SONDEO]: '1' } })
         if (!res.ok) return
         const datos = await res.json()
         // Si mientras tanto se cerró la sesión o entró otro usuario, la respuesta ya no sirve.

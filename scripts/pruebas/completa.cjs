@@ -18,6 +18,7 @@ const MODULOS = {
   sondeo: require('./sondeo.cjs'),
   unidades: require('./unidades.cjs'),
   kds: require('./kds.cjs'),
+  sesion: require('./sesion.cjs'),
 }
 // `unidades` ya corre dentro de `stock` (la sesión 11 toca stock): solo se pide por nombre para correrlo solo.
 const SOLO_POR_NOMBRE = ['unidades']

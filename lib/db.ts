@@ -13,6 +13,7 @@ import {
 } from './cobro'
 import { ORIGENES_VALIDOS, esEstadoTerminal, type DestinoPatch } from './ordenes-reglas'
 import { ESTADOS_ITEM, ESTADOS_ITEM_EDITABLES, type EstadoItem } from './items-reglas'
+import { CATEGORIAS_BAR, type Estacion } from './estaciones'
 import { formatCurrency } from './helpers'
 
 // Lazy initialization to avoid build-time errors
@@ -48,11 +49,24 @@ const HASH_RELLENO = '$2b$10$icawp9UmJE0PBbIsfgs..e2FY0BvOF5MEZLd8QBGd0kj/gDC3Pi
 
 const ROLES_VALIDOS = new Set(['admin', 'administrador', 'mesero', 'cocina', 'bar', 'cajero'])
 
+// C11 (sesión 14.5a): lista BLANCA. Lo que la API devuelve de un usuario es exactamente esto; una
+// columna nueva en la tabla (hash, token, dato personal) no sale hacia afuera por defecto. Todo lo
+// que lee el cliente está aquí (id, nombre, email, rol, roles_adicionales, activo, bloqueo por PIN);
+// `created_at` y `updated_at` no los lee ninguna pantalla pero van en todos los SELECT y no son sensibles.
 function mapUsuario(row: any): Usuario {
-  const { pin_hash, pinHash, pin, password, roles_adicionales, bloqueado_hasta, fallidos, ...safeUsuario } = row
+  const { roles_adicionales, bloqueado_hasta, fallidos } = row
   const rolesAdicionales: string[] = Array.isArray(roles_adicionales)
     ? roles_adicionales.filter((r) => typeof r === 'string' && ROLES_VALIDOS.has(r))
     : []
+  const safeUsuario = {
+    id: row.id,
+    email: row.email,
+    nombre: row.nombre,
+    rol: row.rol,
+    activo: row.activo,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  }
   return {
     ...safeUsuario,
     roles_adicionales: rolesAdicionales,
@@ -469,6 +483,11 @@ const ERRORES_TX_ORDEN: Record<string, { status: number; mensaje: string }> = {
   ITEM_YA_PREPARADO: {
     status: 409,
     mensaje: 'Cocina ya empezó a preparar este ítem: no se puede cambiar su cantidad, extras ni notas. Bórralo y agrégalo de nuevo si hace falta.',
+  },
+  // Sesión 14.5a (F39): cocina solo mueve ítems de cocina y bar los de bar (verificado dentro de la transacción).
+  ROL_SIN_PERMISO: {
+    status: 403,
+    mensaje: 'Ese ítem es de otra estación: cocina solo cambia ítems de cocina y bar solo los de bar.',
   },
   // Sesión 11: inventario con unidad de compra y de consumo.
   INSUMO_NO_ENCONTRADO: { status: 404, mensaje: 'El insumo no existe o está dado de baja.' },
@@ -1461,6 +1480,12 @@ async function ensureSesionesSchema(): Promise<void> {
     CREATE INDEX IF NOT EXISTS sesiones_usuario_idx
       ON soda_master.sesiones (usuario_id)
   `
+  // Sesión 14.5a (F42): última acción del usuario, para el cierre por inactividad (`expira` pasa a ser
+  // el tope absoluto). Las sesiones que ya existían arrancan con la hora de la migración.
+  await sql`
+    ALTER TABLE soda_master.sesiones
+    ADD COLUMN IF NOT EXISTS ultima_actividad TIMESTAMPTZ NOT NULL DEFAULT now()
+  `
   await sql`
     CREATE TABLE IF NOT EXISTS soda_master.intentos_login (
       clave TEXT PRIMARY KEY,
@@ -2129,13 +2154,26 @@ export const db = {
     `
   },
 
-  /** Sesión no revocada ni expirada de un usuario activo, con datos frescos del usuario. */
-  async getSesionActiva(tokenHash: string): Promise<(Usuario & { sesion_id: string }) | null> {
+  /**
+   * Sesión no revocada de un usuario activo, con datos frescos del usuario, SIN decidir si venció:
+   * trae el tiempo de inactividad (con la hora de la base), si pasó el tope absoluto y los minutos
+   * de inactividad configurados, todo en una sola consulta (F42; lib/sesion.ts decide).
+   */
+  async getSesionPorToken(tokenHash: string): Promise<{
+    usuario: Usuario & { sesion_id: string }
+    tope_vencido: boolean
+    inactivo_seg: number
+    cfg: { general: number | null; kds: number | null }
+  } | null> {
     await ensureSesionesSchema()
     await ensureRolesAdicionalesSchema()
     const sql = getSql()
     const rows = await sql`
       SELECT s.id AS sesion_id,
+             (s.expira <= now()) AS tope_vencido,
+             EXTRACT(EPOCH FROM (now() - s.ultima_actividad))::float8 AS inactivo_seg,
+             (SELECT valor FROM soda_master.configuracion WHERE clave = 'sesion_inactividad_min') AS cfg_general,
+             (SELECT valor FROM soda_master.configuracion WHERE clave = 'sesion_inactividad_kds_min') AS cfg_kds,
              u.id, u.email, u.nombre, u.rol,
              COALESCE(u.roles_adicionales, '{}'::text[]) AS roles_adicionales,
              u.activo, u.created_at, u.updated_at
@@ -2143,13 +2181,40 @@ export const db = {
       JOIN soda_master.usuarios u ON u.id = s.usuario_id
       WHERE s.token_hash = ${tokenHash}
         AND s.revocada_at IS NULL
-        AND s.expira > now()
         AND u.activo = true
       LIMIT 1
     `
     if (!rows[0]) return null
     const row = rows[0] as any
-    return { ...mapUsuario(row), sesion_id: String(row.sesion_id) }
+    const numero = (v: unknown) => {
+      if (v === null || v === undefined || v === '') return null
+      const n = Number(v)
+      return Number.isFinite(n) ? n : null
+    }
+    return {
+      usuario: { ...mapUsuario(row), sesion_id: String(row.sesion_id) },
+      tope_vencido: row.tope_vencido === true,
+      inactivo_seg: Number(row.inactivo_seg) || 0,
+      cfg: { general: numero(row.cfg_general), kds: numero(row.cfg_kds) },
+    }
+  },
+
+  /**
+   * Registra la última acción de la sesión, como máximo una vez cada `minimoSeg` segundos: el
+   * UPDATE trae la condición, así que es atómico entre instancias y no hace falta leer antes.
+   */
+  async renovarActividadSesion(sesionId: string, minimoSeg: number): Promise<boolean> {
+    await ensureSesionesSchema()
+    const sql = getSql()
+    const rows = await sql`
+      UPDATE soda_master.sesiones SET ultima_actividad = now()
+      WHERE id = ${sesionId}::uuid
+        AND revocada_at IS NULL
+        AND expira > now()
+        AND ultima_actividad < now() - make_interval(secs => ${minimoSeg}::float8)
+      RETURNING id
+    `
+    return rows.length > 0
   },
 
   async revocarSesion(tokenHash: string): Promise<void> {
@@ -3477,6 +3542,8 @@ export const db = {
       usuario?: { id: string; nombre: string; rol: string }
       /** Estados desde los que el rol puede pasar el ítem al `estado_item` pedido (matriz F11). */
       origenesEstado?: readonly string[]
+      /** Estaciones cuyos ítems puede mover el rol (F39). */
+      estaciones?: readonly Estacion[]
     } = {},
   ) {
     await ensureItemEstadoSchema()
@@ -3508,6 +3575,7 @@ export const db = {
           item_ids: [id],
           estado_item: updates.estado_item as EstadoItem,
           origenes: opts.origenesEstado ?? ESTADOS_ITEM,
+          estaciones: opts.estaciones,
         })
         return r.items[0]
       }
@@ -3749,6 +3817,8 @@ export const db = {
     item_ids: string[]
     estado_item: EstadoItem
     origenes: readonly string[]
+    /** F39: estaciones cuyos ítems puede mover quien pide; sin esto, todas (uso interno). */
+    estaciones?: readonly Estacion[]
   }): Promise<{
     items: ItemOrden[]
     orden: {
@@ -3780,6 +3850,10 @@ export const db = {
     // Una orden `pagado` (cobrada por adelantado) sigue admitiendo cambios de estado de cocina y
     // entrega mientras no esté cancelada ni perdida.
     const ordenAdmite = [...ESTADOS_ORDEN_ACTIVA, 'pagado']
+    // F39: ítems de una estación que quien pide no puede mover. Un ítem sin producto o sin categoría
+    // cuenta como cocina (igual que el KDS). Solo se restringe con `estaciones` explícitas.
+    const estacionesOk = input.estaciones ? [...input.estaciones] : ['cocina', 'bar']
+    const categoriasBar = [...CATEGORIAS_BAR]
     let res: any[][]
     try {
       res = (await sql.transaction([
@@ -3798,6 +3872,14 @@ export const db = {
                 WHERE id = ANY(${ids}::uuid[]) AND orden_id = ${orden}::uuid) = ${n}::int,
               'ITEM_AJENO')`,
         sql`SELECT soda_master.assert_cobro(
+              NOT EXISTS (SELECT 1 FROM soda_master.items_orden i
+                            LEFT JOIN soda_master.productos p ON p.id = i.producto_id
+                            LEFT JOIN soda_master.categorias c ON c.id = p.categoria_id
+                           WHERE i.id = ANY(${ids}::uuid[])
+                             AND NOT ((CASE WHEN COALESCE(c.nombre, '') = ANY(${categoriasBar}::text[])
+                                            THEN 'bar' ELSE 'cocina' END) = ANY(${estacionesOk}::text[]))),
+              'ROL_SIN_PERMISO')`,
+        sql`SELECT soda_master.assert_cobro(
               NOT EXISTS (SELECT 1 FROM soda_master.items_orden
                            WHERE id = ANY(${ids}::uuid[])
                              AND NOT (COALESCE(estado_item, 'pendiente') = ANY(${[...input.origenes]}::text[]))),
@@ -3815,11 +3897,11 @@ export const db = {
     } catch (err) {
       traducirErrorTx(err)
     }
-    const listaAntes = res[6][0]?.lista === true
-    const filas = res[7] as ItemOrden[]
-    const listaDespues = res[8][0]?.lista === true
+    const listaAntes = res[7][0]?.lista === true
+    const filas = res[8] as ItemOrden[]
+    const listaDespues = res[9][0]?.lista === true
     const porId = new Map(filas.map((f) => [String(f.id).toLowerCase(), f]))
-    const rec = res[9][0] as { estado_anterior: string; estado_nuevo: string }
+    const rec = res[10][0] as { estado_anterior: string; estado_nuevo: string }
     return {
       items: ids.map((i) => porId.get(i)!).filter(Boolean),
       orden: {

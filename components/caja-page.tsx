@@ -16,6 +16,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { showToast } from '@/components/toast'
+import { CABECERA_SONDEO } from '@/lib/sesion-reglas'
 import {
   Wallet,
   ArrowDownCircle,
@@ -129,9 +130,10 @@ export function CajaPage() {
   const [contadoInput, setContadoInput] = useState('')
   const [notasCierre, setNotasCierre] = useState('')
 
-  const recargar = useCallback(async () => {
+  // `sondeo`: recarga automática de fondo; no cuenta como actividad del usuario (F42, cabecera x-sm-sondeo).
+  const recargar = useCallback(async (sondeo = false) => {
     try {
-      const res = await fetch('/api/caja', { cache: 'no-store' })
+      const res = await fetch('/api/caja', { cache: 'no-store', headers: sondeo ? { [CABECERA_SONDEO]: '1' } : undefined })
       if (!res.ok) throw new Error('No se pudo cargar la caja')
       const data = await res.json()
       if (data?.abierta && data.caja) {
@@ -166,7 +168,7 @@ export function CajaPage() {
     // Refresca cada 20 s para que las ventas en efectivo entren al
     // panel sin tener que recargar la página manualmente.
     const id = window.setInterval(() => {
-      if (document.visibilityState === 'visible' && !enPausaPorLimite()) recargar()
+      if (document.visibilityState === 'visible' && !enPausaPorLimite()) recargar(true)
     }, 20000)
     return () => window.clearInterval(id)
   }, [recargar])

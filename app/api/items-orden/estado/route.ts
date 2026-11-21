@@ -6,7 +6,7 @@ import {
   respuestaDeError,
   respuestaDestinoItemProhibido,
 } from '@/lib/ordenes-http'
-import { origenesPermitidos } from '@/lib/items-reglas'
+import { estacionesPermitidas, origenesPermitidos } from '@/lib/items-reglas'
 
 /**
  * POST /api/items-orden/estado   (sesión 13: B5, B6, F11)
@@ -31,7 +31,9 @@ export async function POST(request: Request) {
     const { orden_id, item_ids, estado_item } = parsed.datos
     const origenes = origenesPermitidos(s.usuario.roles, estado_item)
     if (!origenes) return respuestaDestinoItemProhibido(estado_item)
-    const r = await db.cambiarEstadoItems({ orden_id, item_ids, estado_item, origenes })
+    // F39: la estación de cada ítem se verifica dentro de la transacción (403 ROL_SIN_PERMISO).
+    const estaciones = estacionesPermitidas(s.usuario.roles, estado_item) ?? undefined
+    const r = await db.cambiarEstadoItems({ orden_id, item_ids, estado_item, origenes, estaciones })
     return Response.json(r)
   } catch (error) {
     const resp = respuestaDeError(error)

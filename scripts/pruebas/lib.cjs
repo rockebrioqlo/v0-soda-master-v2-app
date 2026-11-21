@@ -79,10 +79,11 @@ async function fetchReintento(url, opts, n = 3) {
   throw ultimo
 }
 
+/** `ses.base` (opcional) apunta la petición a otro servidor (el módulo `sesion` levanta los suyos). `ses.cabeceras` agrega cabeceras. */
 async function api(ses, metodo, ruta, body) {
-  const r = await fetchReintento(BASE + ruta, {
+  const r = await fetchReintento(((ses && ses.base) || BASE) + ruta, {
     method: metodo,
-    headers: { 'Content-Type': 'application/json', cookie: ses ? ses.cookie : '' },
+    headers: { 'Content-Type': 'application/json', cookie: ses ? ses.cookie : '', ...((ses && ses.cabeceras) || {}) },
     body: body === undefined ? undefined : JSON.stringify(body),
   })
   const txt = await r.text()
@@ -116,15 +117,31 @@ async function resolverUsuarios() {
   return porRol
 }
 
-async function iniciarSesion(u) {
-  const r = await fetchReintento(BASE + '/api/auth/login', {
+async function iniciarSesion(u, base) {
+  const r = await fetchReintento((base || BASE) + '/api/auth/login', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ email: u.email, pin: u.pin }),
   })
   if (r.status !== 200) throw new Error(`login de ${u.rol} respondió ${r.status}`)
   const cookie = (r.headers.get('set-cookie') || '').split(';')[0]
-  return { cookie, id: u.id, email: u.email, nombre: u.nombre, rol: u.rol }
+  return { cookie, id: u.id, email: u.email, nombre: u.nombre, rol: u.rol, base: base || undefined, setCookie: r.headers.get('set-cookie') || '' }
+}
+
+/**
+ * Usuario de prueba propio (sesión 14.5a): se crea con la API de admin, con un PIN aleatorio que vive
+ * solo en memoria (nunca se imprime ni se guarda), queda marcado con la marca de la corrida y se
+ * borra en `limpiar`. Sirve para probar sin tocar las sesiones de los usuarios reales (una sola
+ * sesión por usuario) y para roles que la base real no tiene. Con `base === false` no inicia sesión.
+ */
+async function crearUsuarioPrueba(ctx, rol, extra = {}, base) {
+  const pin = String(1000 + Math.floor(Math.random() * 9000))
+  const email = `prueba-${rol}-${Date.now().toString(36)}${Math.floor(Math.random() * 1e4)}@prueba.invalid`
+  const r = await api(ctx.admin, 'POST', '/api/usuarios', { email, nombre: `${ctx.marca} ${rol}`, rol, pin, activo: true, ...extra })
+  if (r.status !== 201) throw new Error(`no se pudo crear el usuario de prueba ${rol} (${r.status})`)
+  ;(ctx.usuariosPrueba = ctx.usuariosPrueba || []).push(r.json.id)
+  const u = { id: r.json.id, email, pin, rol, nombre: r.json.nombre }
+  return { usuario: u, sesion: base === false ? null : await iniciarSesion(u, base), reingresar: (b) => iniciarSesion(u, b) }
 }
 
 // ───────────── contexto de una corrida ─────────────
@@ -181,9 +198,13 @@ async function crearFixtures(ctx) {
   const ingX = await ing('ing extra', 10)
   const ingO = await ing('ing opcional', 10)
   const lista = await api(admin, 'GET', '/api/productos')
-  const categoria = (lista.json.find((p) => p.categoria) || {}).categoria
-  const prod = async (nombre, precio) => {
-    const r = await api(admin, 'POST', '/api/productos', { nombre: `${marca} ${nombre}`, categoria, precio, descripcion: marca })
+  // Sesión 14.5a (F39): los fixtures normales son de COCINA y `pBar` es de BAR (la estación sale de la
+  // categoría del producto, ver lib/estaciones.ts); así las matrices por rol se prueban con las dos.
+  const CATEGORIAS_BAR = ['bebidas', 'cervezas', 'jugos_bebidas', 'tragos']
+  const categoria = (lista.json.find((p) => p.categoria && !CATEGORIAS_BAR.includes(p.categoria)) || {}).categoria
+  const categoriaBar = (lista.json.find((p) => CATEGORIAS_BAR.includes(p.categoria)) || {}).categoria || 'cervezas'
+  const prod = async (nombre, precio, cat = categoria) => {
+    const r = await api(admin, 'POST', '/api/productos', { nombre: `${marca} ${nombre}`, categoria: cat, precio, descripcion: marca })
     if (r.status !== 200) throw new Error(`no se pudo crear el producto (${r.status})`)
     return r.json.id
   }
@@ -191,6 +212,7 @@ async function crearFixtures(ctx) {
   const pRP = await prod('receta+producto', 2000)
   const pP = await prod('solo producto', 1500)
   const pEsp = await prod('extra especial', 0)
+  const pBar = await prod('bar', 1200, categoriaBar)
   await api(admin, 'PATCH', '/api/productos/' + pEsp, { es_ingrediente_especial: true, costo_adicional: 700 })
   await api(admin, 'POST', '/api/recetas', {
     producto_id: pR, nombre: marca, modo_stock: 'receta',
@@ -205,7 +227,7 @@ async function crearFixtures(ctx) {
     producto_id: pRP, nombre: marca, modo_stock: 'producto_y_receta',
     ingredientes: [{ ingrediente_id: ingA, cantidad: 1 }],
   })
-  ctx.f = { ingA, ingB, ingX, ingO, pR, pRP, pP, pEsp }
+  ctx.f = { ingA, ingB, ingX, ingO, pR, pRP, pP, pEsp, pBar }
   await reponer(ctx)
 }
 
@@ -322,12 +344,20 @@ async function limpiar(ctx) {
       }
     }
     if (ctx.f) {
-      for (const id of [ctx.f.pR, ctx.f.pRP, ctx.f.pP, ctx.f.pEsp]) await api(ctx.admin, 'PATCH', '/api/productos/' + id, { activo: false })
+      for (const id of [ctx.f.pR, ctx.f.pRP, ctx.f.pP, ctx.f.pEsp, ctx.f.pBar]) await api(ctx.admin, 'PATCH', '/api/productos/' + id, { activo: false })
       for (const id of [ctx.f.ingA, ctx.f.ingB, ctx.f.ingX, ctx.f.ingO]) await api(ctx.admin, 'PATCH', '/api/ingredientes/' + id, { activo: false })
     }
     // insumos y productos de módulos que crean los suyos (unidades)
     for (const id of ctx.limpiezaProd || []) await api(ctx.admin, 'PATCH', '/api/productos/' + id, { activo: false })
     for (const id of ctx.limpiezaIng || []) await api(ctx.admin, 'PATCH', '/api/ingredientes/' + id, { activo: false })
+    // usuarios de prueba (sesión 14.5a): se borran (sus sesiones caen en cascada)
+    for (const id of ctx.usuariosPrueba || []) {
+      const d = await api(ctx.admin, 'DELETE', '/api/usuarios/' + id)
+      if (d.status !== 200 && d.status !== 404) {
+        await api(ctx.admin, 'PATCH', '/api/usuarios/' + id, { activo: false })
+        avisos.push(`no se pudo borrar el usuario de prueba ${id} (quedó desactivado)`)
+      }
+    }
     const abiertas = await ctx.db`SELECT count(*)::int AS n FROM soda_master.cajas WHERE estado = 'abierta'`
     if (!ctx.cajaAjena && Number(abiertas[0].n) > 0) avisos.push('quedó una caja abierta por la prueba (ciérrala desde Caja)')
     const act = await ctx.db`SELECT m.numero FROM soda_master.ordenes o JOIN soda_master.mesas m ON m.id = o.mesa_id WHERE m.numero = ANY(${MESAS}) AND o.estado NOT IN ('pagado','cancelado','perdida')`
@@ -351,5 +381,5 @@ function resumen(titulo) {
 module.exports = {
   BASE, MESAS, UUID_FALSO, iniciarSesion, BIG, sleep, eq, check, res, api, crearContexto, crearFixtures, reponer,
   stocks, K, movCount, huerfanos, totalesOk, netoItem, activasMesa, itemsDe, ordenRow,
-  enviar, it, extraX, limpiarMesas, cerrarOrden, limpiar, resumen, fechaHoy,
+  enviar, it, extraX, limpiarMesas, cerrarOrden, limpiar, resumen, fechaHoy, crearUsuarioPrueba,
 }

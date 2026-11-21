@@ -37,6 +37,7 @@ import {
   salsasDisponibles as salsasFallback,
 } from '@/lib/initial-data'
 import { PrintPreviewDialog } from '@/components/print-preview-dialog'
+import { CATEGORIAS_BAR } from '@/lib/estaciones'
 import {
   comandaToTicketItems,
   readPrintConfigFromState,
@@ -2595,7 +2596,6 @@ function EntregasDialog({
   entregandoIds: Set<string>
   onMarcarEntregado: (comandaId: string, itemId: string) => Promise<void>
 }) {
-  const CATEGORIAS_BAR = ['bebidas', 'cervezas', 'jugos_bebidas', 'tragos']
   const esBar = (cat: string) => CATEGORIAS_BAR.includes(cat)
 
   const porMesa = items.reduce<Record<string, EntregaPendiente[]>>((acc, it) => {
