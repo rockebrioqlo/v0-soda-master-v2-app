@@ -322,4 +322,7 @@ exports.correr = async function (ctx) {
   check(`pérdida y cambio de descuento en paralelo: un resultado coherente con una sola fila de descuento (${rondasP}/3)`, rondasP === 3)
 
   await L.limpiarMesas(ctx)
+
+  // Sesión 14b (F19): el registro de stock se reparte entre la pieza original y los clones.
+  await require('./registro-corte.cjs').clones(ctx)
 }

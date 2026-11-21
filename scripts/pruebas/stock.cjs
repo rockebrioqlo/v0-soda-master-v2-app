@@ -125,13 +125,19 @@ exports.correr = async function (ctx) {
   const bb = await L.stocks(ctx)
   const rm = await enviar(maria, { mesa_id: mesa[6], items: [it(f.pR, 2, extra), it(f.pP, 1), it(f.pRP, 1)] })
   check('el mesero borra su orden pendiente: stock exacto de vuelta', (await api(maria, 'DELETE', '/api/ordenes', { id: rm.json.orden.id })).status === 200 && eq(await L.stocks(ctx), bb) && eq(await L.K(ctx), kb))
+  const srBase = await L.stocks(ctx)
+  const krBase = await L.K(ctx)
   const rs = await enviar(maria, { mesa_id: mesa[7], items: [it(f.pR, 2)] })
   const pa = await api(carlos, 'POST', '/api/pagos', { orden_id: rs.json.orden.id, metodo: 'tarjeta', monto_esperado: 1000, item_partials: [{ id: rs.json.items[0].id, cantidad: 1 }] })
   const resto = (await L.itemsDe(ctx, rs.json.orden.id)).find((i) => !i.pagado)
   const sr0 = await L.stocks(ctx)
   const ed = await api(maria, 'PATCH', '/api/items-orden', { id: resto.id, cantidad: 3 })
+  const sr1 = await L.stocks(ctx)
   const dr = await api(maria, 'DELETE', '/api/items-orden', { id: resto.id })
-  check('resto de un cobro parcial (sin registro, F19): editar y borrar OK sin mover el stock', pa.status === 201 && ed.status === 200 && dr.status === 200 && eq(await L.stocks(ctx), sr0))
+  // Sesión 14b (F19): el resto de un cobro parcial lleva su parte del registro, así que editar y borrar sí mueven el stock (exacto).
+  check('resto de un cobro parcial (F19, sesión 14b): subir 1→3 descuenta A 2 y B 4; borrarlo devuelve todo y queda solo la unidad cobrada (A 1, B 2); K constante',
+    pa.status === 201 && ed.status === 200 && dr.status === 200 && eq([sr1.A, sr1.B], [sr0.A - 2, sr0.B - 4]) &&
+      eq([(await L.stocks(ctx)).A, (await L.stocks(ctx)).B], [srBase.A - 1, srBase.B - 2]) && eq(await L.K(ctx), krBase), [pa.status, ed.status, dr.status, sr0, sr1])
   await L.cerrarOrden(ctx, rs.json.orden.id)
   await L.limpiarMesas(ctx)
 
@@ -179,6 +185,9 @@ exports.correr = async function (ctx) {
     await L.limpiarMesas(ctx, [10])
   }
   check('enviar ítems vs borrar la orden: sin huérfanos ni stock a medias', malo2 === 0, malo2)
+
+  // Sesión 14b (F19): el registro de stock se reparte cuando una línea se corta por un cobro parcial.
+  await require('./registro-corte.cjs').cortes(ctx)
 
   // Sesión 11: unidad de compra y de consumo, factor por compra, rendimiento y ajuste de stock.
   await require('./unidades.cjs').correr(ctx)

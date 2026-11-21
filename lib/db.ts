@@ -833,6 +833,54 @@ function sentenciaMovimientos(
 }
 
 /**
+ * Sesión 14b (F19): reparte el registro de stock de una línea que se parte. Cuando un cobro parcial
+ * corta una línea (el "resto") o una asignación por persona la clona, la pieza nueva nacía sin
+ * registro (editar o borrar no movía stock) y la fila original conservaba el de TODAS las unidades
+ * (borrar solo esa pieza devolvía de más). Este statement, que va en la MISMA `sql.transaction` que el
+ * corte o el clon (con la orden ya bloqueada), traspasa a la pieza nueva su parte del registro:
+ *  - copia cada fila `venta` / `devolucion` del ítem de origen con
+ *    `ROUND(cantidad × unidades de la pieza nueva / unidades de la línea, 3)` (3 decimales, F29),
+ *    conservando tipo, insumo o producto, `orden_id` y `created_at`; nota "Corte de línea: parte del
+ *    ítem <id origen>";
+ *  - la fila de origen recibe el RESTO exacto (`antes − pieza`, nunca un ROUND propio), así la suma por
+ *    fila y por insumo no cambia (K constante) y nada se cuenta dos veces; su nota conserva la que
+ *    tenía y agrega "Corte de línea: reducida de X a Y por el ítem <id de la pieza nueva>".
+ * Un ítem sin registro (anterior a la sesión 8, o resto y clones creados antes de este arreglo) no
+ * tiene filas que repartir: no hace nada. `unidadesAntes` son las unidades que el ítem de origen tenía
+ * justo antes de ceder esta pieza (en varios clones seguidos, las que aún no se repartieron).
+ */
+function sentenciaTraspasoRegistro(
+  sql: Sql,
+  p: { origenId: string; nuevoId: string; unidadesNuevas: number; unidadesAntes: number },
+) {
+  const notaPieza = `Corte de línea: parte del ítem ${p.origenId}`
+  return sql`
+    WITH base AS (
+      SELECT m.id, m.ingrediente_id, m.producto_id, m.tipo, m.orden_id, m.created_at,
+             m.cantidad AS antes,
+             ROUND(m.cantidad * ${p.unidadesNuevas}::numeric / NULLIF(${p.unidadesAntes}::numeric, 0), 3) AS pieza
+      FROM soda_master.movimientos_inventario m
+      WHERE m.item_orden_id = ${p.origenId}::uuid AND m.tipo IN ('venta', 'devolucion')
+    ),
+    copia AS (
+      INSERT INTO soda_master.movimientos_inventario
+        (ingrediente_id, producto_id, tipo, cantidad, orden_id, item_orden_id, notas, created_at)
+      SELECT b.ingrediente_id, b.producto_id, b.tipo, b.pieza, b.orden_id, ${p.nuevoId}::uuid,
+             ${notaPieza}::text, b.created_at
+      FROM base b WHERE b.pieza > 0
+      RETURNING id
+    )
+    UPDATE soda_master.movimientos_inventario m
+    SET cantidad = b.antes - b.pieza,
+        notas = COALESCE(NULLIF(m.notas, '') || ' · ', '')
+                || 'Corte de línea: reducida de ' || trim_scale(b.antes)::text
+                || ' a ' || trim_scale(b.antes - b.pieza)::text
+                || ' por el ítem ' || ${p.nuevoId}::text
+    FROM base b
+    WHERE m.id = b.id AND b.pieza > 0`
+}
+
+/**
  * Devolución de stock al borrar o cancelar (F10). Lee del registro de
  * movimientos el neto de cada ítem (ventas menos devoluciones) y lo devuelve
  * a ingredientes e inventario en el mismo statement que lo registra:
@@ -4143,6 +4191,8 @@ export const db = {
     await ensureOrdenEstadoSchema()
     await ensureCajaSchema()
     await ensurePagoSchema()
+    // Sesión 14b (F19): el corte de línea reparte el registro de stock (tabla e índice por ítem).
+    await ensureOrdenesAtomicasSchema()
     const sql = getSql()
     const ordenId = input.orden_id
     const metodo = input.metodo
@@ -4212,7 +4262,7 @@ export const db = {
     }
     const esParcial = idsSel.length > 0 || parcialesSel.size > 0
     const lineasEnteras: string[] = []
-    const cortes: Array<{ id: string; cobrar: number; original: number }> = []
+    const cortes: Array<{ id: string; cobrar: number; original: number; restoId: string }> = []
     const cobrados: Array<{ precio: number; cantidad: number }> = []
 
     if (!esParcial) {
@@ -4239,7 +4289,8 @@ export const db = {
         if (cantidad === it.cantidad) {
           lineasEnteras.push(id)
         } else {
-          cortes.push({ id, cobrar: cantidad, original: it.cantidad })
+          // `restoId` se genera aquí para poder repartir el registro de stock en la misma transacción (F19).
+          cortes.push({ id, cobrar: cantidad, original: it.cantidad, restoId: crypto.randomUUID() })
         }
         cobrados.push({ precio: it.precio, cantidad })
       }
@@ -4382,9 +4433,9 @@ export const db = {
         ),
         resto AS (
           INSERT INTO soda_master.items_orden
-            (orden_id, producto_id, cantidad, precio_unitario, modificadores,
+            (id, orden_id, producto_id, cantidad, precio_unitario, modificadores,
              notas_especiales, estado_item, pagado, cuenta_persona_id)
-          SELECT orden_id, producto_id, cantidad - ${c.cobrar}::int, precio_unitario,
+          SELECT ${c.restoId}::uuid, orden_id, producto_id, cantidad - ${c.cobrar}::int, precio_unitario,
                  modificadores, notas_especiales, estado_item, FALSE, cuenta_persona_id
           FROM orig
           RETURNING id
@@ -4400,6 +4451,16 @@ export const db = {
           'ITEMS_YA_PAGADOS'
         )
       `)
+      // F19: el resto lleva su parte del registro de stock (y la línea cobrada conserva la suya), en
+      // la misma transacción y con la orden bloqueada: editar o borrar el resto ajusta el stock exacto.
+      consultas.push(
+        sentenciaTraspasoRegistro(sql, {
+          origenId: c.id,
+          nuevoId: c.restoId,
+          unidadesNuevas: c.original - c.cobrar,
+          unidadesAntes: c.original,
+        }),
+      )
     }
     // h) si no queda nada por pagar, la orden se cierra
     consultas.push(sql`
@@ -5203,6 +5264,8 @@ export const db = {
     await ensureCuentasPersonaSchema()
     await ensureItemPrecioSchema()
     await ensurePagoSchema()
+    // Sesión 14b (F19): los clones reparten el registro de stock de la línea (tabla e índice por ítem).
+    await ensureOrdenesAtomicasSchema()
     const sql = getSql()
     const O = input.orden_id
 
@@ -5312,16 +5375,30 @@ export const db = {
       `)
       const clones = [...resto]
       if (restante > 0) clones.push({ destino: null, cantidad: restante })
+      // F19: cada clon recibe su parte del registro de stock de la línea original (que conserva el
+      // resto exacto). `porRepartir` son las unidades que la original aún tenía sin ceder: al final
+      // quedan las suyas (`primero.cantidad`).
+      let porRepartir = cantidadOriginal
       for (const seg of clones) {
+        const cloneId = crypto.randomUUID()
         consultas.push(sql`
           INSERT INTO soda_master.items_orden
-            (orden_id, producto_id, cantidad, precio_unitario, modificadores,
+            (id, orden_id, producto_id, cantidad, precio_unitario, modificadores,
              notas_especiales, estado_item, pagado, cuenta_persona_id, precio_manual)
-          SELECT orden_id, producto_id, ${seg.cantidad}::int, precio_unitario, modificadores,
+          SELECT ${cloneId}::uuid, orden_id, producto_id, ${seg.cantidad}::int, precio_unitario, modificadores,
                  notas_especiales, estado_item, FALSE, ${seg.destino}::uuid, precio_manual
           FROM soda_master.items_orden
           WHERE id = ${itemId}::uuid
         `)
+        consultas.push(
+          sentenciaTraspasoRegistro(sql, {
+            origenId: itemId,
+            nuevoId: cloneId,
+            unidadesNuevas: seg.cantidad,
+            unidadesAntes: porRepartir,
+          }),
+        )
+        porRepartir -= seg.cantidad
       }
     }
 
