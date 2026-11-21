@@ -1,6 +1,6 @@
 # ESTADO_MODULOS — Sodamaster
 
-Última actualización: 21-11-2026 (sesión 15, cierre del Bloque C).
+Última actualización: 21-11-2026 (sesión 16, inventario de datos personales: sin cambios de módulos ni de código; el inventario y el plan de las sesiones 17 a 19 están en `INVENTARIO_DATOS_PERSONALES.md`; cierre del Bloque C en la sesión 15).
 
 Estados: **completo** · **a medias** · **roto** · **sin probar**.
 "Qué se probó" indica lo verificado por nosotros en esta etapa; lo heredado de `ESTADO_DESARROLLO.md` se marca como "según doc heredado".
