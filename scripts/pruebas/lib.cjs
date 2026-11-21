@@ -350,6 +350,8 @@ async function limpiar(ctx) {
     // insumos y productos de módulos que crean los suyos (unidades)
     for (const id of ctx.limpiezaProd || []) await api(ctx.admin, 'PATCH', '/api/productos/' + id, { activo: false })
     for (const id of ctx.limpiezaIng || []) await api(ctx.admin, 'PATCH', '/api/ingredientes/' + id, { activo: false })
+    // mermas que registraron las pruebas (14.5b-2, F45): llevan la marca de la corrida en la descripción
+    try { await ctx.db`DELETE FROM soda_master.mermas WHERE descripcion = ${ctx.marca}` } catch (e) { avisos.push('no se pudieron borrar las mermas de prueba: ' + e.message) }
     // usuarios de prueba (sesión 14.5a): se borran (sus sesiones caen en cascada)
     for (const id of ctx.usuariosPrueba || []) {
       const d = await api(ctx.admin, 'DELETE', '/api/usuarios/' + id)

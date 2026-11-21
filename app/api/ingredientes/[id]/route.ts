@@ -1,5 +1,6 @@
 import { db } from '@/lib/db'
-import { esAdminSesion, requireSesion } from '@/lib/sesion'
+import { esAdminSesion, requireAcceso, requireSesion } from '@/lib/sesion'
+import { BajaConMotivoSchema } from '@/lib/mermas-http'
 import { IngredientePatchSchema } from '@/lib/inventario-http'
 import { leerBody, respuestaDeError } from '@/lib/ordenes-http'
 
@@ -22,17 +23,14 @@ export async function DELETE(request: Request, context: { params: Promise<{ id: 
     if (!UUID_RE.test(id)) {
       return Response.json({ error: 'ID inválido' }, { status: 400 })
     }
-    const body = await request.json().catch(() => ({}))
-    const motivo = String(body.motivo || '')
-    if (motivo !== 'merma' && motivo !== 'correccion_admin') {
-      return Response.json(
-        { error: "Motivo inválido. Usa 'merma' o 'correccion_admin'." },
-        { status: 400 }
-      )
-    }
-    // Quien registra es el usuario de la sesión, no `registrado_por` del body.
-    const s = await requireSesion(request)
+    // Sesión y rol primero (F45, 14.5b-2: la tabla de acceso dice solo admin), luego el body.
+    const s = await requireAcceso(request)
     if (!s.ok) return s.respuesta
+    const parsedBody = await leerBody(request, BajaConMotivoSchema, 'Datos de la baja')
+    if (!parsedBody.ok) return parsedBody.respuesta
+    const body = parsedBody.datos
+    const motivo = body.motivo
+    // Quien registra es el usuario de la sesión (el cliente ya no manda `registrado_por`: se rechaza).
     const usuario = s.usuario
     const registradoPor = usuario.id
     if (motivo === 'correccion_admin' && !esAdminSesion(usuario)) {

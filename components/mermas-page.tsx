@@ -228,7 +228,6 @@ export function MermasPage() {
         tipo,
         cantidad: cantidadNum,
         descripcion: descripcion || null,
-        registrado_por: usuarioActual.id,
       }
       if (tipo !== 'comanda_no_pagada') body.producto_id = productoId
       if (tipo === 'comanda_no_pagada') {
@@ -312,7 +311,6 @@ export function MermasPage() {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          usuario_id: usuarioActual.id,
           responsable_id: assignResponsable,
           consecuencia: assignConsecuencia,
           monto_descuento: monto,

@@ -187,8 +187,6 @@ export function CajaPage() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          usuario_id: usuarioActual.id,
-          usuario_nombre: usuarioActual.nombre,
           fondo_inicial: fondo,
           notas: notasApertura.trim() || null,
         }),
@@ -220,8 +218,6 @@ export function CajaPage() {
           tipo: movTipo,
           monto,
           descripcion: movDescripcion.trim() || null,
-          usuario_id: usuarioActual.id,
-          usuario_nombre: usuarioActual.nombre,
         }),
       })
       const data = await res.json().catch(() => ({}))
@@ -250,8 +246,6 @@ export function CajaPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           caja_id: caja.id,
-          usuario_id: usuarioActual.id,
-          usuario_nombre: usuarioActual.nombre,
           efectivo_contado: contado,
           notas: notasCierre.trim() || null,
         }),

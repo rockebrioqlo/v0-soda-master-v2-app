@@ -1,5 +1,7 @@
 import { db } from '@/lib/db'
 import { requireSesion, requireAcceso } from '@/lib/sesion'
+import { CajaAbrirSchema } from '@/lib/caja-http'
+import { leerBody } from '@/lib/validacion-http'
 
 // GET /api/caja — estado de la caja abierta (si hay) + resumen con
 // totales (fondo, ventas en efectivo, vuelto entregado, retiros,
@@ -27,16 +29,13 @@ export async function POST(request: Request) {
   try {
     const s = await requireSesion(request, ['admin', 'cajero'])
     if (!s.ok) return s.respuesta
-    const body = await request.json()
-    const fondo = Number(body.fondo_inicial)
-    if (!Number.isFinite(fondo) || fondo < 0) {
-      return Response.json({ error: 'fondo_inicial inválido' }, { status: 400 })
-    }
+    const parsed = await leerBody(request, CajaAbrirSchema, 'Datos de apertura')
+    if (!parsed.ok) return parsed.respuesta
     const caja = await db.abrirCaja({
       usuario_id: s.usuario.id,
       usuario_nombre: s.usuario.nombre,
-      fondo_inicial: fondo,
-      notas: body.notas ?? null,
+      fondo_inicial: parsed.datos.fondo_inicial,
+      notas: parsed.datos.notas || null,
     })
     return Response.json(caja, { status: 201 })
   } catch (error: any) {

@@ -459,7 +459,6 @@ export function InventarioPage() {
         : `/api/ingredientes/${eliminarTarget.id}`
     const payload: Record<string, unknown> = {
       motivo: eliminarMotivo,
-      registrado_por: usuarioActual.id,
     }
     if (eliminarMotivo === 'merma') {
       payload.motivo_merma = eliminarTipoMerma

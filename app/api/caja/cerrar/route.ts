@@ -1,5 +1,7 @@
 import { db } from '@/lib/db'
 import { requireSesion } from '@/lib/sesion'
+import { CajaCerrarSchema } from '@/lib/caja-http'
+import { leerBody } from '@/lib/validacion-http'
 
 // POST /api/caja/cerrar — arqueo y cierre. El cajero cuenta el
 // efectivo físico y reporta `efectivo_contado`. El servidor calcula el
@@ -12,20 +14,14 @@ export async function POST(request: Request) {
   try {
     const s = await requireSesion(request, ['admin', 'cajero'])
     if (!s.ok) return s.respuesta
-    const body = await request.json()
-    if (!body?.caja_id) {
-      return Response.json({ error: 'caja_id requerido' }, { status: 400 })
-    }
-    const contado = Number(body.efectivo_contado)
-    if (!Number.isFinite(contado) || contado < 0) {
-      return Response.json({ error: 'efectivo_contado inválido' }, { status: 400 })
-    }
+    const parsed = await leerBody(request, CajaCerrarSchema, 'Datos del cierre')
+    if (!parsed.ok) return parsed.respuesta
     const resultado = await db.cerrarCaja({
-      caja_id: body.caja_id,
+      caja_id: parsed.datos.caja_id,
       usuario_id: s.usuario.id,
       usuario_nombre: s.usuario.nombre,
-      efectivo_contado: contado,
-      notas: body.notas ?? null,
+      efectivo_contado: parsed.datos.efectivo_contado,
+      notas: parsed.datos.notas || null,
     })
     return Response.json(resultado)
   } catch (error: any) {

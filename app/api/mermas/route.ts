@@ -1,7 +1,8 @@
 import { db } from '@/lib/db'
 import { z } from 'zod'
 import { esAdminSesion, requireAcceso, requireSesion } from '@/lib/sesion'
-import { fechaYmd, leerConsulta, uuid } from '@/lib/validacion-http'
+import { fechaYmd, leerBody, leerConsulta, uuid } from '@/lib/validacion-http'
+import { MermaPostSchema } from '@/lib/mermas-http'
 import { verificarAutorizacionAdmin } from '@/lib/autorizacion-admin'
 
 const TIPOS = [
@@ -51,15 +52,11 @@ export async function POST(request: Request) {
     const s = await requireSesion(request, ['admin', 'mesero', 'cocina', 'bar'])
     if (!s.ok) return s.respuesta
     const usuario = s.usuario
-    const body = await request.json()
-    const tipo = String(body.tipo || '')
-    if (!TIPOS.includes(tipo as any)) {
-      return Response.json({ error: 'Tipo inválido' }, { status: 400 })
-    }
-    const cantidad = Number(body.cantidad)
-    if (!Number.isFinite(cantidad) || cantidad <= 0) {
-      return Response.json({ error: 'Cantidad inválida' }, { status: 400 })
-    }
+    const parsed = await leerBody(request, MermaPostSchema, 'Datos de la merma')
+    if (!parsed.ok) return parsed.respuesta
+    const body = parsed.datos
+    const tipo: string = body.tipo
+    const cantidad = body.cantidad
     const registradoPor = usuario.id
     if (TIPOS_ADMIN_ONLY.has(tipo) && !esAdminSesion(usuario)) {
       return Response.json(
@@ -71,14 +68,11 @@ export async function POST(request: Request) {
     let comandaNoPagada: { orden_id: string; motivo: string; autorizado_por?: string | null } | null =
       null
     if (tipo === 'comanda_no_pagada') {
-      const cnp = body.comanda_no_pagada || {}
-      const motivo = String(cnp.motivo || '')
-      if (!MOTIVOS_CNP.has(motivo)) {
-        return Response.json({ error: 'Motivo inválido' }, { status: 400 })
+      const cnp = body.comanda_no_pagada
+      if (!cnp) {
+        return Response.json({ error: 'comanda_no_pagada requerido', codigo: 'DATOS_INVALIDOS' }, { status: 400 })
       }
-      if (!cnp.orden_id) {
-        return Response.json({ error: 'orden_id requerido' }, { status: 400 })
-      }
+      const motivo: string = cnp.motivo
       // La cortesía exige la autorización firmada del admin (verificar-pin).
       // Si quien registra ya es admin, se autoriza a sí mismo.
       let autorizadoPor: string | null = null
@@ -95,7 +89,7 @@ export async function POST(request: Request) {
         return Response.json({ error: 'La cortesía requiere autorización del administrador' }, { status: 403 })
       }
       comandaNoPagada = {
-        orden_id: String(cnp.orden_id),
+        orden_id: cnp.orden_id,
         motivo,
         autorizado_por: autorizadoPor,
       }
@@ -103,9 +97,9 @@ export async function POST(request: Request) {
 
     const merma = await db.crearMerma({
       tipo,
-      producto_id: body.producto_id ? String(body.producto_id) : null,
+      producto_id: body.producto_id ? body.producto_id : null,
       cantidad,
-      descripcion: body.descripcion ? String(body.descripcion) : null,
+      descripcion: body.descripcion ? body.descripcion : null,
       registrado_por: registradoPor,
       comanda_no_pagada: comandaNoPagada,
     })

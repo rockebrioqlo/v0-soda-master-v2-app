@@ -1,5 +1,7 @@
 import { db } from '@/lib/db'
 import { requireSesion } from '@/lib/sesion'
+import { CajaMovimientoSchema } from '@/lib/caja-http'
+import { leerBody } from '@/lib/validacion-http'
 
 // POST /api/caja/movimiento — registra un retiro, depósito o ajuste
 // manual en la caja abierta. Los movimientos automáticos de venta y
@@ -11,22 +13,12 @@ export async function POST(request: Request) {
   try {
     const s = await requireSesion(request, ['admin', 'cajero'])
     if (!s.ok) return s.respuesta
-    const body = await request.json()
-    const tiposPermitidos = new Set(['retiro', 'deposito', 'ajuste'])
-    if (!tiposPermitidos.has(body?.tipo)) {
-      return Response.json(
-        { error: 'tipo debe ser retiro, deposito o ajuste' },
-        { status: 400 },
-      )
-    }
-    const monto = Number(body.monto)
-    if (!Number.isFinite(monto) || monto <= 0) {
-      return Response.json({ error: 'monto debe ser > 0' }, { status: 400 })
-    }
+    const parsed = await leerBody(request, CajaMovimientoSchema, 'Datos del movimiento')
+    if (!parsed.ok) return parsed.respuesta
     const mov = await db.registrarMovimientoCaja({
-      tipo: body.tipo,
-      monto,
-      descripcion: body.descripcion ?? null,
+      tipo: parsed.datos.tipo,
+      monto: parsed.datos.monto,
+      descripcion: parsed.datos.descripcion || null,
       usuario_id: s.usuario.id,
       usuario_nombre: s.usuario.nombre,
     })

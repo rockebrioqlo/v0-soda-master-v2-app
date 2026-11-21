@@ -1,8 +1,7 @@
 import { db } from '@/lib/db'
 import { requireSesion } from '@/lib/sesion'
-import { IdRutaSchema, leerParamsRuta } from '@/lib/validacion-http'
-
-const CONSECUENCIAS = new Set<string>(['descuento_liquidacion', 'solo_registro', 'amonestacion'])
+import { IdRutaSchema, leerBody, leerParamsRuta } from '@/lib/validacion-http'
+import { MermaPatchSchema } from '@/lib/mermas-http'
 
 export async function PATCH(
   request: Request,
@@ -15,28 +14,12 @@ export async function PATCH(
     const p = await leerParamsRuta(params, IdRutaSchema)
     if (!p.ok) return p.respuesta
     const id = p.datos.id
-    const body = await request.json()
-
+    const parsed = await leerBody(request, MermaPatchSchema, 'Datos de la merma')
+    if (!parsed.ok) return parsed.respuesta
     const updates: { responsable_id?: string | null; consecuencia?: string | null; monto_descuento?: number } = {}
-    if (body.responsable_id !== undefined) {
-      updates.responsable_id = body.responsable_id ? String(body.responsable_id) : null
-    }
-    if (body.consecuencia !== undefined) {
-      if (body.consecuencia && !CONSECUENCIAS.has(String(body.consecuencia))) {
-        return Response.json({ error: 'Consecuencia inválida' }, { status: 400 })
-      }
-      updates.consecuencia = body.consecuencia ? String(body.consecuencia) : null
-    }
-    if (body.monto_descuento !== undefined) {
-      const n = Number(body.monto_descuento)
-      if (!Number.isFinite(n) || n < 0) {
-        return Response.json({ error: 'monto_descuento inválido' }, { status: 400 })
-      }
-      updates.monto_descuento = n
-    }
-    if (Object.keys(updates).length === 0) {
-      return Response.json({ error: 'Sin campos a actualizar' }, { status: 400 })
-    }
+    if (parsed.datos.responsable_id !== undefined) updates.responsable_id = parsed.datos.responsable_id
+    if (parsed.datos.consecuencia !== undefined) updates.consecuencia = parsed.datos.consecuencia
+    if (parsed.datos.monto_descuento !== undefined) updates.monto_descuento = parsed.datos.monto_descuento
 
     const merma = await db.actualizarMerma(id, updates)
     if (!merma) {

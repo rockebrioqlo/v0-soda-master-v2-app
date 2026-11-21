@@ -367,6 +367,159 @@ exports.correr = async function (ctx) {
     const ad = await api(admin, 'GET', ruta)
     check(`GET ${ruta.replace(UUID_FALSO, '[id]')}: sin sesión 401, mesero/cajero/cocina/bar 403, admin ${ruta.includes(UUID_FALSO) ? '404' : '200'}`, sa.status === 401 && rs.every((r) => r.status === 403) && ad.status === (ruta.includes(UUID_FALSO) ? 404 : 200), [sa.status, rs.map((r) => r.status), ad.status])
   }
+
+  await correrF45(ctx)
+}
+
+/** F45 (sesión 14.5b-2): zod `.strict()` en caja, mermas, inventario y las bajas de productos e insumos. */
+async function correrF45(ctx) {
+  const { admin, mesero, cajero, cocina, marca } = ctx
+  const noCrudo = (r) => r.status === 400 && r.json && r.json.codigo === 'DATOS_INVALIDOS'
+  const sinSes = async (m, ruta, body) => (await api(null, m, ruta, body)).status
+  console.log('\n[rutas] F45: caja, mermas, inventario y bajas con zod .strict() y sin campos heredados')
+
+  // ── Caja ──
+  if (ctx.cajaAjena) {
+    console.log('  (hay una caja abierta ajena a la prueba: se omite abrir/mover/cerrar; solo se prueban los rechazos)')
+  } else {
+    const ab = await api(cajero, 'POST', '/api/caja', { fondo_inicial: 5000, notas: ctx.marca })
+    check('caja: abrir con el payload de la pantalla (fondo_inicial y notas) → 201', ab.status === 201, [ab.status, ab.json])
+    if (ab.status === 201) {
+      const mv = await api(cajero, 'POST', '/api/caja/movimiento', { tipo: 'retiro', monto: 1000, descripcion: marca })
+      check('caja: movimiento con el payload de la pantalla (tipo, monto, descripcion) → 201', mv.status === 201, [mv.status, mv.json])
+      const cierraMal = await Promise.all([
+        { caja_id: ab.json.id, efectivo_contado: 4000, usuario_id: UUID_FALSO },
+        { caja_id: ab.json.id, efectivo_contado: 4000, usuario_nombre: 'x' },
+        { caja_id: 'no-uuid', efectivo_contado: 4000 },
+        { caja_id: ab.json.id, efectivo_contado: -1 },
+        { caja_id: ab.json.id, efectivo_contado: 4000.5 },
+        { caja_id: ab.json.id },
+      ].map((b) => api(cajero, 'POST', '/api/caja/cerrar', b)))
+      check('caja/cerrar: campos heredados, caja_id que no es uuid, monto negativo, decimal o ausente → 400 DATOS_INVALIDOS', cierraMal.every(noCrudo), cierraMal.map((r) => r.status))
+      const ci = await api(cajero, 'POST', '/api/caja/cerrar', { caja_id: ab.json.id, efectivo_contado: 4000, notas: marca })
+      check('caja: cerrar con el payload de la pantalla y el efectivo exacto → 200 y diferencia 0', ci.status === 200 && Number(ci.json.diferencia) === 0, [ci.status, ci.json])
+    }
+  }
+  const malCaja = await Promise.all([
+    api(cajero, 'POST', '/api/caja', { fondo_inicial: 1, usuario_id: UUID_FALSO }),
+    api(cajero, 'POST', '/api/caja', { fondo_inicial: 1, usuario_nombre: 'x' }),
+    api(cajero, 'POST', '/api/caja', { fondo_inicial: -5 }),
+    api(cajero, 'POST', '/api/caja', { fondo_inicial: 1.5 }),
+    api(cajero, 'POST', '/api/caja', { fondo_inicial: 'mucho' }),
+    api(cajero, 'POST', '/api/caja', {}),
+    api(cajero, 'POST', '/api/caja/movimiento', { tipo: 'retiro', monto: 1, usuario_id: UUID_FALSO }),
+    api(cajero, 'POST', '/api/caja/movimiento', { tipo: 'regalo', monto: 1 }),
+    api(cajero, 'POST', '/api/caja/movimiento', { tipo: 'retiro', monto: 0 }),
+    api(cajero, 'POST', '/api/caja/movimiento', { tipo: 'retiro', monto: 1, usuario_nombre: 'x' }),
+    api(cajero, 'POST', '/api/caja/movimiento', {}),
+  ])
+  check('caja y caja/movimiento: campo heredado, fondo negativo, decimal o texto, tipo inventado y monto 0 → 400 DATOS_INVALIDOS', malCaja.every(noCrudo), malCaja.map((r) => r.status))
+  const basura = await Promise.all(['/api/caja', '/api/caja/movimiento', '/api/caja/cerrar'].map((r) => fetch(L.BASE + r, { method: 'POST', headers: { 'Content-Type': 'application/json', cookie: cajero.cookie }, body: 'esto no es json' })))
+  check('caja (3 rutas): un cuerpo que no es JSON → 400 (antes 500)', basura.every((r) => r.status === 400), basura.map((r) => r.status))
+  check('caja (3 rutas): sin sesión 401; mesero, cocina → 403', (await Promise.all(['/api/caja', '/api/caja/movimiento', '/api/caja/cerrar'].map((r) => sinSes('POST', r, {})))).every((s) => s === 401) && (await Promise.all([mesero, cocina].flatMap((s) => ['/api/caja', '/api/caja/movimiento', '/api/caja/cerrar'].map((r) => api(s, 'POST', r, {}))))).every((r) => r.status === 403))
+
+  // ── Mermas ──
+  const f = ctx.f
+  const m = await api(mesero, 'POST', '/api/mermas', { tipo: 'accidente', cantidad: 1, descripcion: marca, producto_id: f.pP })
+  check('mermas: registrar con el payload de la pantalla (tipo, cantidad, descripcion, producto_id) → 201', m.status === 201, [m.status, m.json])
+  const malMerma = await Promise.all([
+    { tipo: 'accidente', cantidad: 1, producto_id: f.pP, registrado_por: UUID_FALSO },
+    { tipo: 'inventada', cantidad: 1, producto_id: f.pP },
+    { tipo: 'accidente', cantidad: 0, producto_id: f.pP },
+    { tipo: 'accidente', cantidad: 'dos', producto_id: f.pP },
+    { tipo: 'accidente', cantidad: 1, producto_id: 'no-uuid' },
+    { tipo: 'comanda_no_pagada', cantidad: 1 },
+    { tipo: 'comanda_no_pagada', cantidad: 1, comanda_no_pagada: { orden_id: UUID_FALSO, motivo: 'inventado' } },
+    { tipo: 'comanda_no_pagada', cantidad: 1, comanda_no_pagada: { orden_id: UUID_FALSO, motivo: 'error_mesero', otro: 1 } },
+    {},
+  ].map((b) => api(mesero, 'POST', '/api/mermas', b)))
+  check('mermas: campo heredado, tipo inventado, cantidad 0 o texto, producto_id no uuid, comanda sin datos o con campo extra → 400 DATOS_INVALIDOS', malMerma.every(noCrudo), malMerma.map((r) => r.status))
+  const merBasura = await fetch(L.BASE + '/api/mermas', { method: 'POST', headers: { 'Content-Type': 'application/json', cookie: mesero.cookie }, body: '[1' })
+  check('mermas: un cuerpo que no es JSON → 400', merBasura.status === 400, merBasura.status)
+  check('mermas: sin sesión 401 y cajero 403', (await sinSes('POST', '/api/mermas', {})) === 401 && (await api(cajero, 'POST', '/api/mermas', {})).status === 403)
+  if (m.status === 201) {
+    const mp = await api(admin, 'PATCH', '/api/mermas/' + m.json.id, { responsable_id: mesero.id, consecuencia: 'solo_registro', monto_descuento: 0 })
+    check('mermas: asignar responsable con el payload de la pantalla (responsable_id, consecuencia, monto_descuento) → 200', mp.status === 200, [mp.status, mp.json])
+    const malPatch = await Promise.all([
+      { responsable_id: mesero.id, usuario_id: admin.id },
+      { consecuencia: 'castigo' },
+      { responsable_id: 'no-uuid' },
+      { monto_descuento: -1 },
+      { monto_descuento: 'mucho' },
+      {},
+    ].map((b) => api(admin, 'PATCH', '/api/mermas/' + m.json.id, b)))
+    check('mermas/[id]: campo heredado (usuario_id), consecuencia inventada, uuid malo, monto negativo o texto y cuerpo vacío → 400 DATOS_INVALIDOS', malPatch.every(noCrudo), malPatch.map((r) => r.status))
+    const pb = await fetch(L.BASE + '/api/mermas/' + m.json.id, { method: 'PATCH', headers: { 'Content-Type': 'application/json', cookie: admin.cookie }, body: 'x' })
+    check('mermas/[id]: cuerpo que no es JSON → 400', pb.status === 400, pb.status)
+    check('mermas/[id]: sin sesión 401 (antes de leer el cuerpo); mesero, cajero, cocina 403', (await sinSes('PATCH', '/api/mermas/' + m.json.id, {})) === 401 && (await Promise.all([mesero, cajero, cocina].map((s) => api(s, 'PATCH', '/api/mermas/' + m.json.id, { consecuencia: 'solo_registro' })))).every((r) => r.status === 403))
+  }
+
+  // ── Inventario (stock de productos vendibles) ──
+  const inv = await api(admin, 'PATCH', '/api/inventario', { producto_id: f.pP, stock_actual: 6, stock_minimo: 2, unidad_medida: 'unidad' })
+  check('inventario: editar con el payload de la pantalla (producto_id, stock_actual, stock_minimo, unidad_medida) → 200', inv.status === 200 && Number(inv.json.stock_actual) === 6, [inv.status, inv.json])
+  const malInv = await Promise.all([
+    { producto_id: f.pP, stock_actual: 1, cantidad: 1 },
+    { producto_id: f.pP, stock_actual: -1 },
+    { producto_id: f.pP, stock_actual: 1.5 },
+    { producto_id: f.pP, stock_actual: 'diez' },
+    { producto_id: f.pP, unidad_medida: '' },
+    { producto_id: 'no-uuid', stock_actual: 1 },
+    { stock_actual: 1 },
+    {},
+  ].map((b) => api(admin, 'PATCH', '/api/inventario', b)))
+  check('inventario: campo extra, stock negativo, decimal o texto, unidad vacía, producto_id malo o ausente → 400 DATOS_INVALIDOS', malInv.every(noCrudo), malInv.map((r) => r.status))
+  const inv404 = await api(admin, 'PATCH', '/api/inventario', { producto_id: UUID_FALSO, stock_actual: 1 })
+  check('inventario: un producto sin fila de inventario → 404 INVENTARIO_NO_ENCONTRADO (antes se rompía)', inv404.status === 404 && inv404.json.codigo === 'INVENTARIO_NO_ENCONTRADO', [inv404.status, inv404.json])
+  const invId = await api(admin, 'PATCH', '/api/inventario/' + f.pP, { stock_minimo: 2 })
+  check('inventario/[id]: editar solo el mínimo → 200', invId.status === 200, [invId.status, invId.json])
+  const malInvId = await Promise.all([{ cantidad: 5 }, { stock_actual: 1, producto_id: f.pP }, { stock_actual: -1 }, {}].map((b) => api(admin, 'PATCH', '/api/inventario/' + f.pP, b)))
+  check('inventario/[id]: el alias cantidad, producto_id en el cuerpo, stock negativo y cuerpo vacío → 400 DATOS_INVALIDOS', malInvId.every(noCrudo), malInvId.map((r) => r.status))
+  check('inventario/[id]: producto sin fila → 404', (await api(admin, 'PATCH', '/api/inventario/' + UUID_FALSO, { stock_minimo: 1 })).status === 404)
+  const invBasura = await fetch(L.BASE + '/api/inventario', { method: 'PATCH', headers: { 'Content-Type': 'application/json', cookie: admin.cookie }, body: '{"producto_id"' })
+  check('inventario: un cuerpo que no es JSON → 400 (antes 500)', invBasura.status === 400, invBasura.status)
+  check('inventario (2 rutas): sin sesión 401; mesero, cajero, cocina 403', (await sinSes('PATCH', '/api/inventario', {})) === 401 && (await Promise.all([mesero, cajero, cocina].flatMap((s) => [api(s, 'PATCH', '/api/inventario', {}), api(s, 'PATCH', '/api/inventario/' + f.pP, {})]))).every((r) => r.status === 403))
+  await api(admin, 'PATCH', '/api/inventario', { producto_id: f.pP, stock_actual: 6 })
+
+  // ── Bajas con motivo (DELETE de productos e insumos) ──
+  const lista = await api(admin, 'GET', '/api/productos')
+  const categoria = (lista.json.find((p) => p.categoria) || {}).categoria
+  const nuevoProd = async (n) => {
+    const r = await api(admin, 'POST', '/api/productos', { nombre: `${marca} ${n}`, categoria, precio: 1000, descripcion: marca })
+    if (r.status === 200) ctx.limpiezaProd.push(r.json.id)
+    return r
+  }
+  const nuevoIng = async (n) => {
+    const r = await api(admin, 'POST', '/api/ingredientes', { nombre: `${marca} ${n}`, stock_actual: 4, unidad_medida: 'unidad', costo_unitario: 100 })
+    if (r.status === 201) ctx.limpiezaIng.push(r.json.id)
+    return r
+  }
+  const prodD = await nuevoProd('baja p')
+  const ingD = await nuevoIng('baja i')
+  for (const [tipo, ruta, ent] of [['producto', '/api/productos/', prodD], ['insumo', '/api/ingredientes/', ingD]]) {
+    if (!ent.json || !ent.json.id) { check(`bajas: se creó el ${tipo} de prueba`, false, ent.status); continue }
+    const u = ruta + ent.json.id
+    const mal = await Promise.all([
+      { motivo: 'correccion_admin', registrado_por: UUID_FALSO },
+      { motivo: 'merma', motivo_merma: 'inventado' },
+      { motivo: 'regalo' },
+      { motivo: 'merma', motivo_merma: 'accidente', cantidad: -1 },
+      { motivo: 'merma', motivo_merma: 'accidente', cantidad: 'todo' },
+      { motivo: 'correccion_admin', descripcion: 'x'.repeat(501) },
+      {},
+    ].map((b) => api(admin, 'DELETE', u, b)))
+    check(`bajas (${tipo}): campo heredado registrado_por, tipo de merma inventado, motivo inválido, cantidad mala, descripción larga o cuerpo vacío → 400 DATOS_INVALIDOS`, mal.every(noCrudo), mal.map((r) => r.status))
+    const bas = await fetch(L.BASE + u, { method: 'DELETE', headers: { 'Content-Type': 'application/json', cookie: admin.cookie }, body: 'no json' })
+    check(`bajas (${tipo}): un cuerpo que no es JSON → 400`, bas.status === 400, bas.status)
+    check(`bajas (${tipo}): sin sesión 401 (antes de leer el cuerpo) y mesero, cajero, cocina 403`, (await sinSes('DELETE', u, {})) === 401 && (await Promise.all([mesero, cajero, cocina].map((s) => api(s, 'DELETE', u, { motivo: 'correccion_admin' })))).every((r) => r.status === 403))
+  }
+  if (prodD.json && prodD.json.id) {
+    const ok = await api(admin, 'DELETE', '/api/productos/' + prodD.json.id, { motivo: 'correccion_admin', descripcion: marca })
+    check('bajas (producto): corrección administrativa con el payload de la pantalla → 200', ok.status === 200, [ok.status, ok.json])
+  }
+  if (ingD.json && ingD.json.id) {
+    const ok = await api(admin, 'DELETE', '/api/ingredientes/' + ingD.json.id, { motivo: 'merma', motivo_merma: 'accidente', descripcion: marca, cantidad: 4 })
+    check('bajas (insumo): merma con el payload de la pantalla (motivo, motivo_merma, descripcion, cantidad) → 200', ok.status === 200, [ok.status, ok.json])
+  }
 }
 
 if (require.main === module) {

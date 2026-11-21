@@ -1,6 +1,7 @@
 import { db } from '@/lib/db'
 import { requireAcceso } from '@/lib/sesion'
-import { IdRutaSchema, leerParamsRuta } from '@/lib/validacion-http'
+import { IdRutaSchema, leerBody, leerParamsRuta } from '@/lib/validacion-http'
+import { InventarioPatchPorIdSchema } from '@/lib/mermas-http'
 
 export async function PATCH(
   request: Request,
@@ -12,16 +13,14 @@ export async function PATCH(
     const p = await leerParamsRuta(params, IdRutaSchema)
     if (!p.ok) return p.respuesta
     const id = p.datos.id
-    const { cantidad, stock_actual, stock_minimo, unidad_medida } = await request.json()
-    const unidad = typeof unidad_medida === 'string' ? unidad_medida.trim() : undefined
-    if (unidad_medida !== undefined && !unidad) {
-      return Response.json({ error: 'unidad_medida requerida' }, { status: 400 })
+    // F45 (14.5b-2): zod `.strict()`; el alias `cantidad` que nadie usaba ya no se acepta. La lógica
+    // (fijar `stock_actual` directo) no cambia.
+    const parsed = await leerBody(request, InventarioPatchPorIdSchema, 'Datos del inventario')
+    if (!parsed.ok) return parsed.respuesta
+    const inventario = await db.actualizarInventario(id, parsed.datos)
+    if (!inventario) {
+      return Response.json({ error: 'Producto sin registro de inventario', codigo: 'INVENTARIO_NO_ENCONTRADO' }, { status: 404 })
     }
-    const inventario = await db.actualizarInventario(id, {
-      stock_actual: stock_actual ?? cantidad,
-      stock_minimo,
-      unidad_medida: unidad,
-    })
     return Response.json(inventario)
   } catch (error) {
     console.error('Update inventario error:', error)
