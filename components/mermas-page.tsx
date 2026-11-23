@@ -379,9 +379,9 @@ export function MermasPage() {
         <CardContent className="space-y-4">
           <div className="grid gap-4 md:grid-cols-2">
             <div className="space-y-2">
-              <Label>Tipo</Label>
+              <Label htmlFor="mermas-tipo">Tipo</Label>
               <Select value={tipo} onValueChange={(v) => { setTipo(v as TipoMerma); setAutorizadoPor(null); setAutorizacionToken(null) }}>
-                <SelectTrigger>
+                <SelectTrigger id="mermas-tipo">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -400,8 +400,8 @@ export function MermasPage() {
             </div>
 
             <div className="space-y-2">
-              <Label>Cantidad</Label>
-              <Input
+              <Label htmlFor="mermas-cantidad">Cantidad</Label>
+              <Input id="mermas-cantidad"
                 type="number"
                 min="0.01"
                 step="0.01"
@@ -412,9 +412,9 @@ export function MermasPage() {
 
             {tipo !== 'comanda_no_pagada' && (
               <div className="space-y-2 md:col-span-2">
-                <Label>Producto afectado</Label>
+                <Label htmlFor="mermas-producto-afectado">Producto afectado</Label>
                 <Select value={productoId} onValueChange={setProductoId}>
-                  <SelectTrigger>
+                  <SelectTrigger id="mermas-producto-afectado">
                     <SelectValue placeholder="Selecciona un producto" />
                   </SelectTrigger>
                   <SelectContent>
@@ -431,9 +431,9 @@ export function MermasPage() {
             {tipo === 'comanda_no_pagada' && (
               <>
                 <div className="space-y-2">
-                  <Label>Orden</Label>
+                  <Label htmlFor="mermas-orden">Orden</Label>
                   <Select value={ordenId} onValueChange={setOrdenId}>
-                    <SelectTrigger>
+                    <SelectTrigger id="mermas-orden">
                       <SelectValue placeholder="Selecciona una orden" />
                     </SelectTrigger>
                     <SelectContent>
@@ -452,7 +452,7 @@ export function MermasPage() {
                   </Select>
                 </div>
                 <div className="space-y-2">
-                  <Label>Motivo</Label>
+                  <Label htmlFor="mermas-motivo">Motivo</Label>
                   <Select
                     value={motivoCnp}
                     onValueChange={(v) => {
@@ -460,7 +460,7 @@ export function MermasPage() {
                       setAutorizadoPor(null); setAutorizacionToken(null)
                     }}
                   >
-                    <SelectTrigger>
+                    <SelectTrigger id="mermas-motivo">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -484,8 +484,8 @@ export function MermasPage() {
             )}
 
             <div className="space-y-2 md:col-span-2">
-              <Label>Descripción (opcional)</Label>
-              <Textarea
+              <Label htmlFor="mermas-descripcion-opcional">Descripción (opcional)</Label>
+              <Textarea id="mermas-descripcion-opcional"
                 value={descripcion}
                 onChange={(e) => setDescripcion(e.target.value)}
                 rows={2}
@@ -517,9 +517,9 @@ export function MermasPage() {
           <CardTitle>Historial de mermas</CardTitle>
           <div className="flex flex-wrap gap-3">
             <div className="space-y-1">
-              <Label className="text-xs">Tipo</Label>
+              <Label htmlFor="mermas-tipo-2" className="text-xs">Tipo</Label>
               <Select value={filtroTipo} onValueChange={setFiltroTipo}>
-                <SelectTrigger className="w-[220px]">
+                <SelectTrigger id="mermas-tipo-2" className="w-[220px]">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -533,8 +533,8 @@ export function MermasPage() {
               </Select>
             </div>
             <div className="space-y-1">
-              <Label className="text-xs">Desde</Label>
-              <Input
+              <Label htmlFor="mermas-desde" className="text-xs">Desde</Label>
+              <Input id="mermas-desde"
                 type="date"
                 value={filtroDesde}
                 onChange={(e) => setFiltroDesde(e.target.value)}
@@ -543,8 +543,8 @@ export function MermasPage() {
               />
             </div>
             <div className="space-y-1">
-              <Label className="text-xs">Hasta</Label>
-              <Input
+              <Label htmlFor="mermas-hasta" className="text-xs">Hasta</Label>
+              <Input id="mermas-hasta"
                 type="date"
                 value={filtroHasta}
                 onChange={(e) => setFiltroHasta(e.target.value)}
@@ -627,7 +627,7 @@ export function MermasPage() {
                         {m.responsable_nombre ? (
                           <span className="text-foreground">{m.responsable_nombre}</span>
                         ) : (
-                          <Badge className="bg-orange-500 text-white">Sin asignar</Badge>
+                          <Badge className="bg-orange-500 text-zinc-950">Sin asignar</Badge>
                         )}
                       </TableCell>
                       <TableCell className="text-sm">
@@ -670,7 +670,7 @@ export function MermasPage() {
             <p className="text-sm text-muted-foreground">
               Ingresa el PIN del administrador para autorizar la cortesía.
             </p>
-            <Input
+            <Input aria-label="PIN admin"
               type="password"
               inputMode="numeric"
               value={authPin}
@@ -706,9 +706,9 @@ export function MermasPage() {
               </p>
             )}
             <div className="space-y-2">
-              <Label>Responsable</Label>
+              <Label htmlFor="mermas-responsable">Responsable</Label>
               <Select value={assignResponsable} onValueChange={setAssignResponsable}>
-                <SelectTrigger>
+                <SelectTrigger id="mermas-responsable">
                   <SelectValue placeholder="Selecciona un usuario" />
                 </SelectTrigger>
                 <SelectContent>
@@ -721,9 +721,9 @@ export function MermasPage() {
               </Select>
             </div>
             <div className="space-y-2">
-              <Label>Consecuencia</Label>
+              <Label htmlFor="mermas-consecuencia">Consecuencia</Label>
               <Select value={assignConsecuencia} onValueChange={setAssignConsecuencia}>
-                <SelectTrigger>
+                <SelectTrigger id="mermas-consecuencia">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -737,8 +737,8 @@ export function MermasPage() {
             </div>
             {assignConsecuencia === 'descuento_liquidacion' && (
               <div className="space-y-2">
-                <Label>Monto del descuento ($)</Label>
-                <Input
+                <Label htmlFor="mermas-monto-del-descuento">Monto del descuento ($)</Label>
+                <Input id="mermas-monto-del-descuento"
                   type="number"
                   min="0"
                   step="100"

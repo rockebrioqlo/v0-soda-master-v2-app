@@ -262,7 +262,7 @@ export function RecetaEditorDialog({
               )
             }
           >
-            <SelectTrigger className="flex-1">
+            <SelectTrigger aria-label="Insumo" className="flex-1">
               <SelectValue placeholder="Insumo" />
             </SelectTrigger>
             <SelectContent>
@@ -285,7 +285,7 @@ export function RecetaEditorDialog({
         </div>
         <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
           <div>
-            <Label className="text-xs">
+            <Label htmlFor="receta-cantidad-por-unidad" className="text-xs">
               Cantidad por unidad{unidad ? ` (${unidad})` : ''}
             </Label>
             <div className="flex items-center gap-1">
@@ -311,7 +311,7 @@ export function RecetaEditorDialog({
               >
                 −
               </Button>
-              <Input
+              <Input id="receta-cantidad-por-unidad"
                 type="number"
                 inputMode="decimal"
                 min={0}
@@ -355,8 +355,8 @@ export function RecetaEditorDialog({
             )}
           </div>
           <div>
-            <Label className="text-xs">Nombre visible en POS (opcional)</Label>
-            <Input
+            <Label htmlFor="receta-nombre-visible-en-pos" className="text-xs">Nombre visible en POS (opcional)</Label>
+            <Input id="receta-nombre-visible-en-pos"
               value={linea.nombre_display}
               placeholder={ing?.nombre || 'Como se llama en el ticket'}
               onChange={(e) =>
@@ -371,8 +371,8 @@ export function RecetaEditorDialog({
         </div>
         {linea.extra && (
           <div className="mt-2">
-            <Label className="text-xs">Costo adicional para el cliente</Label>
-            <Input
+            <Label htmlFor="receta-costo-adicional-para-el" className="text-xs">Costo adicional para el cliente</Label>
+            <Input id="receta-costo-adicional-para-el"
               type="number"
               inputMode="numeric"
               min={0}
@@ -406,7 +406,7 @@ export function RecetaEditorDialog({
                 className={
                   actual === c
                     ? c === 'base'
-                      ? 'h-7 bg-emerald-600 text-white hover:bg-emerald-500'
+                      ? 'h-7 bg-emerald-700 text-white hover:bg-emerald-800'
                       : c === 'opcional'
                         ? 'h-7 bg-sky-600 text-white hover:bg-sky-500'
                         : 'h-7 bg-amber-500 text-zinc-900 hover:bg-amber-400'
@@ -453,14 +453,14 @@ export function RecetaEditorDialog({
             </DialogTitle>
             <p className="text-xs text-muted-foreground">
               Define qué insumos lleva este producto, en qué cantidad, y si son
-              <span className="mx-1 inline-flex items-center gap-1 rounded bg-emerald-500/15 px-1 text-emerald-600">
+              <span className="mx-1 inline-flex items-center gap-1 rounded bg-emerald-500/15 px-1 text-emerald-400">
                 base
               </span>
-              <span className="mx-1 inline-flex items-center gap-1 rounded bg-sky-500/15 px-1 text-sky-600">
+              <span className="mx-1 inline-flex items-center gap-1 rounded bg-sky-500/15 px-1 text-sky-400">
                 opcionales
               </span>
               o
-              <span className="ml-1 inline-flex items-center gap-1 rounded bg-amber-500/15 px-1 text-amber-700">
+              <span className="ml-1 inline-flex items-center gap-1 rounded bg-amber-500/15 px-1 text-amber-400">
                 extras pagados
               </span>
               .
@@ -472,9 +472,9 @@ export function RecetaEditorDialog({
           ) : (
             <div className="space-y-4">
               <div className="space-y-2 rounded-lg border border-border bg-muted/30 p-3">
-                <Label>Modo de descuento de stock</Label>
+                <Label htmlFor="receta-modo-de-descuento-de">Modo de descuento de stock</Label>
                 <Select value={modoStock} onValueChange={(v) => setModoStock(v as ModoStock)}>
-                  <SelectTrigger>
+                  <SelectTrigger id="receta-modo-de-descuento-de">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -585,16 +585,16 @@ export function RecetaEditorDialog({
           </DialogHeader>
           <div className="space-y-3">
             <div>
-              <Label className="text-sm">Nombre de la variante</Label>
-              <Input
+              <Label htmlFor="receta-nombre-de-la-variante" className="text-sm">Nombre de la variante</Label>
+              <Input id="receta-nombre-de-la-variante"
                 value={varianteNombre}
                 onChange={(e) => setVarianteNombre(e.target.value)}
                 placeholder={`${productoNombre} Doble`}
               />
             </div>
             <div>
-              <Label className="text-sm">Precio (opcional)</Label>
-              <Input
+              <Label htmlFor="receta-precio-opcional" className="text-sm">Precio (opcional)</Label>
+              <Input id="receta-precio-opcional"
                 inputMode="numeric"
                 value={
                   variantePrecio

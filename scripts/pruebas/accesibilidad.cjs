@@ -124,6 +124,181 @@ exports.correr = async function correr() {
   check('kds-page.tsx: región aria-live para comandas nuevas', /aria-live="polite"/.test(kds))
   const pulsos = kds.split('\n').filter((l) => /animate-pulse/.test(l))
   check('kds-page.tsx: cada animate-pulse lleva motion-reduce:animate-none', pulsos.length > 0 && pulsos.every((l) => /motion-reduce:animate-none/.test(l)), pulsos.filter((l) => !/motion-reduce:animate-none/.test(l)).length)
+
+  // ───────────────────────── Sesión 21b ─────────────────────────
+  const fuentes = archivosTsx()
+
+  console.log('\n[accesibilidad] 9 (21b, #4): ningún <label> sin asociar ni control sin nombre')
+  const labelsMalos = []
+  const controlesMalos = []
+  for (const [rel, src] of fuentes) {
+    if (rel.startsWith('components/ui/')) continue
+    labelsMalos.push(...labelsSinAsociar(src).map((l) => `${rel}:${l}`))
+    controlesMalos.push(...controlesSinNombre(src).map((l) => `${rel}:${l}`))
+  }
+  check('ningún <label>/<Label> sin htmlFor ni control dentro (fuera de components/ui)', labelsMalos.length === 0, `${labelsMalos.length}: ${labelsMalos.slice(0, 8).join(' | ')}`)
+  check('todo Input/Textarea/Select/Switch/Checkbox tiene nombre (aria-label, htmlFor→id o dentro de un label)', controlesMalos.length === 0, `${controlesMalos.length}: ${controlesMalos.slice(0, 8).join(' | ')}`)
+  const sinPorArchivo = {}
+  for (const l of labelsMalos) sinPorArchivo[l.split(':')[0]] = (sinPorArchivo[l.split(':')[0]] || 0) + 1
+  for (const f of ['login-form.tsx', 'pagos-page.tsx', 'caja-page.tsx', 'pos-page.tsx', 'mermas-page.tsx', 'inventario-page.tsx', 'usuarios-page.tsx', 'mesas-page.tsx']) {
+    check(`${f}: 0 etiquetas sin asociar`, !sinPorArchivo[`components/${f}`], sinPorArchivo[`components/${f}`])
+  }
+
+  console.log('\n[accesibilidad] 10 (21b, #5): ningún botón de solo ícono sin nombre')
+  const botonesMalos = []
+  for (const [rel, src] of fuentes) {
+    if (rel.startsWith('components/ui/')) continue
+    botonesMalos.push(...botonesSinNombre(src).map((l) => `${rel}:${l}`))
+  }
+  check('ningún <Button>/<button> con solo ícono sin aria-label, title ni sr-only', botonesMalos.length === 0, `${botonesMalos.length}: ${botonesMalos.slice(0, 8).join(' | ')}`)
+  check('login-form.tsx: "C" y borrar tienen aria-label', /aria-label="Borrar todo"/.test(login) && /aria-label="Borrar el último dígito"/.test(login))
+  check('main-layout.tsx: "Salir" de la cabecera de cocina tiene aria-label', (layoutApp.match(/aria-label="Salir"/g) || []).length >= 2)
+
+  console.log('\n[accesibilidad] 11 (21b, #8): estructura de la app')
+  const appPage = leer('app', 'page.tsx')
+  check('app/page.tsx: document.title cambia con la pantalla (efecto sobre currentPage)', /document\.title\s*=/.test(appPage) && /TITULOS_PANTALLA/.test(appPage))
+  const titulos = /TITULOS_PANTALLA[^=]*=\s*\{([\s\S]*?)\n\}/.exec(appPage)
+  const paginas = ['dashboard', 'mesas', 'pos', 'kds', 'inventario', 'finanzas', 'usuarios', 'pagos', 'caja', 'mermas', 'reportes', 'configuracion']
+  check('app/page.tsx: hay un título para cada una de las 12 pantallas', !!titulos && paginas.every((p) => new RegExp(`\\b${p}\\s*:`).test(titulos[1])))
+  const navsSinNombre = []
+  for (const [rel, src] of fuentes) {
+    for (const m of src.matchAll(/<nav\b[^>]*>/g)) if (!/aria-label=/.test(m[0])) navsSinNombre.push(`${rel}:${src.slice(0, m.index).split('\n').length}`)
+  }
+  check('todo <nav> lleva aria-label', navsSinNombre.length === 0, navsSinNombre)
+  check('main-layout.tsx: enlace "Saltar al contenido" hacia un <main id="contenido" tabIndex={-1}>', /Saltar al contenido/.test(layoutApp) && /href="#contenido"/.test(layoutApp) && /<main[^>]*id="contenido"[^>]*tabIndex=\{-1\}|<main[^>]*tabIndex=\{-1\}[^>]*id="contenido"/.test(layoutApp))
+  check('main-layout.tsx: el foco pasa al contenido al cambiar de pantalla', /enfocarContenido\(\)/.test(layoutApp) && /currentPage/.test(layoutApp))
+  check('bottom-nav.tsx y main-layout.tsx: tras elegir un destino en el cajón el foco va al contenido (no a "Más"/hamburguesa)', /enfocarContenido/.test(bottom) && (layoutApp.match(/enfocarContenido/g) || []).length >= 2)
+  check('lib/enfocar-contenido.ts existe y enfoca #contenido', fs.existsSync(path.join(RAIZ, 'lib', 'enfocar-contenido.ts')) && /getElementById\('contenido'\)/.test(leer('lib', 'enfocar-contenido.ts')))
+  check('ui/card.tsx: CardTitle es un encabezado (h2)', /function CardTitle[\s\S]{0,200}<h2/.test(leer('components', 'ui', 'card.tsx')))
+  check('pagos-page.tsx: la lista y el cobro de una comanda tienen cada uno su h1', (pagos.match(/<h1\b/g) || []).length >= 2)
+  check('pos-page.tsx: con la mesa abierta el nombre de la mesa es el h1', /<h1[^>]*>\{selectedMesa\?\.nombre\}<\/h1>/.test(pos))
+
+  console.log('\n[accesibilidad] 12 (21b, #11): teclado del login')
+  check('login-form.tsx: las teclas están en role="group" aria-label="Teclado numérico"', /role="group"\s+aria-label="Teclado numérico"/.test(login) || /aria-label="Teclado numérico"\s+role="group"/.test(login))
+  const iGrupo = login.indexOf('Teclado numérico')
+  const trozoTeclas = iGrupo > -1 ? login.slice(iGrupo, login.indexOf('</form>')) : ''
+  const botonesTeclas = (trozoTeclas.match(/<Button\b/g) || []).length
+  check('login-form.tsx: las 12 teclas con tabIndex={-1} (el campo PIN sigue escribible)', botonesTeclas >= 3 && (trozoTeclas.match(/tabIndex=\{-1\}/g) || []).length >= 3 && !/readOnly/.test(login))
+
+  console.log('\n[accesibilidad] 13 (21b): avisos "problema" del KDS hasta cerrarlos y con tope')
+  check('notificaciones-toast.tsx: tope de 3 avisos de problema (sale el más viejo)', /MAX_PROBLEMAS\s*=\s*3/.test(notif))
+  check('notificaciones-toast.tsx: los avisos de problema no tienen temporizador de cierre', /const ttl\s*=\s*6000/.test(notif) && !/10000/.test(notif) && /tipo\s*===\s*'problema'\)?\s*(continue|return)/.test(notif))
+  check('notificaciones-toast.tsx: el botón de cerrar un aviso tiene nombre', /aria-label="Cerrar (aviso|notificación)"/.test(notif))
+
+  console.log('\n[accesibilidad] 14 (21b): motion-reduce global')
+  const reducido = /@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{[^@]*animate-pulse[^@]*animation:\s*none/.exec(css)
+  check('app/globals.css: bajo prefers-reduced-motion los animate-pulse no se animan', !!reducido)
+
+  console.log('\n[accesibilidad] 15 (21b): contraste en el tema oscuro (pares fondo/texto)')
+  const helpers = leer('lib', 'helpers.ts')
+  check('lib/helpers.ts: colores de estado de mesa y comanda como par fondo+texto (sin text-white sobre green-500/600, red-500, orange-500, yellow-500)', !/bg-(green-600|red-500|emerald-600|blue-500)\b/.test(helpers) && !/bg-(green-500|orange-500|yellow-500)[^'\n]*text-white/.test(helpers) && /libre: 'bg-green-500 text-zinc-950'/.test(helpers) && /text-zinc-950/.test(helpers) && /bg-green-700/.test(helpers) && /bg-red-700/.test(helpers))
+  const prohibidos = [
+    [/bg-green-(500|600)[^'"`\n]*text-white|text-white[^'"`\n]*bg-green-(500|600)\b(?!\/)/, 'blanco sobre green-500/600'],
+    [/bg-red-500 text-white/, 'blanco sobre red-500'],
+    [/text-rose-700/, 'rose-700 como texto'],
+    [/bg-(emerald-600|orange-500|blue-500|yellow-500) text-white/, 'blanco sobre emerald-600, orange-500, blue-500 o yellow-500'],
+    [/text-(amber-700|emerald-600|sky-600)\b/, 'amber-700, emerald-600 o sky-600 como texto (oscuros sobre fondo oscuro)'],
+  ]
+  for (const [rel, src] of fuentes) {
+    if (rel.startsWith('components/ui/')) continue
+    for (const [re, que] of prohibidos) check(`${rel}: sin ${que}`, !re.test(src))
+  }
+  check('login-form.tsx y app/menu/page.tsx: sin zinc-500 como texto (4,10:1)', !/text-zinc-500/.test(login) && !/text-zinc-500/.test(leer('app', 'menu', 'page.tsx')))
+  check('notificaciones-toast.tsx: sin red-600 como texto (4,15:1)', !/text-red-600/.test(notif))
+}
+
+// ───────── utilidades de análisis de JSX (solo texto, sin compilar) ─────────
+function archivosTsx() {
+  const out = []
+  const rec = (dir) => {
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      const p = path.join(dir, e.name)
+      if (e.isDirectory()) rec(p)
+      else if (/\.tsx$/.test(e.name)) out.push([path.relative(RAIZ, p).split(path.sep).join('/'), fs.readFileSync(p, 'utf8')])
+    }
+  }
+  rec(path.join(RAIZ, 'components'))
+  return out
+}
+const linea = (src, i) => src.slice(0, i).split('\n').length
+/** Etiqueta de apertura que empieza en `i`: atributos, fin y si es autocerrada (respeta llaves y comillas). */
+function etiqueta(src, i) {
+  let j = i
+  let prof = 0
+  let q = ''
+  for (; j < src.length; j++) {
+    const c = src[j]
+    if (q) { if (c === q) q = ''; continue }
+    if (prof === 0 && (c === '"' || c === "'")) { q = c; continue }
+    if (c === '{') prof++
+    else if (c === '}') prof--
+    else if (c === '>' && prof === 0) break
+  }
+  return { attrs: src.slice(i, j + 1), fin: j + 1, auto: src[j - 1] === '/' }
+}
+/** Contenido de un elemento hasta su cierre (cuenta anidados del mismo nombre). */
+function contenido(src, nombre, desde) {
+  const re = new RegExp('<(/?)' + nombre + '(?![A-Za-z0-9])', 'g')
+  re.lastIndex = desde
+  let d = 1
+  let m
+  while ((m = re.exec(src))) {
+    if (m[1]) { d--; if (!d) return src.slice(desde, m.index) }
+    else if (!etiqueta(src, m.index).auto) d++
+  }
+  return src.slice(desde)
+}
+const CONTROLES = ['Input', 'input', 'Textarea', 'textarea', 'Select', 'select', 'Checkbox', 'Switch', 'SelectTrigger', 'RadioGroupItem', 'Slider']
+function labelsSinAsociar(src) {
+  const out = []
+  const reCtl = new RegExp('<(' + CONTROLES.join('|') + ')(?![A-Za-z0-9])')
+  for (const m of src.matchAll(/<(label|Label)(?![A-Za-z0-9])/g)) {
+    const t = etiqueta(src, m.index)
+    if (/htmlFor=/.test(t.attrs)) continue
+    if (!t.auto && reCtl.test(contenido(src, m[1], t.fin))) continue
+    out.push(linea(src, m.index))
+  }
+  return out
+}
+function controlesSinNombre(src) {
+  const out = []
+  const htmlFor = new Set([...src.matchAll(/htmlFor=(?:"([^"]+)"|\{`?([^}`]+)`?\})/g)].map((x) => x[1] || x[2]))
+  for (const m of src.matchAll(/<(Input|input|Textarea|textarea|SelectTrigger|Switch|Checkbox|select)(?![A-Za-z0-9])/g)) {
+    const t = etiqueta(src, m.index)
+    if (/type="(hidden|file)"/.test(t.attrs)) continue
+    if (/aria-label=|aria-labelledby=/.test(t.attrs)) continue
+    const idm = /\bid=(?:"([^"]+)"|\{`?([^}`]+)`?\})/.exec(t.attrs)
+    if (idm && htmlFor.has(idm[1] || idm[2])) continue
+    const antes = src.slice(Math.max(0, m.index - 500), m.index)
+    const abre = Math.max(antes.lastIndexOf('<label'), antes.lastIndexOf('<Label'))
+    const cierra = Math.max(antes.lastIndexOf('</label'), antes.lastIndexOf('</Label'))
+    if (abre > cierra) continue
+    out.push(linea(src, m.index))
+  }
+  return out
+}
+function botonesSinNombre(src) {
+  const out = []
+  for (const m of src.matchAll(/<(Button|button)(?![A-Za-z0-9])/g)) {
+    const t = etiqueta(src, m.index)
+    if (t.auto || /aria-label=|aria-labelledby=|\btitle=/.test(t.attrs)) continue
+    const cont = contenido(src, m[1], t.fin)
+    if (/sr-only/.test(cont)) continue
+    const texto = cont
+      .replace(/<[A-Za-z][A-Za-z0-9.]*(?:\s[^<>]*?)?\/>/g, '')
+      .replace(/<\/?[A-Za-z][^<>]*>/g, '')
+      .replace(/\{\/\*[\s\S]*?\*\/\}/g, '')
+      .trim()
+    if (texto === '') out.push(linea(src, m.index))
+    else if (/^\{[\s\S]*\}$/.test(texto)) {
+      // contenido solo de una expresión: si dibuja íconos (p. ej. `{activo ? <UserCheck /> : <UserX />}`) y no hay ningún
+      // literal con letras, tampoco tiene nombre
+      const iconos = /\{[^{}]*<[A-Z][\w.]*\b[^<>]*\/>/.test(cont)
+      const literal = /['"`][^'"`\n]*[A-Za-zÁ-ú]{2,}[^'"`\n]*['"`]/.test(cont.replace(/<[A-Z][\w.]*\b[^<>]*\/>/g, ''))
+      if (iconos && !literal) out.push(linea(src, m.index))
+    }
+  }
+  return out
 }
 
 if (require.main === module) {
@@ -135,3 +310,6 @@ if (require.main === module) {
       process.exit(1)
     })
 }
+
+// Para listar pendientes a mano: node -e "..." (ver la sesión 21b); no lo usa el corredor.
+exports.analisis = { labelsSinAsociar, controlesSinNombre, botonesSinNombre }

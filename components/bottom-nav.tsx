@@ -1,6 +1,7 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { enfocarContenido } from '@/lib/enfocar-contenido'
 import {
   LayoutDashboard,
   Grid3X3,
@@ -70,6 +71,8 @@ export function BottomNav() {
   const [mounted, setMounted] = useState(false)
   const [isMobile, setIsMobile] = useState(false)
   const [drawerOpen, setDrawerOpen] = useState(false)
+  // Sesión 21b (K2, #8): tras elegir un destino en el cajón el foco va al contenido, no de vuelta a "Más".
+  const eligioDestino = useRef(false)
 
   useEffect(() => {
     setMounted(true)
@@ -101,6 +104,7 @@ export function BottomNav() {
   return (
     <>
       <nav
+        aria-label="Navegación inferior"
         className="fixed bottom-0 left-0 right-0 z-40 border-t border-border bg-card md:hidden"
         style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}
       >
@@ -147,6 +151,13 @@ export function BottomNav() {
         <SheetContent
           side="bottom"
           aria-describedby={undefined}
+          onCloseAutoFocus={(e) => {
+            if (eligioDestino.current) {
+              eligioDestino.current = false
+              e.preventDefault()
+              enfocarContenido()
+            }
+          }}
           className="gap-0 rounded-t-2xl bg-card p-4 md:hidden"
           style={{ paddingBottom: 'calc(env(safe-area-inset-bottom) + 1rem)' }}
         >
@@ -161,6 +172,7 @@ export function BottomNav() {
                 aria-current={currentPage === item.page ? 'page' : undefined}
                 onClick={() => {
                   navigateTo(item.page)
+                  eligioDestino.current = true
                   setDrawerOpen(false)
                 }}
                 className={cn(

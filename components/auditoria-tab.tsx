@@ -129,9 +129,9 @@ export function AuditoriaTab() {
       <CardContent className="space-y-4">
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
           <div className="space-y-1">
-            <Label>Entidad</Label>
+            <Label htmlFor="auditoria-entidad">Entidad</Label>
             <Select value={entidad} onValueChange={setEntidad}>
-              <SelectTrigger>
+              <SelectTrigger id="auditoria-entidad">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -145,9 +145,9 @@ export function AuditoriaTab() {
             </Select>
           </div>
           <div className="space-y-1">
-            <Label>Acción</Label>
+            <Label htmlFor="auditoria-accion">Acción</Label>
             <Select value={accion} onValueChange={setAccion}>
-              <SelectTrigger>
+              <SelectTrigger id="auditoria-accion">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>

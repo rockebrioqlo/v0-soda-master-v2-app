@@ -125,3 +125,12 @@
     @apply bg-background text-foreground;
   }
 }
+
+/* Sesión 21b (K2): quien pide menos movimiento en su sistema no ve parpadear los esqueletos de carga ni los avisos
+   (`animate-pulse`). Una sola regla global en vez de `motion-reduce:` en cada uso; el giro de los indicadores de carga
+   (`animate-spin`) se mantiene porque es la señal de que algo está cargando. */
+@media (prefers-reduced-motion: reduce) {
+  .animate-pulse {
+    animation: none !important;
+  }
+}

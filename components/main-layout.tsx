@@ -21,7 +21,8 @@ import {
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet'
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { enfocarContenido } from '@/lib/enfocar-contenido'
 import { BottomNav } from '@/components/bottom-nav'
 import { RelojAviso } from '@/components/reloj-aviso'
 
@@ -65,6 +66,14 @@ export function MainLayout({ children }: { children: React.ReactNode }) {
   const { state, logout, hasPermission, currentPage, navigateTo } = useApp()
   // Tablet sidebar expansion (overlay)
   const [tabletExpanded, setTabletExpanded] = useState(false)
+  // Sesión 21b (K2, #8): foco al contenido al cambiar de pantalla (no en la primera).
+  const paginaAnterior = useRef(currentPage)
+  const eligioDestino = useRef(false)
+  useEffect(() => {
+    if (paginaAnterior.current === currentPage) return
+    paginaAnterior.current = currentPage
+    enfocarContenido()
+  }, [currentPage])
 
   const { usuarioActual, isOnline, configuracion } = state
 
@@ -92,12 +101,14 @@ export function MainLayout({ children }: { children: React.ReactNode }) {
             <span className="text-sm text-muted-foreground">
               {usuarioActual.nombre} ({getRolLabel(usuarioActual.rol)})
             </span>
-            <Button variant="ghost" size="sm" onClick={logout}>
+            <Button aria-label="Salir" variant="ghost" size="sm" onClick={logout}>
               <LogOut className="h-4 w-4" />
             </Button>
           </div>
         </header>
-        <main>{children}</main>
+        <main id="contenido" tabIndex={-1} className="outline-none">
+          {children}
+        </main>
       </div>
     )
   }
@@ -132,6 +143,17 @@ export function MainLayout({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="min-h-screen bg-background">
+      {/* Sesión 21b (K2, #8): enlace para saltar la cabecera y el menú. */}
+      <a
+        href="#contenido"
+        onClick={(e) => {
+          e.preventDefault()
+          enfocarContenido()
+        }}
+        className="sr-only focus:not-sr-only focus:fixed focus:left-2 focus:top-2 focus:z-[100] focus:rounded-md focus:bg-amber-500 focus:px-4 focus:py-2 focus:text-sm focus:font-semibold focus:text-zinc-950"
+      >
+        Saltar al contenido
+      </a>
       {/* Offline Banner */}
       {/* Sesión 21a (K2, #3): región siempre montada para que un lector anuncie el cambio de conexión. */}
       <div role="status">
@@ -196,14 +218,14 @@ export function MainLayout({ children }: { children: React.ReactNode }) {
       <div className="flex">
         {/* Sidebar - Desktop (lg+) full width */}
         <aside className="hidden w-64 shrink-0 border-r border-border bg-card lg:block">
-          <nav className="flex flex-col gap-1 p-4">
+          <nav aria-label="Navegación principal" className="flex flex-col gap-1 p-4">
             {filteredNavItems.map((item) => renderNavButton(item))}
           </nav>
         </aside>
 
         {/* Sidebar - Tablet (md..lg) collapsed (icons only) */}
         <aside className="hidden w-16 shrink-0 border-r border-border bg-card md:block lg:hidden">
-          <nav className="flex flex-col gap-1 p-2">
+          <nav aria-label="Navegación principal (iconos)" className="flex flex-col gap-1 p-2">
             {filteredNavItems.map((item) => renderNavButton(item, { collapsed: true }))}
           </nav>
         </aside>
@@ -211,20 +233,27 @@ export function MainLayout({ children }: { children: React.ReactNode }) {
         {/* Tablet expanded overlay (md..lg). Sesión 21a (K2, #2): Sheet lateral de Radix con título "Menú" y botón
             "Cerrar" (antes un fondo con onClick hecho a mano, sin foco, sin Esc y con el botón X sin nombre). */}
         <Sheet open={tabletExpanded} onOpenChange={setTabletExpanded}>
-          <SheetContent side="left" aria-describedby={undefined} className="w-64 gap-0 bg-card p-0 sm:max-w-64 lg:hidden">
+          <SheetContent side="left" aria-describedby={undefined}
+            onCloseAutoFocus={(e) => {
+              if (eligioDestino.current) {
+                eligioDestino.current = false
+                e.preventDefault()
+                enfocarContenido()
+              }
+            }} className="w-64 gap-0 bg-card p-0 sm:max-w-64 lg:hidden">
             <SheetHeader className="border-b border-border p-4 pr-10">
               <SheetTitle className="text-base">Menú</SheetTitle>
             </SheetHeader>
-            <nav className="flex flex-col gap-1 p-4">
+            <nav aria-label="Navegación principal" className="flex flex-col gap-1 p-4">
               {filteredNavItems.map((item) =>
-                renderNavButton(item, { onAfter: () => setTabletExpanded(false) })
+                renderNavButton(item, { onAfter: () => { eligioDestino.current = true; setTabletExpanded(false) } })
               )}
             </nav>
           </SheetContent>
         </Sheet>
 
         {/* Main Content */}
-        <main className="flex-1 p-3 pb-24 md:p-4 md:pb-4 lg:p-6">
+        <main id="contenido" tabIndex={-1} className="flex-1 p-3 pb-24 outline-none md:p-4 md:pb-4 lg:p-6">
           {children}
         </main>
       </div>

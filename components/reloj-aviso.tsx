@@ -52,7 +52,7 @@ export function RelojAviso() {
   const direccion = clock.offsetMs > 0 ? 'atrasado' : 'adelantado'
 
   return (
-    <div className="flex items-center gap-2 border-b border-amber-500/40 bg-amber-500/10 px-4 py-2 text-xs text-amber-700 dark:text-amber-400">
+    <div className="flex items-center gap-2 border-b border-amber-500/40 bg-amber-500/10 px-4 py-2 text-xs text-amber-400 dark:text-amber-400">
       <AlertTriangle className="h-4 w-4 shrink-0" />
       <div className="flex-1">
         <span className="font-semibold">Tu reloj está {direccion} ~{formatearOffset(clock.offsetMs)}</span>{' '}

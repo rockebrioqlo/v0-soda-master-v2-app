@@ -187,7 +187,7 @@ export function ProveedoresTab() {
                       )}
                     </TableCell>
                     <TableCell className="text-right">
-                      <Button variant="ghost" size="icon" onClick={() => openEditar(p)}>
+                      <Button aria-label={`Editar a ${p.nombre}`} variant="ghost" size="icon" onClick={() => openEditar(p)}>
                         <Edit className="h-4 w-4" />
                       </Button>
                     </TableCell>
@@ -205,18 +205,18 @@ export function ProveedoresTab() {
             <DialogTitle>{editing ? 'Editar proveedor' : 'Nuevo proveedor'}</DialogTitle>
           </DialogHeader>
           <div className="grid gap-3 py-2">
-            <Input
+            <Input aria-label="Nombre"
               placeholder="Nombre *"
               value={form.nombre}
               onChange={(e) => setForm({ ...form, nombre: e.target.value })}
             />
             <div className="grid grid-cols-2 gap-2">
-              <Input
+              <Input aria-label="RUT / NIT"
                 placeholder="RUT / NIT"
                 value={form.rut}
                 onChange={(e) => setForm({ ...form, rut: e.target.value })}
               />
-              <Input
+              <Input aria-label="Teléfono"
                 placeholder="Teléfono"
                 value={form.telefono}
                 onChange={(e) => setForm({ ...form, telefono: e.target.value })}
@@ -226,22 +226,22 @@ export function ProveedoresTab() {
               <Checkbox checked={form.documento_otro} onCheckedChange={(v) => setForm({ ...form, documento_otro: v === true })} />
               Otro documento (extranjero, pasaporte): no se valida como RUT
             </label>
-            <Input
+            <Input aria-label="Persona de contacto"
               placeholder="Persona de contacto"
               value={form.contacto}
               onChange={(e) => setForm({ ...form, contacto: e.target.value })}
             />
-            <Input
+            <Input aria-label="Email"
               placeholder="Email"
               value={form.email}
               onChange={(e) => setForm({ ...form, email: e.target.value })}
             />
-            <Input
+            <Input aria-label="Dirección"
               placeholder="Dirección"
               value={form.direccion}
               onChange={(e) => setForm({ ...form, direccion: e.target.value })}
             />
-            <Textarea
+            <Textarea aria-label="Notas"
               placeholder="Notas"
               value={form.notas}
               onChange={(e) => setForm({ ...form, notas: e.target.value })}

@@ -224,17 +224,17 @@ export function GastosTab() {
       <Card className="border-border bg-card">
         <CardContent className="flex flex-wrap items-end gap-3 p-4">
           <div>
-            <label className="text-xs text-muted-foreground">Desde</label>
-            <Input type="date" value={desde} onChange={(e) => setDesde(e.target.value)} />
+            <label htmlFor="gastos-desde" className="text-xs text-muted-foreground">Desde</label>
+            <Input id="gastos-desde" type="date" value={desde} onChange={(e) => setDesde(e.target.value)} />
           </div>
           <div>
-            <label className="text-xs text-muted-foreground">Hasta</label>
-            <Input type="date" value={hasta} onChange={(e) => setHasta(e.target.value)} />
+            <label htmlFor="gastos-hasta" className="text-xs text-muted-foreground">Hasta</label>
+            <Input id="gastos-hasta" type="date" value={hasta} onChange={(e) => setHasta(e.target.value)} />
           </div>
           <div>
-            <label className="text-xs text-muted-foreground">Tipo</label>
+            <label htmlFor="gastos-tipo" className="text-xs text-muted-foreground">Tipo</label>
             <Select value={filtroTipo} onValueChange={setFiltroTipo}>
-              <SelectTrigger className="min-w-[160px]">
+              <SelectTrigger id="gastos-tipo" className="min-w-[160px]">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -305,7 +305,7 @@ export function GastosTab() {
                       {formatCurrency(Number(g.monto))}
                     </TableCell>
                     <TableCell className="text-right">
-                      <Button variant="ghost" size="icon" onClick={() => eliminar(g)}>
+                      <Button aria-label={`Eliminar el gasto ${g.descripcion || ""}`.trim()} variant="ghost" size="icon" onClick={() => eliminar(g)}>
                         <Trash2 className="h-4 w-4 text-red-500" />
                       </Button>
                     </TableCell>
@@ -325,17 +325,17 @@ export function GastosTab() {
           <div className="grid gap-3 py-2">
             <div className="grid grid-cols-2 gap-2">
               <div>
-                <label className="text-xs text-muted-foreground">Fecha</label>
-                <Input
+                <label htmlFor="gastos-fecha" className="text-xs text-muted-foreground">Fecha</label>
+                <Input id="gastos-fecha"
                   type="date"
                   value={form.fecha}
                   onChange={(e) => setForm({ ...form, fecha: e.target.value })}
                 />
               </div>
               <div>
-                <label className="text-xs text-muted-foreground">Tipo</label>
+                <label htmlFor="gastos-tipo-2" className="text-xs text-muted-foreground">Tipo</label>
                 <Select value={form.tipo} onValueChange={(v) => setForm({ ...form, tipo: v })}>
-                  <SelectTrigger>
+                  <SelectTrigger id="gastos-tipo-2">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -350,16 +350,16 @@ export function GastosTab() {
             </div>
             <div className="grid grid-cols-2 gap-2">
               <div>
-                <label className="text-xs text-muted-foreground">Categoría libre</label>
-                <Input
+                <label htmlFor="gastos-categoria-libre" className="text-xs text-muted-foreground">Categoría libre</label>
+                <Input id="gastos-categoria-libre"
                   placeholder="ej: arriendo, internet..."
                   value={form.categoria}
                   onChange={(e) => setForm({ ...form, categoria: e.target.value })}
                 />
               </div>
               <div>
-                <label className="text-xs text-muted-foreground">Monto</label>
-                <Input
+                <label htmlFor="gastos-monto" className="text-xs text-muted-foreground">Monto</label>
+                <Input id="gastos-monto"
                   type="number"
                   min="0"
                   step="0.01"
@@ -368,19 +368,19 @@ export function GastosTab() {
                 />
               </div>
             </div>
-            <Input
+            <Input aria-label="Descripción"
               placeholder="Descripción"
               value={form.descripcion}
               onChange={(e) => setForm({ ...form, descripcion: e.target.value })}
             />
             <div className="grid grid-cols-3 gap-2">
               <div>
-                <label className="text-xs text-muted-foreground">Proveedor</label>
+                <label htmlFor="gastos-proveedor" className="text-xs text-muted-foreground">Proveedor</label>
                 <Select
                   value={form.proveedor_id}
                   onValueChange={(v) => setForm({ ...form, proveedor_id: v })}
                 >
-                  <SelectTrigger>
+                  <SelectTrigger id="gastos-proveedor">
                     <SelectValue placeholder="—" />
                   </SelectTrigger>
                   <SelectContent>
@@ -393,14 +393,14 @@ export function GastosTab() {
                 </Select>
               </div>
               <div>
-                <label className="text-xs text-muted-foreground">Empleado</label>
+                <label htmlFor="gastos-empleado" className="text-xs text-muted-foreground">Empleado</label>
                 <Select
                   value={form.empleado_id}
                   onValueChange={(v) =>
                     setForm({ ...form, empleado_id: v, tipo: v ? 'sueldo' : form.tipo })
                   }
                 >
-                  <SelectTrigger>
+                  <SelectTrigger id="gastos-empleado">
                     <SelectValue placeholder="—" />
                   </SelectTrigger>
                   <SelectContent>
@@ -413,12 +413,12 @@ export function GastosTab() {
                 </Select>
               </div>
               <div>
-                <label className="text-xs text-muted-foreground">Activo</label>
+                <label htmlFor="gastos-activo" className="text-xs text-muted-foreground">Activo</label>
                 <Select
                   value={form.activo_id}
                   onValueChange={(v) => setForm({ ...form, activo_id: v })}
                 >
-                  <SelectTrigger>
+                  <SelectTrigger id="gastos-activo">
                     <SelectValue placeholder="—" />
                   </SelectTrigger>
                   <SelectContent>
@@ -445,7 +445,7 @@ export function GastosTab() {
                   value={form.periodicidad}
                   onValueChange={(v) => setForm({ ...form, periodicidad: v })}
                 >
-                  <SelectTrigger>
+                  <SelectTrigger aria-label="Periodicidad">
                     <SelectValue placeholder="Periodicidad" />
                   </SelectTrigger>
                   <SelectContent>
@@ -457,7 +457,7 @@ export function GastosTab() {
                 </Select>
               )}
             </div>
-            <Textarea
+            <Textarea aria-label="Notas"
               placeholder="Notas"
               value={form.notas}
               onChange={(e) => setForm({ ...form, notas: e.target.value })}

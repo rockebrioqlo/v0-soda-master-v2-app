@@ -13,6 +13,11 @@ import { cn } from '@/lib/utils'
  * 10 segundos, se marca como vista en backend para que el polling no la
  * vuelva a entregar en otro dispositivo del mismo usuario.
  */
+// Sesión 21b (K2): los avisos de "problema" (algo que el mesero debe resolver) no se cierran solos y, como los errores de
+// `showToast`, se muestran como máximo 3 a la vez: al entrar uno nuevo sale el más viejo (sin marcarlo como visto en el
+// backend, así no se pierde: reaparece al recargar o en otro dispositivo).
+const MAX_PROBLEMAS = 3
+
 export function NotificacionesToast() {
   const { state, navigateToPOS, marcarNotificacionVistaApi } = useApp()
   const [notificacionesVisibles, setNotificacionesVisibles] = useState<string[]>([])
@@ -24,19 +29,32 @@ export function NotificacionesToast() {
       if (notif.vista) return
       if (dismissedRef.current.has(notif.id)) return
       if (notificacionesVisibles.includes(notif.id)) return
-      setNotificacionesVisibles((prev) => [...prev, notif.id])
+      setNotificacionesVisibles((prev) => {
+        const siguiente = [...prev, notif.id]
+        const problemas = siguiente.filter(
+          (id) => state.notificaciones.find((n) => n.id === id)?.tipo === 'problema',
+        )
+        const hora = (id: string) => state.notificaciones.find((n) => n.id === id)?.timestamp ?? 0
+        // el más viejo es el de menor `timestamp` (un sondeo puede traer varios a la vez, en cualquier orden)
+        const sobran = [...problemas]
+          .sort((a, b) => hora(a) - hora(b))
+          .slice(0, Math.max(0, problemas.length - MAX_PROBLEMAS))
+        sobran.forEach((id) => dismissedRef.current.add(id))
+        return siguiente.filter((id) => !sobran.includes(id))
+      })
     })
   }, [state.notificaciones, notificacionesVisibles])
 
-  // Auto-dismiss after 10s (problemas) or 6s (listo). Problemas duran más
-  // porque requieren acción del mesero.
+  // Auto-dismiss a los 6 s (listo y demás). Los problemas requieren acción del mesero: no se cierran solos
+  // (sesión 21b, decisión del 23-11-2026), solo con la X o con "Ir a POS".
   useEffect(() => {
     if (notificacionesVisibles.length === 0) return
     const timers: number[] = []
     for (const id of notificacionesVisibles) {
       const notif = state.notificaciones.find((n) => n.id === id)
       if (!notif) continue
-      const ttl = notif.tipo === 'problema' ? 10000 : 6000
+      if (notif.tipo === 'problema') continue
+      const ttl = 6000
       const handle = window.setTimeout(() => handleDismiss(id), ttl)
       timers.push(handle)
     }
@@ -120,7 +138,7 @@ export function NotificacionesToast() {
             <Button
               size="sm"
               variant="outline"
-              className="border-red-500/40 text-red-600 hover:bg-red-500/10"
+              className="border-red-500/40 text-red-400 hover:bg-red-500/10"
               onClick={() => handleIrAPOS(notif)}
             >
               Ir a POS

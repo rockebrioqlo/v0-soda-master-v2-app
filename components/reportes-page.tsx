@@ -354,9 +354,9 @@ export function ReportesPage() {
         <CardContent className="pt-6">
           <div className="flex flex-wrap gap-4">
             <div className="space-y-2">
-              <Label>Período</Label>
+              <Label htmlFor="reportes-periodo">Período</Label>
               <Select value={preset} onValueChange={(v) => cambiarPreset(v as PresetRango)}>
-                <SelectTrigger className="w-[200px]">
+                <SelectTrigger id="reportes-periodo" className="w-[200px]">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -368,8 +368,8 @@ export function ReportesPage() {
               </Select>
             </div>
             <div className="space-y-2">
-              <Label>Desde</Label>
-              <Input
+              <Label htmlFor="reportes-desde">Desde</Label>
+              <Input id="reportes-desde"
                 type="date"
                 value={desde}
                 onChange={(e) => {
@@ -380,8 +380,8 @@ export function ReportesPage() {
               />
             </div>
             <div className="space-y-2">
-              <Label>Hasta</Label>
-              <Input
+              <Label htmlFor="reportes-hasta">Hasta</Label>
+              <Input id="reportes-hasta"
                 type="date"
                 value={hasta}
                 onChange={(e) => {

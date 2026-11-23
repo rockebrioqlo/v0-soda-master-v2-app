@@ -21,6 +21,23 @@ import { NotificacionesToast } from "@/components/notificaciones-toast"
 import { Button } from "@/components/ui/button"
 import { AlertTriangle, Loader2 } from "lucide-react"
 
+// Sesión 21b (K2, #8): la app es una sola página; el título del documento sigue a la pantalla para que un lector
+// (y la pestaña) anuncien dónde está el usuario.
+const TITULOS_PANTALLA: Record<string, string> = {
+  dashboard: "Dashboard",
+  mesas: "Mesas",
+  pos: "Punto de venta",
+  kds: "Cocina y bar (KDS)",
+  inventario: "Inventario",
+  finanzas: "Finanzas",
+  usuarios: "Usuarios",
+  pagos: "Pagos y facturación",
+  caja: "Caja",
+  mermas: "Mermas y pérdidas",
+  reportes: "Reportes y estadísticas",
+  configuracion: "Configuración",
+}
+
 function AppContent() {
   const { state, isInitialized, currentPage, initError, reintentandoInicio, reintentarInicio } = useApp()
   const [mounted, setMounted] = useState(false)
@@ -28,6 +45,12 @@ function AppContent() {
   useEffect(() => {
     setMounted(true)
   }, [])
+
+  const hayUsuario = !!state.usuarioActual
+  useEffect(() => {
+    const pantalla = hayUsuario ? (TITULOS_PANTALLA[currentPage] ?? "Soda Master") : "Ingresar"
+    document.title = `${pantalla} - Soda Master`
+  }, [hayUsuario, currentPage, mounted, isInitialized])
 
   if (!mounted || !isInitialized) {
     return (

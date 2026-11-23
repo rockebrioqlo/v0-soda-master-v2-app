@@ -489,8 +489,8 @@ export function CajaPage() {
           </DialogHeader>
           <div className="space-y-3">
             <div>
-              <label className="mb-1 block text-sm">Fondo inicial</label>
-              <Input
+              <label htmlFor="caja-fondo-inicial" className="mb-1 block text-sm">Fondo inicial</label>
+              <Input id="caja-fondo-inicial"
                 inputMode="numeric"
                 value={fondoInput ? parseMonto(fondoInput).toLocaleString('es-CL') : ''}
                 onChange={(e) => setFondoInput(e.target.value.replace(/[^\d]/g, ''))}
@@ -502,8 +502,8 @@ export function CajaPage() {
               </p>
             </div>
             <div>
-              <label className="mb-1 block text-sm">Notas (opcional)</label>
-              <Textarea
+              <label htmlFor="caja-notas-opcional" className="mb-1 block text-sm">Notas (opcional)</label>
+              <Textarea id="caja-notas-opcional"
                 value={notasApertura}
                 onChange={(e) => setNotasApertura(e.target.value)}
                 placeholder="Turno mañana / cualquier observación"
@@ -538,8 +538,8 @@ export function CajaPage() {
           </DialogHeader>
           <div className="space-y-3">
             <div>
-              <label className="mb-1 block text-sm">Monto</label>
-              <Input
+              <label htmlFor="caja-monto" className="mb-1 block text-sm">Monto</label>
+              <Input id="caja-monto"
                 inputMode="numeric"
                 value={movMonto ? parseMonto(movMonto).toLocaleString('es-CL') : ''}
                 onChange={(e) => setMovMonto(e.target.value.replace(/[^\d]/g, ''))}
@@ -548,8 +548,8 @@ export function CajaPage() {
               />
             </div>
             <div>
-              <label className="mb-1 block text-sm">Motivo / descripción</label>
-              <Textarea
+              <label htmlFor="caja-motivo-descripcion" className="mb-1 block text-sm">Motivo / descripción</label>
+              <Textarea id="caja-motivo-descripcion"
                 value={movDescripcion}
                 onChange={(e) => setMovDescripcion(e.target.value)}
                 placeholder={
@@ -576,7 +576,7 @@ export function CajaPage() {
               className={
                 movTipo === 'retiro'
                   ? 'bg-rose-600 text-white hover:bg-rose-500'
-                  : 'bg-emerald-600 text-white hover:bg-emerald-500'
+                  : 'bg-emerald-700 text-white hover:bg-emerald-800'
               }
             >
               Registrar
@@ -604,8 +604,8 @@ export function CajaPage() {
               </p>
             </div>
             <div>
-              <label className="mb-1 block text-sm">Efectivo contado en caja</label>
-              <Input
+              <label htmlFor="caja-efectivo-contado-en-caja" className="mb-1 block text-sm">Efectivo contado en caja</label>
+              <Input id="caja-efectivo-contado-en-caja"
                 inputMode="numeric"
                 value={contadoInput ? parseMonto(contadoInput).toLocaleString('es-CL') : ''}
                 onChange={(e) => setContadoInput(e.target.value.replace(/[^\d]/g, ''))}
@@ -630,8 +630,8 @@ export function CajaPage() {
               )}
             </div>
             <div>
-              <label className="mb-1 block text-sm">Notas (opcional)</label>
-              <Textarea
+              <label htmlFor="caja-notas-opcional-2" className="mb-1 block text-sm">Notas (opcional)</label>
+              <Textarea id="caja-notas-opcional-2"
                 value={notasCierre}
                 onChange={(e) => setNotasCierre(e.target.value)}
                 placeholder="Observaciones del cierre"

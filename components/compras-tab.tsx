@@ -256,7 +256,7 @@ export function ComprasTab() {
                       {formatCurrency(Number(c.total))}
                     </TableCell>
                     <TableCell className="text-right">
-                      <Button variant="ghost" size="icon" onClick={() => verDetalle(c.id)}>
+                      <Button aria-label={`Ver detalle de la compra del ${String(c.fecha).slice(0, 10)}`} variant="ghost" size="icon" onClick={() => verDetalle(c.id)}>
                         <Eye className="h-4 w-4" />
                       </Button>
                     </TableCell>
@@ -280,12 +280,12 @@ export function ComprasTab() {
           <div className="grid gap-3 py-2">
             <div className="grid grid-cols-2 gap-2">
               <div>
-                <label className="text-xs text-muted-foreground">Proveedor</label>
+                <label htmlFor="compras-proveedor" className="text-xs text-muted-foreground">Proveedor</label>
                 <Select
                   value={form.proveedor_id}
                   onValueChange={(v) => setForm({ ...form, proveedor_id: v })}
                 >
-                  <SelectTrigger>
+                  <SelectTrigger id="compras-proveedor">
                     <SelectValue placeholder="Selecciona proveedor" />
                   </SelectTrigger>
                   <SelectContent>
@@ -298,12 +298,12 @@ export function ComprasTab() {
                 </Select>
               </div>
               <div>
-                <label className="text-xs text-muted-foreground">Tipo documento</label>
+                <label htmlFor="compras-tipo-documento" className="text-xs text-muted-foreground">Tipo documento</label>
                 <Select
                   value={form.tipo_documento}
                   onValueChange={(v) => setForm({ ...form, tipo_documento: v })}
                 >
-                  <SelectTrigger>
+                  <SelectTrigger id="compras-tipo-documento">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -317,15 +317,15 @@ export function ComprasTab() {
             </div>
             <div className="grid grid-cols-2 gap-2">
               <div>
-                <label className="text-xs text-muted-foreground">Número documento</label>
-                <Input
+                <label htmlFor="compras-numero-documento" className="text-xs text-muted-foreground">Número documento</label>
+                <Input id="compras-numero-documento"
                   value={form.numero_documento}
                   onChange={(e) => setForm({ ...form, numero_documento: e.target.value })}
                 />
               </div>
               <div>
-                <label className="text-xs text-muted-foreground">Fecha</label>
-                <Input
+                <label htmlFor="compras-fecha" className="text-xs text-muted-foreground">Fecha</label>
+                <Input id="compras-fecha"
                   type="date"
                   value={form.fecha}
                   onChange={(e) => setForm({ ...form, fecha: e.target.value })}
@@ -368,7 +368,7 @@ export function ComprasTab() {
                           setLineas(next)
                         }}
                       >
-                        <SelectTrigger>
+                        <SelectTrigger aria-label={`Insumo, línea ${idx + 1}`}>
                           <SelectValue placeholder="Insumo" />
                         </SelectTrigger>
                         <SelectContent>
@@ -385,7 +385,7 @@ export function ComprasTab() {
                       </Select>
                     </div>
                     <div className="col-span-2">
-                      <Input
+                      <Input aria-label={`Cantidad, línea ${idx + 1}`}
                         type="number"
                         min="0"
                         step="0.001"
@@ -400,7 +400,7 @@ export function ComprasTab() {
                       />
                     </div>
                     <div className="col-span-3">
-                      <Input
+                      <Input aria-label={`Precio unitario, línea ${idx + 1}`}
                         type="number"
                         min="0"
                         step="0.01"
@@ -418,7 +418,7 @@ export function ComprasTab() {
                       {ins ? formatCurrency(sub) : '—'}
                     </div>
                     <div className="col-span-1 text-right">
-                      <Button
+                      <Button aria-label={`Quitar la línea ${idx + 1}`}
                         size="icon"
                         variant="ghost"
                         onClick={() => setLineas(lineas.filter((_, i) => i !== idx))}
@@ -475,8 +475,8 @@ export function ComprasTab() {
 
             <div className="grid grid-cols-2 gap-2">
               <div>
-                <label className="text-xs text-muted-foreground">Impuesto / IVA</label>
-                <Input
+                <label htmlFor="compras-impuesto-iva" className="text-xs text-muted-foreground">Impuesto / IVA</label>
+                <Input id="compras-impuesto-iva"
                   type="number"
                   min="0"
                   step="0.01"
@@ -492,7 +492,7 @@ export function ComprasTab() {
               </div>
             </div>
 
-            <Textarea
+            <Textarea aria-label="Notas (opcional)"
               placeholder="Notas (opcional)"
               value={form.notas}
               onChange={(e) => setForm({ ...form, notas: e.target.value })}

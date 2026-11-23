@@ -278,7 +278,7 @@ export function MesasPage() {
                         {mesa.nombre}
                       </button>
                     </CardTitle>
-                    <span className={cn('rounded-full px-2 py-1 text-[10px] font-medium text-white md:text-xs', getEstadoMesaColor(mesa.estado))}>
+                    <span className={cn('rounded-full px-2 py-1 text-[10px] font-medium md:text-xs', getEstadoMesaColor(mesa.estado))}>
                       {getEstadoMesaLabel(mesa.estado)}
                     </span>
                   </div>
@@ -304,7 +304,7 @@ export function MesasPage() {
                   )}
 
                   {perdidaEsperandoLiberar && (
-                    <div className="mt-2 flex items-center gap-2 text-rose-700">
+                    <div className="mt-2 flex items-center gap-2 text-rose-400">
                       <AlertTriangle className="h-4 w-4" />
                       <span className="text-sm">Perro muerto — lista para liberar</span>
                     </div>
@@ -315,7 +315,7 @@ export function MesasPage() {
                       value={mesa.estado}
                       onValueChange={(value) => handleChangeEstado(mesa, value as EstadoMesa)}
                     >
-                      <SelectTrigger className="h-8 flex-1 border-border bg-muted text-xs">
+                      <SelectTrigger aria-label={`Estado de ${mesa.nombre}`} className="h-8 flex-1 border-border bg-muted text-xs">
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
@@ -325,7 +325,7 @@ export function MesasPage() {
                       </SelectContent>
                     </Select>
                     {esAdmin && (
-                      <Button
+                      <Button aria-label={`Editar ${mesa.nombre}`}
                         variant="ghost"
                         size="icon"
                         className="h-8 w-8"
@@ -335,7 +335,7 @@ export function MesasPage() {
                       </Button>
                     )}
                     {esAdmin && (
-                      <Button
+                      <Button aria-label={`Eliminar ${mesa.nombre}`}
                         variant="ghost"
                         size="icon"
                         className="h-8 w-8 text-red-500 hover:text-red-400"
@@ -361,8 +361,8 @@ export function MesasPage() {
             </DialogHeader>
             <div className="space-y-4 py-4">
               <div className="space-y-2">
-                <label className="text-sm text-muted-foreground">Nombre</label>
-                <Input
+                <label htmlFor="mesa-nombre" className="text-sm text-muted-foreground">Nombre</label>
+                <Input id="mesa-nombre"
                   value={formData.nombre}
                   onChange={(e) => setFormData({ ...formData, nombre: e.target.value })}
                   placeholder="Ej: Mesa 6"
@@ -370,12 +370,12 @@ export function MesasPage() {
                 />
               </div>
               <div className="space-y-2">
-                <label className="text-sm text-muted-foreground">Capacidad</label>
+                <label htmlFor="mesa-capacidad" className="text-sm text-muted-foreground">Capacidad</label>
                 <Select
                   value={formData.capacidad}
                   onValueChange={(value) => setFormData({ ...formData, capacidad: value })}
                 >
-                  <SelectTrigger className="border-border bg-muted">
+                  <SelectTrigger id="mesa-capacidad" className="border-border bg-muted">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -388,12 +388,12 @@ export function MesasPage() {
                 </Select>
               </div>
               <div className="space-y-2">
-                <label className="text-sm text-muted-foreground">Estado Inicial</label>
+                <label htmlFor="mesa-estado-inicial" className="text-sm text-muted-foreground">Estado Inicial</label>
                 <Select
                   value={formData.estado}
                   onValueChange={(value) => setFormData({ ...formData, estado: value as EstadoMesa })}
                 >
-                  <SelectTrigger className="border-border bg-muted">
+                  <SelectTrigger id="mesa-estado-inicial" className="border-border bg-muted">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -442,10 +442,10 @@ export function MesasPage() {
                 <li>Esta acción queda registrada en la orden para auditoría.</li>
               </ul>
               <div>
-                <label className="mb-2 block text-sm font-medium text-foreground">
+                <label htmlFor="mesa-motivo-obligatorio" className="mb-2 block text-sm font-medium text-foreground">
                   Motivo (obligatorio)
                 </label>
-                <Textarea
+                <Textarea id="mesa-motivo-obligatorio"
                   value={overrideMotivo}
                   onChange={(e) => setOverrideMotivo(e.target.value)}
                   placeholder="Ej: cliente se retiró sin pagar, regalo institucional, …"

@@ -291,7 +291,7 @@ export function ActivosTab() {
                       <Badge
                         className={
                           a.estado === 'activo'
-                            ? 'bg-green-600 text-white'
+                            ? 'bg-green-700 text-white'
                             : a.estado === 'reparacion'
                               ? 'bg-amber-500 text-zinc-900'
                               : 'bg-muted text-muted-foreground'
@@ -306,10 +306,10 @@ export function ActivosTab() {
                       )}
                     </TableCell>
                     <TableCell className="text-right">
-                      <Button variant="ghost" size="icon" onClick={() => abrirEditar(a)}>
+                      <Button aria-label={`Editar ${a.nombre}`} variant="ghost" size="icon" onClick={() => abrirEditar(a)}>
                         <Edit className="h-4 w-4" />
                       </Button>
-                      <Button variant="ghost" size="icon" onClick={() => eliminar(a)}>
+                      <Button aria-label={`Eliminar ${a.nombre}`} variant="ghost" size="icon" onClick={() => eliminar(a)}>
                         <Trash2 className="h-4 w-4 text-red-500" />
                       </Button>
                     </TableCell>
@@ -327,7 +327,7 @@ export function ActivosTab() {
             <DialogTitle>{editing ? 'Editar activo' : 'Nuevo activo / máquina'}</DialogTitle>
           </DialogHeader>
           <div className="grid gap-3 py-2">
-            <Input
+            <Input aria-label="Nombre"
               placeholder="Nombre *"
               value={form.nombre}
               onChange={(e) => setForm({ ...form, nombre: e.target.value })}
@@ -337,7 +337,7 @@ export function ActivosTab() {
                 value={form.categoria}
                 onValueChange={(v) => setForm({ ...form, categoria: v })}
               >
-                <SelectTrigger>
+                <SelectTrigger aria-label="Categoría">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -348,7 +348,7 @@ export function ActivosTab() {
                   ))}
                 </SelectContent>
               </Select>
-              <Input
+              <Input aria-label="Fecha de compra"
                 type="date"
                 value={form.fecha_compra}
                 onChange={(e) => setForm({ ...form, fecha_compra: e.target.value })}
@@ -356,8 +356,8 @@ export function ActivosTab() {
             </div>
             <div className="grid grid-cols-3 gap-2">
               <div>
-                <label className="text-xs text-muted-foreground">Costo</label>
-                <Input
+                <label htmlFor="activos-costo" className="text-xs text-muted-foreground">Costo</label>
+                <Input id="activos-costo"
                   type="number"
                   min="0"
                   step="0.01"
@@ -366,8 +366,8 @@ export function ActivosTab() {
                 />
               </div>
               <div>
-                <label className="text-xs text-muted-foreground">Vida útil (meses)</label>
-                <Input
+                <label htmlFor="activos-vida-util-meses" className="text-xs text-muted-foreground">Vida útil (meses)</label>
+                <Input id="activos-vida-util-meses"
                   type="number"
                   min="1"
                   value={form.vida_util_meses}
@@ -375,8 +375,8 @@ export function ActivosTab() {
                 />
               </div>
               <div>
-                <label className="text-xs text-muted-foreground">Valor residual</label>
-                <Input
+                <label htmlFor="activos-valor-residual" className="text-xs text-muted-foreground">Valor residual</label>
+                <Input id="activos-valor-residual"
                   type="number"
                   min="0"
                   step="0.01"
@@ -387,12 +387,12 @@ export function ActivosTab() {
             </div>
             <div className="grid grid-cols-2 gap-2">
               <div>
-                <label className="text-xs text-muted-foreground">Proveedor (opcional)</label>
+                <label htmlFor="activos-proveedor-opcional" className="text-xs text-muted-foreground">Proveedor (opcional)</label>
                 <Select
                   value={form.proveedor_id}
                   onValueChange={(v) => setForm({ ...form, proveedor_id: v })}
                 >
-                  <SelectTrigger>
+                  <SelectTrigger id="activos-proveedor-opcional">
                     <SelectValue placeholder="Sin proveedor" />
                   </SelectTrigger>
                   <SelectContent>
@@ -405,9 +405,9 @@ export function ActivosTab() {
                 </Select>
               </div>
               <div>
-                <label className="text-xs text-muted-foreground">Estado</label>
+                <label htmlFor="activos-estado" className="text-xs text-muted-foreground">Estado</label>
                 <Select value={form.estado} onValueChange={(v) => setForm({ ...form, estado: v })}>
-                  <SelectTrigger>
+                  <SelectTrigger id="activos-estado">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -420,23 +420,23 @@ export function ActivosTab() {
               </div>
             </div>
             <div className="grid grid-cols-2 gap-2">
-              <Input
+              <Input aria-label="Ubicación"
                 placeholder="Ubicación"
                 value={form.ubicacion}
                 onChange={(e) => setForm({ ...form, ubicacion: e.target.value })}
               />
-              <Input
+              <Input aria-label="N° de serie"
                 placeholder="N° de serie"
                 value={form.numero_serie}
                 onChange={(e) => setForm({ ...form, numero_serie: e.target.value })}
               />
             </div>
-            <Input
+            <Input aria-label="Descripción"
               placeholder="Descripción"
               value={form.descripcion}
               onChange={(e) => setForm({ ...form, descripcion: e.target.value })}
             />
-            <Textarea
+            <Textarea aria-label="Notas"
               placeholder="Notas"
               value={form.notas}
               onChange={(e) => setForm({ ...form, notas: e.target.value })}

@@ -362,7 +362,7 @@ export function ConfiguracionPage() {
                 <div className="space-y-2">
                   <Label htmlFor="currency">Moneda</Label>
                   <Select value={currency} onValueChange={setCurrency}>
-                    <SelectTrigger>
+                    <SelectTrigger id="currency">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -383,12 +383,12 @@ export function ConfiguracionPage() {
               </div>
               <div className="flex items-center justify-between rounded-lg border p-4">
                 <div className="space-y-0.5">
-                  <Label>Habilitar Impuestos</Label>
+                  <Label htmlFor="configuracion-habilitar-impuestos">Habilitar Impuestos</Label>
                   <p className="text-sm text-muted-foreground">
                     Aplicar impuestos a las ventas
                   </p>
                 </div>
-                <Switch checked={enableTax} onCheckedChange={setEnableTax} />
+                <Switch id="configuracion-habilitar-impuestos" checked={enableTax} onCheckedChange={setEnableTax} />
               </div>
             </CardContent>
           </Card>
@@ -461,7 +461,7 @@ export function ConfiguracionPage() {
                           value={tableForm.area}
                           onValueChange={(v) => setTableForm({ ...tableForm, area: v })}
                         >
-                          <SelectTrigger>
+                          <SelectTrigger id="tableArea">
                             <SelectValue />
                           </SelectTrigger>
                           <SelectContent>
@@ -507,14 +507,14 @@ export function ConfiguracionPage() {
                               </p>
                             </div>
                             <div className="flex gap-1">
-                              <Button
+                              <Button aria-label={`Editar ${mesa.nombre}`}
                                 variant="ghost"
                                 size="icon"
                                 onClick={() => handleEditTable(mesa)}
                               >
                                 <Edit className="h-4 w-4" />
                               </Button>
-                              <Button
+                              <Button aria-label={`Eliminar ${mesa.nombre}`}
                                 variant="ghost"
                                 size="icon"
                                 onClick={() => handleDeleteTable(mesa.id)}
@@ -574,12 +574,12 @@ export function ConfiguracionPage() {
             <CardContent className="space-y-4">
               <div className="flex items-center justify-between rounded-lg border p-4">
                 <div className="space-y-0.5">
-                  <Label>Habilitar Propinas</Label>
+                  <Label htmlFor="configuracion-habilitar-propinas">Habilitar Propinas</Label>
                   <p className="text-sm text-muted-foreground">
                     Permitir agregar propinas en el cobro
                   </p>
                 </div>
-                <Switch checked={enableTips} onCheckedChange={setEnableTips} />
+                <Switch id="configuracion-habilitar-propinas" checked={enableTips} onCheckedChange={setEnableTips} />
               </div>
               {enableTips && (
                 <div className="space-y-2">
@@ -593,15 +593,15 @@ export function ConfiguracionPage() {
                 </div>
               )}
               <div className="space-y-2">
-                <Label>Metodos de Pago Aceptados</Label>
+                <Label htmlFor="configuracion-metodos-de-pago-aceptados">Metodos de Pago Aceptados</Label>
                 <div className="grid gap-2 sm:grid-cols-2">
                   <div className="flex items-center justify-between rounded-lg border p-3">
                     <span>Efectivo</span>
-                    <Switch defaultChecked disabled />
+                    <Switch id="configuracion-metodos-de-pago-aceptados" defaultChecked disabled />
                   </div>
                   <div className="flex items-center justify-between rounded-lg border p-3">
                     <span>Tarjeta (Transbank)</span>
-                    <Switch defaultChecked disabled />
+                    <Switch aria-label="Tarjeta (Transbank)" defaultChecked disabled />
                   </div>
                 </div>
               </div>
@@ -623,33 +623,33 @@ export function ConfiguracionPage() {
             <CardContent className="space-y-4">
               <div className="flex items-center justify-between rounded-lg border p-4">
                 <div className="space-y-0.5">
-                  <Label>Notificaciones del Sistema</Label>
+                  <Label htmlFor="configuracion-notificaciones-del-sistema">Notificaciones del Sistema</Label>
                   <p className="text-sm text-muted-foreground">
                     Recibir alertas de ordenes y eventos
                   </p>
                 </div>
-                <Switch
+                <Switch id="configuracion-notificaciones-del-sistema"
                   checked={notificationsEnabled}
                   onCheckedChange={setNotificationsEnabled}
                 />
               </div>
               <div className="flex items-center justify-between rounded-lg border p-4">
                 <div className="space-y-0.5">
-                  <Label>Sonidos</Label>
+                  <Label htmlFor="configuracion-sonidos">Sonidos</Label>
                   <p className="text-sm text-muted-foreground">
                     Reproducir sonidos en nuevas ordenes
                   </p>
                 </div>
-                <Switch checked={soundEnabled} onCheckedChange={setSoundEnabled} />
+                <Switch id="configuracion-sonidos" checked={soundEnabled} onCheckedChange={setSoundEnabled} />
               </div>
               <div className="flex items-center justify-between rounded-lg border p-4">
                 <div className="space-y-0.5">
-                  <Label>Auto-completar en KDS</Label>
+                  <Label htmlFor="configuracion-auto-completar-en-kds">Auto-completar en KDS</Label>
                   <p className="text-sm text-muted-foreground">
                     Marcar ordenes como listas automaticamente
                   </p>
                 </div>
-                <Switch checked={kdsAutoComplete} onCheckedChange={setKdsAutoComplete} />
+                <Switch id="configuracion-auto-completar-en-kds" checked={kdsAutoComplete} onCheckedChange={setKdsAutoComplete} />
               </div>
               {kdsAutoComplete && (
                 <div className="space-y-2">
@@ -982,12 +982,12 @@ function PrintTab(props: PrintTabProps) {
           <div className="space-y-4">
             <div className="flex items-center justify-between rounded-lg border p-4">
               <div className="space-y-0.5">
-                <Label>Impresora de Tickets</Label>
+                <Label htmlFor="configuracion-impresora-de-tickets">Impresora de Tickets</Label>
                 <p className="text-sm text-muted-foreground">
                   Mostrar el botón "Imprimir" en POS y Pagos
                 </p>
               </div>
-              <Switch checked={printerEnabled} onCheckedChange={setPrinterEnabled} />
+              <Switch id="configuracion-impresora-de-tickets" checked={printerEnabled} onCheckedChange={setPrinterEnabled} />
             </div>
 
             {printerEnabled && (
@@ -1014,7 +1014,7 @@ function PrintTab(props: PrintTabProps) {
                     if (v !== 'custom') setAnchoMm(v)
                   }}
                 >
-                  <SelectTrigger className="w-full sm:w-72">
+                  <SelectTrigger aria-label="Ancho del papel" className="w-full sm:w-72">
                     <SelectValue placeholder="Selecciona un ancho" />
                   </SelectTrigger>
                   <SelectContent>
@@ -1110,17 +1110,17 @@ function PrintTab(props: PrintTabProps) {
 
             <div className="flex items-center justify-between rounded-lg border p-4">
               <div className="space-y-0.5">
-                <Label>Mostrar nombre del negocio destacado</Label>
+                <Label htmlFor="configuracion-mostrar-nombre-del-negocio">Mostrar nombre del negocio destacado</Label>
                 <p className="text-sm text-muted-foreground">
                   Imprime el nombre del negocio en tamaño mayor al inicio
                 </p>
               </div>
-              <Switch checked={mostrarLogo} onCheckedChange={setMostrarLogo} />
+              <Switch id="configuracion-mostrar-nombre-del-negocio" checked={mostrarLogo} onCheckedChange={setMostrarLogo} />
             </div>
 
             <div className="flex items-center justify-between rounded-lg border p-4">
               <div className="space-y-0.5">
-                <Label>Preguntar por copias para cocina y bar (KDS doble)</Label>
+                <Label htmlFor="configuracion-preguntar-por-copias-para">Preguntar por copias para cocina y bar (KDS doble)</Label>
                 <p className="text-sm text-muted-foreground">
                   Al enviar la comanda desde el POS se muestra un diálogo con checkboxes
                   para elegir si imprimir el ticket de cocina y/o bar según corresponda.
@@ -1128,7 +1128,7 @@ function PrintTab(props: PrintTabProps) {
                   copias físicas.
                 </p>
               </div>
-              <Switch checked={copiasAuto} onCheckedChange={setCopiasAuto} />
+              <Switch id="configuracion-preguntar-por-copias-para" checked={copiasAuto} onCheckedChange={setCopiasAuto} />
             </div>
 
             <Button variant="outline" onClick={onTestPrint} className="w-full">
@@ -1138,7 +1138,7 @@ function PrintTab(props: PrintTabProps) {
 
           {/* Columna derecha: preview en vivo */}
           <div className="space-y-2">
-            <Label>Vista previa en vivo</Label>
+            <h3 className="text-sm leading-none font-medium">Vista previa en vivo</h3>
             <p className="text-xs text-muted-foreground">
               Se actualiza mientras editas. Lo que ves es lo que se imprime.
             </p>

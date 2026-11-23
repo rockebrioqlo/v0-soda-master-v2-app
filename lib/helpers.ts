@@ -81,13 +81,15 @@ export function getRolLabel(rol: string): string {
   return labels[rol] || rol
 }
 
+// Sesión 21b (K2): cada estado trae su par fondo + texto con al menos 4,5:1 sobre el tema oscuro (el blanco sobre green-500,
+// green-600, red-500, orange-500, yellow-500, emerald-600 y blue-500 no llegaba).
 export function getEstadoMesaColor(estado: string): string {
   const colors: Record<string, string> = {
-    libre: 'bg-green-500',
-    ocupada: 'bg-red-500',
-    reservada: 'bg-yellow-500'
+    libre: 'bg-green-500 text-zinc-950',
+    ocupada: 'bg-red-700 text-white',
+    reservada: 'bg-yellow-500 text-zinc-950'
   }
-  return colors[estado] || 'bg-gray-500'
+  return colors[estado] || 'bg-gray-500 text-white'
 }
 
 export function getEstadoMesaLabel(estado: string): string {
@@ -101,17 +103,17 @@ export function getEstadoMesaLabel(estado: string): string {
 
 export function getEstadoComandaColor(estado: string): string {
   const colors: Record<string, string> = {
-    pendiente: 'bg-gray-500',
-    en_cocina: 'bg-orange-500',
-    en_preparacion: 'bg-yellow-500',
-    listo: 'bg-green-500',
-    entregado: 'bg-emerald-600',
-    problema: 'bg-red-500',
-    pagado: 'bg-blue-500',
-    cancelado: 'bg-zinc-500',
-    perdida: 'bg-rose-700',
+    pendiente: 'bg-gray-500 text-white',
+    en_cocina: 'bg-orange-500 text-zinc-950',
+    en_preparacion: 'bg-yellow-500 text-zinc-950',
+    listo: 'bg-green-700 text-white',
+    entregado: 'bg-emerald-700 text-white',
+    problema: 'bg-red-700 text-white',
+    pagado: 'bg-blue-600 text-white',
+    cancelado: 'bg-zinc-500 text-white',
+    perdida: 'bg-rose-700 text-white',
   }
-  return colors[estado] || 'bg-gray-500'
+  return colors[estado] || 'bg-gray-500 text-white'
 }
 
 export function getEstadoComandaLabel(estado: string): string {

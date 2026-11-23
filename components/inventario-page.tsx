@@ -562,7 +562,7 @@ export function InventarioPage() {
       <div className="flex flex-col gap-4 sm:flex-row">
         <div className="relative flex-1">
           <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-          <Input
+          <Input aria-label="Buscar productos"
             value={searchTerm}
             onChange={e => setSearchTerm(e.target.value)}
             placeholder="Buscar productos..."
@@ -570,7 +570,7 @@ export function InventarioPage() {
           />
         </div>
         <Select value={catFilter} onValueChange={setCatFilter}>
-          <SelectTrigger className="w-full border-border bg-muted sm:w-52">
+          <SelectTrigger aria-label="Filtrar por categoría" className="w-full border-border bg-muted sm:w-52">
             <SelectValue placeholder="Todas las categorías" />
           </SelectTrigger>
           <SelectContent>
@@ -687,7 +687,7 @@ export function InventarioPage() {
                               <Button
                                 variant="outline"
                                 size="sm"
-                                className="h-7 gap-1 border-amber-500/40 text-xs text-amber-700 hover:bg-amber-500/10"
+                                className="h-7 gap-1 border-amber-500/40 text-xs text-amber-400 hover:bg-amber-500/10"
                                 onClick={() =>
                                   setRecetaProducto({
                                     id: item.producto_id,
@@ -712,16 +712,16 @@ export function InventarioPage() {
                               className="flex items-center gap-1 text-xs hover:underline"
                               title="Editar ingredientes"
                             >
-                              <Badge className="bg-emerald-500/15 text-emerald-600">
+                              <Badge className="bg-emerald-500/15 text-emerald-400">
                                 {r.base} base
                               </Badge>
                               {r.opcionales > 0 && (
-                                <Badge className="bg-sky-500/15 text-sky-600">
+                                <Badge className="bg-sky-500/15 text-sky-400">
                                   {r.opcionales} opc.
                                 </Badge>
                               )}
                               {r.extras > 0 && (
-                                <Badge className="bg-amber-500/15 text-amber-700">
+                                <Badge className="bg-amber-500/15 text-amber-400">
                                   {r.extras} extras
                                 </Badge>
                               )}
@@ -740,11 +740,11 @@ export function InventarioPage() {
                       </TableCell>
                       <TableCell className="text-center">
                         {item.stock_actual === 0 ? (
-                          <Badge className="bg-red-500 text-white">Sin stock</Badge>
+                          <Badge className="bg-red-700 text-white">Sin stock</Badge>
                         ) : item.stock_actual <= item.stock_minimo ? (
-                          <Badge className="bg-orange-500 text-white">Stock bajo</Badge>
+                          <Badge className="bg-orange-500 text-zinc-950">Stock bajo</Badge>
                         ) : (
-                          <Badge className="bg-green-600 text-white">OK</Badge>
+                          <Badge className="bg-green-700 text-white">OK</Badge>
                         )}
                       </TableCell>
                       <TableCell className="text-right">
@@ -804,7 +804,7 @@ export function InventarioPage() {
                 setFiltroTipoInsumo(v as 'all' | 'comida' | 'negocio' | 'otro')
               }
             >
-              <SelectTrigger className="w-52">
+              <SelectTrigger aria-label="Filtrar por tipo de insumo" className="w-52">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -976,7 +976,7 @@ export function InventarioPage() {
             <DialogTitle>{editingInsumo ? 'Editar insumo' : 'Nuevo insumo'}</DialogTitle>
           </DialogHeader>
           <div className="grid gap-3 py-2">
-            <Input
+            <Input aria-label="Nombre"
               placeholder="Nombre"
               value={insumoForm.nombre}
               onChange={(e) => setInsumoForm({ ...insumoForm, nombre: e.target.value })}
@@ -988,7 +988,7 @@ export function InventarioPage() {
                   setInsumoForm({ ...insumoForm, tipo: v as 'comida' | 'negocio' | 'otro' })
                 }
               >
-                <SelectTrigger>
+                <SelectTrigger aria-label="Tipo de insumo">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -999,7 +999,7 @@ export function InventarioPage() {
                   <SelectItem value="otro">Otro</SelectItem>
                 </SelectContent>
               </Select>
-              <Input
+              <Input aria-label="Categoría"
                 placeholder="Categoría"
                 value={insumoForm.categoria}
                 onChange={(e) => setInsumoForm({ ...insumoForm, categoria: e.target.value })}
@@ -1007,7 +1007,7 @@ export function InventarioPage() {
             </div>
             <div className="grid grid-cols-2 gap-2">
               <div>
-                <label className="text-xs text-muted-foreground">
+                <label htmlFor="inventario-unidad-de-consumo-stock" className="text-xs text-muted-foreground">
                   Unidad de consumo (stock y recetas)
                 </label>
                 <Select
@@ -1021,7 +1021,7 @@ export function InventarioPage() {
                     })
                   }}
                 >
-                  <SelectTrigger>
+                  <SelectTrigger id="inventario-unidad-de-consumo-stock">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -1034,8 +1034,8 @@ export function InventarioPage() {
                 </Select>
               </div>
               <div>
-                <label className="text-xs text-muted-foreground">Se compra en</label>
-                <Input
+                <label htmlFor="inventario-se-compra-en" className="text-xs text-muted-foreground">Se compra en</label>
+                <Input id="inventario-se-compra-en"
                   list="unidades-compra"
                   placeholder="paquete, caja, kg…"
                   value={insumoForm.unidad_compra}
@@ -1057,10 +1057,10 @@ export function InventarioPage() {
             </div>
             <div className="grid grid-cols-2 gap-2">
               <div>
-                <label className="text-xs text-muted-foreground">
+                <label htmlFor="inventario-por-factor" className="text-xs text-muted-foreground">
                   {insumoForm.unidad_medida} por {insumoForm.unidad_compra || 'unidad de compra'} (factor)
                 </label>
-                <Input
+                <Input id="inventario-por-factor"
                   type="number"
                   min="0"
                   step="0.0001"
@@ -1072,8 +1072,8 @@ export function InventarioPage() {
                 </p>
               </div>
               <div>
-                <label className="text-xs text-muted-foreground">Rendimiento (%)</label>
-                <Input
+                <label htmlFor="inventario-rendimiento" className="text-xs text-muted-foreground">Rendimiento (%)</label>
+                <Input id="inventario-rendimiento"
                   type="number"
                   min="1"
                   max="300"
@@ -1089,7 +1089,7 @@ export function InventarioPage() {
             <div className="grid grid-cols-3 gap-2">
               {editingInsumo ? (
                 <div className="flex flex-col justify-end">
-                  <label className="text-xs text-muted-foreground">Stock actual</label>
+                  <span className="text-xs text-muted-foreground">Stock actual</span>
                   <div className="flex items-center gap-2">
                     <span className="text-sm font-medium">
                       {formatDecimal(editingInsumo.stock_actual, 3)} {editingInsumo.unidad_medida}
@@ -1110,8 +1110,8 @@ export function InventarioPage() {
                 </div>
               ) : (
                 <div>
-                  <label className="text-xs text-muted-foreground">Stock inicial</label>
-                  <Input
+                  <label htmlFor="inventario-stock-inicial" className="text-xs text-muted-foreground">Stock inicial</label>
+                  <Input id="inventario-stock-inicial"
                     type="number"
                     min="0"
                     step="0.001"
@@ -1121,8 +1121,8 @@ export function InventarioPage() {
                 </div>
               )}
               <div>
-                <label className="text-xs text-muted-foreground">Mínimo</label>
-                <Input
+                <label htmlFor="inventario-minimo" className="text-xs text-muted-foreground">Mínimo</label>
+                <Input id="inventario-minimo"
                   type="number"
                   min="0"
                   step="0.001"
@@ -1131,10 +1131,10 @@ export function InventarioPage() {
                 />
               </div>
               <div>
-                <label className="text-xs text-muted-foreground">
+                <label htmlFor="inventario-costo-por" className="text-xs text-muted-foreground">
                   Costo por {insumoForm.unidad_medida}
                 </label>
-                <Input
+                <Input id="inventario-costo-por"
                   type="number"
                   min="0"
                   step="0.0001"
@@ -1165,10 +1165,10 @@ export function InventarioPage() {
           </DialogHeader>
           <div className="grid gap-3 py-2">
             <div>
-              <label className="text-xs text-muted-foreground">
+              <label htmlFor="inventario-stock-actual" className="text-xs text-muted-foreground">
                 Stock actual: {formatDecimal(ajusteTarget?.stock_actual ?? 0, 3)} {ajusteTarget?.unidad_medida}
               </label>
-              <Input
+              <Input id="inventario-stock-actual"
                 type="number"
                 min="0"
                 step="0.001"
@@ -1177,7 +1177,7 @@ export function InventarioPage() {
                 onChange={(e) => setAjusteStock(e.target.value)}
               />
             </div>
-            <Input
+            <Input aria-label="Motivo del ajuste de stock"
               placeholder="Motivo (conteo físico, corrección…)"
               value={ajusteMotivo}
               onChange={(e) => setAjusteMotivo(e.target.value)}
@@ -1205,8 +1205,8 @@ export function InventarioPage() {
           <div className="grid gap-4 py-4">
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
-                <label className="text-sm text-muted-foreground">Stock actual</label>
-                <Input
+                <label htmlFor="inventario-stock-actual-2" className="text-sm text-muted-foreground">Stock actual</label>
+                <Input id="inventario-stock-actual-2"
                   type="number"
                   min="0"
                   value={formData.stock_actual}
@@ -1215,8 +1215,8 @@ export function InventarioPage() {
                 />
               </div>
               <div className="space-y-2">
-                <label className="text-sm text-muted-foreground">Stock mínimo</label>
-                <Input
+                <label htmlFor="inventario-stock-minimo" className="text-sm text-muted-foreground">Stock mínimo</label>
+                <Input id="inventario-stock-minimo"
                   type="number"
                   min="0"
                   value={formData.stock_minimo}
@@ -1226,8 +1226,8 @@ export function InventarioPage() {
               </div>
             </div>
             <div className="space-y-2">
-              <label className="text-sm text-muted-foreground">Unidad de medida</label>
-              <Input
+              <label htmlFor="inventario-unidad-de-medida" className="text-sm text-muted-foreground">Unidad de medida</label>
+              <Input id="inventario-unidad-de-medida"
                 value={formData.unidad_medida}
                 onChange={e => setFormData({ ...formData, unidad_medida: e.target.value })}
                 placeholder="unidad, kg, litros..."
@@ -1253,10 +1253,10 @@ export function InventarioPage() {
               </div>
               {formData.es_ingrediente_especial && (
                 <div className="space-y-1.5">
-                  <label className="text-xs text-muted-foreground">
+                  <label htmlFor="inventario-costo-adicional-aplicado-al" className="text-xs text-muted-foreground">
                     Costo adicional ($) — aplicado al usarlo como extra en el POS
                   </label>
-                  <Input
+                  <Input id="inventario-costo-adicional-aplicado-al"
                     type="number"
                     min="0"
                     step="100"
@@ -1364,9 +1364,9 @@ export function InventarioPage() {
             {eliminarMotivo === 'merma' && (
               <div className="space-y-3 rounded-md border border-border bg-muted/30 p-3">
                 <div className="space-y-1">
-                  <label className="text-sm font-medium text-foreground">Tipo de merma</label>
+                  <label htmlFor="inventario-tipo-de-merma" className="text-sm font-medium text-foreground">Tipo de merma</label>
                   <Select value={eliminarTipoMerma} onValueChange={setEliminarTipoMerma}>
-                    <SelectTrigger>
+                    <SelectTrigger id="inventario-tipo-de-merma">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -1379,10 +1379,10 @@ export function InventarioPage() {
                   </Select>
                 </div>
                 <div className="space-y-1">
-                  <label className="text-sm font-medium text-foreground">
+                  <label htmlFor="inventario-describe-el-motivo" className="text-sm font-medium text-foreground">
                     Describe el motivo
                   </label>
-                  <Textarea
+                  <Textarea id="inventario-describe-el-motivo"
                     rows={3}
                     placeholder="Ej: caja se cayó al traerla del proveedor"
                     value={eliminarDescripcion}
@@ -1397,10 +1397,10 @@ export function InventarioPage() {
 
             {eliminarMotivo === 'correccion_admin' && (
               <div className="space-y-1 rounded-md border border-border bg-muted/30 p-3">
-                <label className="text-sm font-medium text-foreground">
+                <label htmlFor="inventario-comentario-opcional" className="text-sm font-medium text-foreground">
                   Comentario (opcional)
                 </label>
-                <Textarea
+                <Textarea id="inventario-comentario-opcional"
                   rows={2}
                   placeholder="Ej: se duplicó al cargar el catálogo"
                   value={eliminarDescripcion}

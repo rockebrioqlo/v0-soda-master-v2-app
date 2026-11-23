@@ -1243,7 +1243,7 @@ export function PagosPage() {
                           </span>
                           <span className="block text-right">
                             <span className="block font-bold text-amber-500">{formatCurrency(comandaTotal)}</span>
-                            <Badge className={cn('text-white', getEstadoComandaColor(comanda.estado))}>
+                            <Badge className={cn(getEstadoComandaColor(comanda.estado))}>
                               {getEstadoComandaLabel(comanda.estado)}
                             </Badge>
                           </span>
@@ -1261,7 +1261,7 @@ export function PagosPage() {
             {perdidasPendientes.length > 0 && (
               <Card className="border-rose-700/40 bg-card">
                 <CardHeader>
-                  <CardTitle className="flex items-center gap-2 text-rose-700">
+                  <CardTitle className="flex items-center gap-2 text-rose-400">
                     <AlertTriangle className="h-5 w-5" />
                     Pérdidas pendientes ({perdidasPendientes.length})
                   </CardTitle>
@@ -1309,12 +1309,12 @@ export function PagosPage() {
                             )}
                           </div>
                           <div className="text-right">
-                            <p className="font-bold text-rose-700">
+                            <p className="font-bold text-rose-400">
                               {formatCurrency(Number(p.monto_perdido) || 0)}
                             </p>
                             <Button
                               size="sm"
-                              className="mt-2 bg-emerald-600 text-white hover:bg-emerald-500"
+                              className="mt-2 bg-emerald-700 text-white hover:bg-emerald-800"
                               onClick={() => abrirResolverPerdida(p)}
                               disabled={!puedeCobrar}
                             >
@@ -1375,7 +1375,7 @@ export function PagosPage() {
           <DialogContent className="border-border bg-card sm:max-w-md">
             <DialogHeader>
               <DialogTitle className="flex items-center gap-2 text-foreground">
-                <Check className="h-5 w-5 text-emerald-600" />
+                <Check className="h-5 w-5 text-emerald-400" />
                 Cobrar pérdida retroactivamente
               </DialogTitle>
               <DialogDescription>
@@ -1407,10 +1407,10 @@ export function PagosPage() {
                 </div>
 
                 <div className="space-y-1">
-                  <label className="text-sm font-medium text-foreground">
+                  <label htmlFor="pagos-monto-recibido" className="text-sm font-medium text-foreground">
                     Monto recibido
                   </label>
-                  <Input
+                  <Input id="pagos-monto-recibido"
                     type="number"
                     min={1}
                     max={Number(perdidaSeleccionada.monto_perdido) || undefined}
@@ -1429,10 +1429,10 @@ export function PagosPage() {
                 {(Math.round(parseFloat(montoResolver) || 0)) > 0 &&
                   Math.round(parseFloat(montoResolver) || 0) < (Number(perdidaSeleccionada.monto_perdido) || 0) && (
                     <div className="space-y-1">
-                      <label className="text-sm font-medium text-foreground">
+                      <label htmlFor="pagos-motivo-de-la-diferencia" className="text-sm font-medium text-foreground">
                         Motivo de la diferencia (obligatorio)
                       </label>
-                      <Textarea
+                      <Textarea id="pagos-motivo-de-la-diferencia"
                         value={motivoResolver}
                         onChange={(e) => setMotivoResolver(e.target.value)}
                         maxLength={300}
@@ -1443,14 +1443,14 @@ export function PagosPage() {
                   )}
 
                 <div className="space-y-1">
-                  <label className="text-sm font-medium text-foreground">
+                  <label htmlFor="pagos-metodo-de-pago" className="text-sm font-medium text-foreground">
                     Método de pago
                   </label>
                   <Select
                     value={metodoResolver}
                     onValueChange={(v) => setMetodoResolver(v as MetodoPago)}
                   >
-                    <SelectTrigger className="bg-muted">
+                    <SelectTrigger id="pagos-metodo-de-pago" className="bg-muted">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -1473,7 +1473,7 @@ export function PagosPage() {
               <Button
                 onClick={handleResolverPerdida}
                 disabled={resolviendoPerdida || !puedeCobrar}
-                className="bg-emerald-600 text-white hover:bg-emerald-500"
+                className="bg-emerald-700 text-white hover:bg-emerald-800"
               >
                 {resolviendoPerdida ? 'Registrando…' : 'Confirmar cobro retroactivo'}
               </Button>
@@ -1487,6 +1487,7 @@ export function PagosPage() {
   // Payment view for selected comanda
   return (
     <div className="space-y-6">
+      <h1 className="sr-only">Cobro de la comanda</h1>
       <div>
         <Button variant="ghost" onClick={() => setSelectedComandaId(null)}>
           Volver a lista
@@ -1499,7 +1500,7 @@ export function PagosPage() {
             <CardHeader>
               <CardTitle className="flex items-center justify-between text-foreground">
                 <span>{comandaAPagar.mesaNombre}</span>
-                <Badge className={cn('text-white', getEstadoComandaColor(comandaAPagar.estado))}>
+                <Badge className={cn(getEstadoComandaColor(comandaAPagar.estado))}>
                   {getEstadoComandaLabel(comandaAPagar.estado)}
                 </Badge>
               </CardTitle>
@@ -1563,7 +1564,7 @@ export function PagosPage() {
                             )}
                           </p>
                           {yaPagado && (
-                            <Badge className="mt-1 bg-emerald-600 text-white">
+                            <Badge className="mt-1 bg-emerald-700 text-white">
                               ✓ Pagado
                             </Badge>
                           )}
@@ -1703,7 +1704,7 @@ export function PagosPage() {
                       ))}
                     </>
                   ) : (
-                    <Input
+                    <Input aria-label="Monto de la propina"
                       type="number"
                       value={propinaValor}
                       onChange={e => setPropinaValor(e.target.value)}
@@ -1754,7 +1755,7 @@ export function PagosPage() {
                       Total parcial: {formatCurrency(totalAPagar)}
                     </div>
                     {pendingPartialPay && pendingPartialPay.length > 0 && (
-                      <div className="mt-1 text-amber-700">
+                      <div className="mt-1 text-amber-400">
                         Incluye cobro parcial de líneas con cantidad múltiple:
                         {' '}
                         {pendingPartialPay
@@ -1769,7 +1770,7 @@ export function PagosPage() {
                       </div>
                     )}
                     {itemsAPagar.length === 0 && (
-                      <div className="mt-1 text-amber-700">
+                      <div className="mt-1 text-amber-400">
                         Marca al menos un producto en la lista de arriba.
                       </div>
                     )}
@@ -1791,7 +1792,7 @@ export function PagosPage() {
                     <Users className="h-5 w-5" />
                     Dividir Cuenta
                   </CardTitle>
-                  <Switch checked={dividirCuenta} onCheckedChange={setDividirCuenta} />
+                  <Switch aria-label="Dividir cuenta" checked={dividirCuenta} onCheckedChange={setDividirCuenta} />
                 </div>
               </CardHeader>
               {dividirCuenta && (
@@ -1882,7 +1883,7 @@ export function PagosPage() {
                         <>
                           <Button
                             variant="outline"
-                            className="w-full border-amber-500/60 text-amber-700 hover:bg-amber-500/10"
+                            className="w-full border-amber-500/60 text-amber-400 hover:bg-amber-500/10"
                             onClick={() => setShowAsignarDialog(true)}
                           >
                             Asignar productos por persona
@@ -1981,10 +1982,10 @@ export function PagosPage() {
                 {metodoPago === 'efectivo' && (
                   <div className="mt-4 space-y-3">
                     <div>
-                      <label className="mb-2 block text-sm text-muted-foreground">
+                      <label htmlFor="pagos-efectivo-recibido" className="mb-2 block text-sm text-muted-foreground">
                         Efectivo recibido
                       </label>
-                      <Input
+                      <Input id="pagos-efectivo-recibido"
                         // No usamos type="number": en Chile la gente escribe
                         // "20.000" con punto de miles y type="number" lo
                         // interpreta como 20. Aceptamos texto y nos
@@ -2054,7 +2055,7 @@ export function PagosPage() {
                       {efectivoRecibido !== '' &&
                         efectivoRecibidoNum > 0 &&
                         efectivoRecibidoNum < Math.ceil(totalAPagar) && (
-                          <div className="rounded-lg bg-amber-500/15 p-3 text-center text-sm text-amber-700">
+                          <div className="rounded-lg bg-amber-500/15 p-3 text-center text-sm text-amber-400">
                             Falta {formatCurrency(Math.ceil(totalAPagar) - efectivoRecibidoNum)}
                           </div>
                         )}
@@ -2069,7 +2070,7 @@ export function PagosPage() {
                 completo se imprime toda la cuenta restante. */}
             <Button
               variant="outline"
-              className="w-full border-amber-500/60 py-5 text-base font-semibold text-amber-700 hover:bg-amber-500/10"
+              className="w-full border-amber-500/60 py-5 text-base font-semibold text-amber-400 hover:bg-amber-500/10"
               onClick={() => setShowPrecuentaPrint(true)}
               disabled={!comandaAPagar || itemsAPagar.length === 0}
             >
@@ -2079,13 +2080,13 @@ export function PagosPage() {
 
             {/* Confirm button */}
             {!puedeCobrar && (
-              <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-700">
+              <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-400">
                 Sólo el cajero o administrador puede confirmar el pago.
                 Tu rol actual ({usuarioActual?.rol || 'desconocido'}) puede revisar la cuenta pero no cobrarla.
               </div>
             )}
             <Button
-              className="w-full bg-green-600 py-6 text-lg font-bold text-white hover:bg-green-500"
+              className="w-full bg-green-700 py-6 text-lg font-bold text-white hover:bg-green-800"
               onClick={handleConfirmarPago}
               disabled={
                 cobrando ||
@@ -2110,7 +2111,7 @@ export function PagosPage() {
             {esAdmin && (
               <Button
                 variant="outline"
-                className="w-full border-rose-700/60 py-4 text-sm font-semibold text-rose-700 hover:bg-rose-700/10"
+                className="w-full border-rose-700/60 py-4 text-sm font-semibold text-rose-400 hover:bg-rose-700/10"
                 onClick={() => {
                   setMotivoPerdida('')
                   setShowPerdidaDialog(true)
@@ -2322,7 +2323,7 @@ export function PagosPage() {
                             }))
                           }}
                         >
-                          <SelectTrigger className="w-40 border-border bg-background">
+                          <SelectTrigger aria-label={`Asignar ${u.productoNombre}`} className="w-40 border-border bg-background">
                             <SelectValue />
                           </SelectTrigger>
                           <SelectContent>
@@ -2381,7 +2382,7 @@ export function PagosPage() {
                                 {personaSinItems && numPersonasInt > 1 && (
                                   <button
                                     type="button"
-                                    className="ml-2 text-[10px] text-rose-700 hover:underline"
+                                    className="ml-2 text-[10px] text-rose-400 hover:underline"
                                     onClick={() => handleQuitarPersona(persona.id)}
                                     title="Eliminar esta persona de la mesa (sus productos quedan compartidos)"
                                   >
@@ -2516,7 +2517,7 @@ export function PagosPage() {
         <Dialog open={showPerdidaDialog} onOpenChange={setShowPerdidaDialog}>
           <DialogContent className="border-border bg-card sm:max-w-md">
             <DialogHeader>
-              <DialogTitle className="flex items-center gap-2 text-rose-700">
+              <DialogTitle className="flex items-center gap-2 text-rose-400">
                 <AlertTriangle className="h-5 w-5" />
                 Registrar perro muerto
               </DialogTitle>
@@ -2557,7 +2558,7 @@ export function PagosPage() {
                   <span className="text-muted-foreground">
                     Monto perdido estimado
                   </span>
-                  <span className="font-bold text-rose-700">
+                  <span className="font-bold text-rose-400">
                     {formatCurrency(
                       itemsElegibles.reduce(
                         (s, it) => s + it.precio * it.cantidad,
@@ -2574,10 +2575,10 @@ export function PagosPage() {
               </div>
 
               <div className="space-y-1">
-                <label className="text-sm font-medium text-foreground">
-                  Motivo / descripción <span className="text-rose-700">*</span>
+                <label htmlFor="pagos-motivo-descripcion" className="text-sm font-medium text-foreground">
+                  Motivo / descripción <span className="text-rose-400">*</span>
                 </label>
-                <Textarea
+                <Textarea id="pagos-motivo-descripcion"
                   value={motivoPerdida}
                   onChange={(e) => setMotivoPerdida(e.target.value)}
                   placeholder="Ej: cliente salió mientras el cajero atendía, mesero descuidó la mesa..."

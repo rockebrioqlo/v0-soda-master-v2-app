@@ -268,7 +268,7 @@ export function EmpleadosTab() {
                       )}
                     </TableCell>
                     <TableCell className="text-right">
-                      <Button variant="ghost" size="icon" onClick={() => abrirEditar(e)}>
+                      <Button aria-label={`Editar a ${e.nombre}`} variant="ghost" size="icon" onClick={() => abrirEditar(e)}>
                         <Edit className="h-4 w-4" />
                       </Button>
                     </TableCell>
@@ -286,18 +286,18 @@ export function EmpleadosTab() {
             <DialogTitle>{editing ? 'Editar empleado' : 'Nuevo empleado'}</DialogTitle>
           </DialogHeader>
           <div className="grid gap-3 py-2">
-            <Input
+            <Input aria-label="Nombre"
               placeholder="Nombre *"
               value={form.nombre}
               onChange={(ev) => setForm({ ...form, nombre: ev.target.value })}
             />
             <div className="grid grid-cols-2 gap-2">
-              <Input
+              <Input aria-label="Cargo"
                 placeholder="Cargo"
                 value={form.cargo}
                 onChange={(ev) => setForm({ ...form, cargo: ev.target.value })}
               />
-              <Input
+              <Input aria-label="Documento (RUT)"
                 placeholder="Documento (RUT)"
                 value={form.documento}
                 onChange={(ev) => setForm({ ...form, documento: ev.target.value })}
@@ -308,12 +308,12 @@ export function EmpleadosTab() {
               Otro documento (extranjero, pasaporte): no se valida como RUT
             </label>
             <div className="grid grid-cols-2 gap-2">
-              <Input
+              <Input aria-label="Teléfono"
                 placeholder="Teléfono"
                 value={form.telefono}
                 onChange={(ev) => setForm({ ...form, telefono: ev.target.value })}
               />
-              <Input
+              <Input aria-label="Email"
                 placeholder="Email"
                 value={form.email}
                 onChange={(ev) => setForm({ ...form, email: ev.target.value })}
@@ -321,8 +321,8 @@ export function EmpleadosTab() {
             </div>
             <div className="grid grid-cols-2 gap-2">
               <div>
-                <label className="text-xs text-muted-foreground">Sueldo base</label>
-                <Input
+                <label htmlFor="empleados-sueldo-base" className="text-xs text-muted-foreground">Sueldo base</label>
+                <Input id="empleados-sueldo-base"
                   type="number"
                   min="0"
                   step="0.01"
@@ -331,14 +331,14 @@ export function EmpleadosTab() {
                 />
               </div>
               <div>
-                <label className="text-xs text-muted-foreground">Periodicidad</label>
+                <label htmlFor="empleados-periodicidad" className="text-xs text-muted-foreground">Periodicidad</label>
                 <Select
                   value={form.periodicidad}
                   onValueChange={(v) =>
                     setForm({ ...form, periodicidad: v as Empleado['periodicidad'] })
                   }
                 >
-                  <SelectTrigger>
+                  <SelectTrigger id="empleados-periodicidad">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -353,23 +353,23 @@ export function EmpleadosTab() {
             </div>
             <div className="grid grid-cols-2 gap-2">
               <div>
-                <label className="text-xs text-muted-foreground">Fecha ingreso</label>
-                <Input
+                <label htmlFor="empleados-fecha-ingreso" className="text-xs text-muted-foreground">Fecha ingreso</label>
+                <Input id="empleados-fecha-ingreso"
                   type="date"
                   value={form.fecha_ingreso}
                   onChange={(ev) => setForm({ ...form, fecha_ingreso: ev.target.value })}
                 />
               </div>
               <div>
-                <label className="text-xs text-muted-foreground">Fecha egreso</label>
-                <Input
+                <label htmlFor="empleados-fecha-egreso" className="text-xs text-muted-foreground">Fecha egreso</label>
+                <Input id="empleados-fecha-egreso"
                   type="date"
                   value={form.fecha_egreso}
                   onChange={(ev) => setForm({ ...form, fecha_egreso: ev.target.value })}
                 />
               </div>
             </div>
-            <Textarea
+            <Textarea aria-label="Notas"
               placeholder="Notas"
               value={form.notas}
               onChange={(ev) => setForm({ ...form, notas: ev.target.value })}

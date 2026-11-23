@@ -124,8 +124,9 @@ export function LoginForm() {
           )}
           <form onSubmit={handleSubmit} className="space-y-6">
             <div className="space-y-2">
-              <label className="text-sm text-zinc-400">Email</label>
+              <label htmlFor="login-email" className="text-sm text-zinc-400">Email</label>
               <Input
+                id="login-email"
                 type="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
@@ -136,9 +137,10 @@ export function LoginForm() {
             </div>
 
             <div className="space-y-2">
-              <label className="text-sm text-zinc-400">PIN</label>
+              <label htmlFor="login-pin" className="text-sm text-zinc-400">PIN</label>
               <div className="flex items-center gap-2">
                 <Input
+                  id="login-pin"
                   type="password"
                   value={pin}
                   onChange={handlePinChange}
@@ -151,11 +153,13 @@ export function LoginForm() {
               </div>
             </div>
 
-            {/* Numeric Keypad */}
-            <div className="grid grid-cols-3 gap-2">
+            {/* Numeric Keypad. Sesión 21b (K2, #11): grupo con nombre y fuera del orden de Tab (12 paradas entre el
+                PIN y "Ingresar"); con teclado se escribe en el campo PIN, el teclado en pantalla sigue para ratón y toque. */}
+            <div role="group" aria-label="Teclado numérico" className="grid grid-cols-3 gap-2">
               {[1, 2, 3, 4, 5, 6, 7, 8, 9].map((digit) => (
                 <Button
                   key={digit}
+                  tabIndex={-1}
                   type="button"
                   variant="outline"
                   className="h-14 text-xl font-semibold border-border bg-muted/50 text-foreground hover:bg-amber-500/20 hover:text-amber-500"
@@ -165,14 +169,17 @@ export function LoginForm() {
                 </Button>
               ))}
               <Button
+                tabIndex={-1}
                 type="button"
                 variant="outline"
+                aria-label="Borrar todo"
                 className="h-14 border-border bg-muted/50 text-foreground hover:bg-red-500/20 hover:text-red-500"
                 onClick={handlePinClear}
               >
                 C
               </Button>
               <Button
+                tabIndex={-1}
                 type="button"
                 variant="outline"
                 className="h-14 text-xl font-semibold border-border bg-muted/50 text-foreground hover:bg-amber-500/20 hover:text-amber-500"
@@ -181,12 +188,14 @@ export function LoginForm() {
                 0
               </Button>
               <Button
+                tabIndex={-1}
                 type="button"
                 variant="outline"
+                aria-label="Borrar el último dígito"
                 className="h-14 border-border bg-muted/50 text-foreground hover:bg-red-500/20 hover:text-red-500"
                 onClick={handlePinDelete}
               >
-                <Delete className="h-5 w-5" />
+                <Delete className="h-5 w-5" aria-hidden="true" />
               </Button>
             </div>
 
@@ -218,7 +227,7 @@ export function LoginForm() {
           {/* Quick access for demo */}
           {accesosRapidos.length > 0 && (
           <div className="mt-6 border-t border-border pt-4">
-            <p className="mb-3 text-center text-xs text-zinc-500">Acceso rapido (demo)</p>
+            <p className="mb-3 text-center text-xs text-zinc-400">Acceso rapido (demo)</p>
             <div className="flex flex-wrap justify-center gap-2">
               {accesosRapidos.map((user) => (
                 <Button
@@ -233,7 +242,7 @@ export function LoginForm() {
                 </Button>
               ))}
             </div>
-            <p className="mt-2 text-center text-xs text-zinc-500">
+            <p className="mt-2 text-center text-xs text-zinc-400">
               PINs: Admin=1234, Carlos=2222, Maria=3333, Pedro=4444, Laura=5555
             </p>
           </div>

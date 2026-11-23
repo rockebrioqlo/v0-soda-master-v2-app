@@ -320,12 +320,12 @@ export function UsuariosPage() {
 
   const getRolBadgeColor = (rol: Rol) => {
     const colors: Record<Rol, string> = {
-      administrador: 'bg-purple-500',
-      admin: 'bg-purple-500',
-      mesero: 'bg-blue-500',
-      cocina: 'bg-orange-500',
-      bar: 'bg-pink-500',
-      cajero: 'bg-green-500'
+      administrador: 'bg-purple-600',
+      admin: 'bg-purple-600',
+      mesero: 'bg-blue-600',
+      cocina: 'bg-orange-500 text-zinc-950',
+      bar: 'bg-pink-700',
+      cajero: 'bg-green-700'
     }
     return colors[rol]
   }
@@ -373,7 +373,7 @@ export function UsuariosPage() {
                         {usuario.nombre}
                         {usuario.bloqueadoHasta && usuario.bloqueadoHasta > Date.now() && (
                           <Badge
-                            className="ml-2 bg-red-500 text-white"
+                            className="ml-2 bg-red-700 text-white"
                             title="Demasiados PIN fallidos"
                           >
                             Bloqueado hasta{' '}
@@ -397,7 +397,7 @@ export function UsuariosPage() {
                               variant="outline"
                               className={cn(
                                 'border-dashed text-xs',
-                                getRolBadgeColor(r as Rol).replace('bg-', 'border-').replace('-500', '-500/60'),
+                                getRolBadgeColor(r as Rol).split(' ')[0].replace('bg-', 'border-').replace('-500', '-500/60').replace('-600', '-600/60').replace('-700', '-700/60'),
                               )}
                               title="Rol adicional permanente"
                             >
@@ -407,7 +407,7 @@ export function UsuariosPage() {
                         </div>
                       </TableCell>
                       <TableCell className="text-center">
-                        <Button
+                        <Button aria-label={`${usuario.activo ? "Desactivar" : "Activar"} a ${usuario.nombre}`}
                           variant="ghost"
                           size="sm"
                           onClick={() => handleToggleActivo(usuario)}
@@ -456,6 +456,7 @@ export function UsuariosPage() {
                           <Button
                             variant="ghost"
                             size="icon"
+                            aria-label={`Editar a ${usuario.nombre}`}
                             onClick={() => handleEdit(usuario)}
                           >
                             <Edit className="h-4 w-4" />
@@ -464,6 +465,7 @@ export function UsuariosPage() {
                             variant="ghost"
                             size="icon"
                             className="text-red-500 hover:text-red-400"
+                            aria-label={`Eliminar a ${usuario.nombre}`}
                             onClick={() => handleDelete(usuario.id)}
                             disabled={usuario.id === state.usuarioActual?.id}
                           >
@@ -530,16 +532,16 @@ export function UsuariosPage() {
             </DialogHeader>
             <div className="space-y-4 py-4">
               <div className="space-y-2">
-                <label className="text-sm text-muted-foreground">Nombre</label>
-                <Input
+                <label htmlFor="usuario-nombre" className="text-sm text-muted-foreground">Nombre</label>
+                <Input id="usuario-nombre"
                   value={formData.nombre}
                   onChange={(e) => setFormData({ ...formData, nombre: e.target.value })}
                   className="border-border bg-muted"
                 />
               </div>
               <div className="space-y-2">
-                <label className="text-sm text-muted-foreground">Email</label>
-                <Input
+                <label htmlFor="usuario-email" className="text-sm text-muted-foreground">Email</label>
+                <Input id="usuario-email"
                   type="email"
                   value={formData.email}
                   onChange={(e) => setFormData({ ...formData, email: e.target.value })}
@@ -547,10 +549,10 @@ export function UsuariosPage() {
                 />
               </div>
               <div className="space-y-2">
-                <label className="text-sm text-muted-foreground">
+                <label htmlFor="usuario-pin" className="text-sm text-muted-foreground">
                   PIN {editingUsuario && '(dejar vacío para mantener el actual)'}
                 </label>
-                <Input
+                <Input id="usuario-pin"
                   type="password"
                   value={formData.pin}
                   onChange={(e) => setFormData({ ...formData, pin: e.target.value.replace(/\D/g, '') })}
@@ -561,10 +563,10 @@ export function UsuariosPage() {
               </div>
               {editingUsuario && editingUsuario.id === usuarioActual?.id && formData.pin && (
                 <div className="space-y-2">
-                  <label className="text-sm text-muted-foreground">
+                  <label htmlFor="usuario-tu-pin-actual-obligatorio" className="text-sm text-muted-foreground">
                     Tu PIN actual (obligatorio para cambiar tu propio PIN)
                   </label>
-                  <Input
+                  <Input id="usuario-tu-pin-actual-obligatorio"
                     type="password"
                     value={formData.pinActual}
                     onChange={(e) => setFormData({ ...formData, pinActual: e.target.value.replace(/\D/g, '') })}
@@ -576,12 +578,12 @@ export function UsuariosPage() {
                 </div>
               )}
               <div className="space-y-2">
-                <label className="text-sm text-muted-foreground">Rol principal</label>
+                <label htmlFor="usuario-rol-principal" className="text-sm text-muted-foreground">Rol principal</label>
                 <Select
                   value={formData.rol}
                   onValueChange={(v) => setFormData({ ...formData, rol: v as Rol })}
                 >
-                  <SelectTrigger className="border-border bg-muted">
+                  <SelectTrigger id="usuario-rol-principal" className="border-border bg-muted">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -654,6 +656,7 @@ export function UsuariosPage() {
               <div className="flex items-center justify-between rounded-lg bg-muted p-4">
                 <span className="text-sm text-foreground">Usuario Activo</span>
                 <Switch
+                  aria-label="Usuario activo"
                   checked={formData.activo}
                   onCheckedChange={(v) => setFormData({ ...formData, activo: v })}
                 />
@@ -688,6 +691,7 @@ export function UsuariosPage() {
                         {getRolLabel(rol)}
                       </Badge>
                       <Switch
+                        aria-label={`${getRolLabel(rol)}: puede dar descuentos`}
                         checked={permisos.puede}
                         onCheckedChange={(v) => setPermisosEdit({
                           ...permisosEdit,
@@ -698,10 +702,11 @@ export function UsuariosPage() {
                     {permisos.puede && (
                       <div className="space-y-4">
                         <div>
-                          <label className="mb-2 block text-sm text-muted-foreground">
+                          <div className="mb-2 block text-sm text-muted-foreground">
                             Límite máximo: {permisos.limiteMax}%
-                          </label>
+                          </div>
                           <Slider
+                            aria-label={`Límite máximo de descuento, ${getRolLabel(rol)}`}
                             value={[permisos.limiteMax]}
                             onValueChange={([v]) => setPermisosEdit({
                               ...permisosEdit,
@@ -715,6 +720,7 @@ export function UsuariosPage() {
                         <div className="flex items-center justify-between">
                           <span className="text-sm text-muted-foreground">Requiere motivo</span>
                           <Switch
+                            aria-label={`${getRolLabel(rol)}: requiere motivo`}
                             checked={permisos.requiereMotivo}
                             onCheckedChange={(v) => setPermisosEdit({
                               ...permisosEdit,
@@ -769,10 +775,10 @@ export function UsuariosPage() {
                 </p>
                 <div className="grid grid-cols-2 gap-3">
                   <div className="space-y-1">
-                    <label className="text-xs text-muted-foreground">
+                    <label htmlFor="usuario-vigencia-horas" className="text-xs text-muted-foreground">
                       Vigencia (horas)
                     </label>
-                    <Input
+                    <Input id="usuario-vigencia-horas"
                       type="number"
                       min={1}
                       max={720}
@@ -784,10 +790,10 @@ export function UsuariosPage() {
                     />
                   </div>
                   <div className="space-y-1">
-                    <label className="text-xs text-muted-foreground">
+                    <label htmlFor="usuario-motivo-opcional" className="text-xs text-muted-foreground">
                       Motivo (opcional)
                     </label>
-                    <Input
+                    <Input id="usuario-motivo-opcional"
                       value={permEspMotivo}
                       onChange={(e) => setPermEspMotivo(e.target.value)}
                       placeholder="Ej: cubre turno"
@@ -870,7 +876,7 @@ export function UsuariosPage() {
                             </div>
                             <div className="text-right">
                               {vigente ? (
-                                <Badge className="bg-emerald-600 text-white">
+                                <Badge className="bg-emerald-700 text-white">
                                   Vigente
                                 </Badge>
                               ) : (

@@ -221,8 +221,8 @@ export function KDSHistorialDialog({ open, onOpenChange, estacion }: Props) {
         </DialogHeader>
         <div className="flex flex-wrap items-end gap-3 border-b border-border/40 pb-3">
           <div>
-            <label className="mb-1 block text-xs text-muted-foreground">Fecha</label>
-            <Input
+            <label htmlFor="kds-historial-fecha" className="mb-1 block text-xs text-muted-foreground">Fecha</label>
+            <Input id="kds-historial-fecha"
               type="date"
               value={fecha}
               max={fechaHoyChile()}
@@ -255,7 +255,7 @@ export function KDSHistorialDialog({ open, onOpenChange, estacion }: Props) {
             >
               Ayer
             </Button>
-            <Button
+            <Button aria-label="Actualizar historial"
               variant="outline"
               size="sm"
               onClick={() => cargar(fecha)}

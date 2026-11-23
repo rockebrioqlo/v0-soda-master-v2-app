@@ -447,11 +447,11 @@ function ComandaCard({
   const itemBadge = (estado: ItemComanda['estado']) => {
     switch (estado) {
       case 'listo':
-        return <Badge className="bg-green-600 text-white text-xs">Listo</Badge>
+        return <Badge className="bg-green-700 text-white text-xs">Listo</Badge>
       case 'en_preparacion':
         return <Badge className="bg-amber-500 text-zinc-900 text-xs">Preparando</Badge>
       case 'problema':
-        return <Badge className="bg-red-500 text-white text-xs">Problema</Badge>
+        return <Badge className="bg-red-700 text-white text-xs">Problema</Badge>
       case 'entregado':
         return <Badge className="bg-zinc-500 text-white text-xs">Entregado</Badge>
       default:
@@ -481,7 +481,7 @@ function ComandaCard({
               <Badge className="bg-blue-600 text-white text-xs">PAGADA</Badge>
             )}
             {isDelayed && (
-              <Badge className="bg-red-500 text-white text-xs">
+              <Badge className="bg-red-700 text-white text-xs">
                 <AlertCircle className="mr-1 h-3 w-3" />
                 DEMORADO
               </Badge>
@@ -590,7 +590,7 @@ function ComandaCard({
                     </Button>
                     <Button
                       size="sm"
-                      className="bg-green-600 min-h-[40px] text-xs font-bold text-white hover:bg-green-500"
+                      className="bg-green-700 min-h-[40px] text-xs font-bold text-white hover:bg-green-800"
                       aria-label={`Listo: ${item.cantidad}x ${item.productoNombre}`}
                       onClick={() => handleItemStateChange(item.id, 'listo')}
                       disabled={isItemUpdating}
@@ -635,7 +635,7 @@ function ComandaCard({
                 Preparando
               </Button>
               <Button
-                className="bg-green-600 min-h-[44px] text-sm font-bold text-white hover:bg-green-500"
+                className="bg-green-700 min-h-[44px] text-sm font-bold text-white hover:bg-green-800"
                 onClick={() => handleBulkStateChange('listo')}
                 disabled={bulkUpdating}
               >

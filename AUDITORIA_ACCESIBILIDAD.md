@@ -163,3 +163,60 @@ El amber-500 sobre fondo oscuro ya no falla (era 2,06 a 2,13 sobre blanco) y el 
 - El layout de Mesas a 375 px mide 398 px de ancho (el desborde conocido de 1024 px aparece también en móvil); no es de esta sesión.
 - `pnpm prueba:completa --modulo=cobro` deja en el KDS comandas pagadas con ítems sin "listo" (31 pendientes y 79 pérdidas pendientes tras la corrida, F37): son datos de prueba que se vacían antes de entregar al cliente (P2).
 
+
+## 10. Estado tras la 21b
+
+Sesión 21b (23-11-2026, local, sin push). Mismo método que las sesiones 20 y 21a: compilación de producción en el puerto 3011, un admin temporal propio (creado con un script, eliminado al terminar), teclado real (Tab, Shift+Tab, Enter, Espacio, Esc) y contraste calculado con la fórmula de WCAG sobre los colores calculados por el navegador, componiendo transparencias. Sigue sin verificarse con un lector de pantalla real (NVDA).
+
+**Aviso sobre el medidor:** el navegador entrega los fondos de Tailwind como `lab(...)`, un formato que el primer medidor de esta sesión no leía (trataba esos fondos como transparentes y daba 0 fallos en todo). Se detectó al validar el medidor con tres `span` de prueba (blanco sobre `green-500`, `red-500` y `green-600`) y se corrigió hasta reproducir 2,22, 3,82 y 3,22. Todas las cifras de abajo son del medidor corregido.
+
+### Qué cambió
+
+| # | Estado | Cómo quedó |
+|---|---|---|
+| #4 Etiquetas | ✅ | Todo `<label>` tiene `htmlFor` con su `id` (login, Pagos, Caja, POS, Mermas, Inventario, Usuarios y el resto), y todo control sin etiqueta visible lleva `aria-label` (por ejemplo los Select de estado de cada mesa: "Estado de Mesa 1", y los campos que solo tenían `placeholder`). Cuatro `<label>` que no tenían control pasaron a `span`, `div` o `h3` (Stock actual, Límite máximo, Cantidad del POS, Vista previa en vivo). Corregido de paso un `htmlFor` que apuntaba a un `id` que no existía (Moneda y Área en Configuración: el `id` estaba en el Select y no en su `SelectTrigger`). Comprobado en el navegador: en Pagos, hacer clic en "Efectivo recibido" enfoca el campo; en Caja, el diálogo Abrir caja enfoca "Fondo inicial" |
+| #5 Botones de solo ícono | ✅ | 24 botones, más "C" y borrar del login, el Switch de Pagos, el cambio de estado activo/inactivo de Usuarios (que el recuento no veía: su contenido es una expresión con dos íconos) y los de las tarjetas de Mesas. Los del cajón de comanda del POS nombran el ítem ("Editar …", "Quitar …", "Agregar una unidad de …"); el lápiz, primer foco del cajón, es "Editar <producto>". `ui/slider.tsx` pasa el `aria-label` al control deslizante |
+| #8 Estructura | ✅ | Título por pantalla (`Mesas - Soda Master`, `Ingresar - Soda Master`, etc.; se actualiza al cambiar de pantalla, al recargar y en el login); `aria-label` en los 4 `<nav>`; enlace "Saltar al contenido" (primer Tab, visible al enfocarlo) hacia `<main id="contenido" tabIndex={-1}>`; `CardTitle` es `h2`; `h1` en el POS con la mesa abierta y en el cobro de una comanda de Pagos; el foco pasa al contenido al cambiar de pantalla, también tras elegir un destino en el cajón "Más" (375 px) y en la hamburguesa de tablet (800 px) |
+| #11 Teclado del login | ✅ | Decisión B del usuario: las 12 teclas con `tabIndex={-1}` dentro de `role="group" aria-label="Teclado numérico"`. De Email a "Ingresar" hay 3 Tab (Email, PIN, Ingresar) y Enter en el campo PIN envía; antes eran 12 paradas más. Las teclas siguen funcionando con ratón y con toque. La pista de PINs y los accesos rápidos no se tocaron |
+| Avisos "problema" del KDS | ✅ | `role="alert"`, sin autocierre, tope de 3 visibles (sale el más viejo por `timestamp`, no por orden de llegada, porque un sondeo trae varios a la vez; el desplazado no se marca como visto en el servidor, así que reaparece al recargar). Comprobado en el navegador con notificaciones de prueba dirigidas al usuario temporal: 4 seguidas dejan 3, siguen a los 24 s, el botón "Cerrar notificación" cierra uno con Enter, y al llegar 2 más con 3 visibles quedan los 3 más recientes. Los demás avisos conservan sus 6 s |
+| `motion-reduce` | ✅ | Una regla global en `app/globals.css` bajo `prefers-reduced-motion: reduce` que anula `animate-pulse` (el giro de `animate-spin` se mantiene: es la señal de que algo carga). Solo comprobada leyendo el código, porque el navegador integrado no cambia la preferencia |
+| Contraste | ✅ | Los pares fondo + texto de los estados de mesa y de comanda viven en `lib/helpers.ts`: "Libre" texto `zinc-950` sobre `green-500` (8,95), "Ocupada" y "Problema" blanco sobre `red-700` (6,42), "Listo", "Cobrar" y "Para entregar" blanco sobre `green-700` (4,94), `entregado` sobre `emerald-700` (5,37), `pagado` sobre `blue-600` (5,26), `en_cocina` y `en_preparacion` con texto `zinc-950`. `rose-700` como texto pasa a `rose-400` (6,92), `zinc-500` del login y de `/menu` a `zinc-400` (7,53), `red-600` del aviso a `red-400` (6,84). Al medir aparecieron fallos que la 21a no vio: `emerald-600` blanco 3,67 (los 80 botones "Cobrar" de Pagos), textos `emerald-600`, `sky-600` y `amber-700` en Inventario, y "Sin asignar" de Mermas (blanco sobre `orange-500`, 2,89); todos corregidos con tonos que funcionan en oscuro. Las insignias de rol de Usuarios también salían con blanco sobre `green-500`, `orange-500` o `pink-500` |
+
+### Contraste medido (build de producción, medidor corregido)
+
+Cuenta de elementos de texto con razón menor a 4,5:1 (3:1 en texto grande). Los controles deshabilitados están exentos de WCAG y se anotan aparte.
+
+| Pantalla | Antes (21a, sección 9) | Después (21b) |
+|---|---|---|
+| Login | 2 fallos + 1 deshabilitado | **0** + 1 deshabilitado ("Ingresar", 2,78) |
+| `/menu` | `zinc-500` 4,12 en el pie | **0** |
+| Dashboard | 0 | **0** |
+| Mesas | 20 | **0** |
+| POS, selector de mesa | 21 | **0** |
+| POS, pedido | 2 + 4 deshabilitados | **0** + 3 deshabilitados ("Agotado" 2,38, `$2.200` 3,01 y "Enviar nuevos" 2,78, todos dentro de botones deshabilitados) |
+| KDS (con comandas) | 94 | **0** (661 textos) |
+| Pagos | 160 | **0** (630 textos) |
+| Caja (y el diálogo Abrir caja) | 0 | **0** + 1 deshabilitado ("Abrir", 2,78) |
+| Cajón "Más" a 375 px | sin medida | **0** |
+| Inventario, Mermas, Usuarios, Finanzas, Reportes, Config | sin medida | **0** (antes de corregir: 40 en Inventario y 1 en Mermas) |
+
+**"Agotado" y los ámbar del POS:** decididos con la medida real. Los tres textos que quedan bajo 4,5:1 están dentro de botones deshabilitados (un producto agotado, "Enviar nuevos" sin ítems nuevos), así que están exentos y no se tocaron. Los demás textos ámbar del POS miden por encima de 4,5:1.
+
+### Etiquetas y nombres: antes y después
+
+| | Antes | Después |
+|---|---|---|
+| `<label>` sin asociar (recuento de la Fase 1) | 114 de 155 | **0** |
+| Controles sin nombre accesible (sin `aria-label`, sin `htmlFor`→`id`, fuera de un label) | 163 | **0** |
+| Botones de solo ícono sin nombre | 24 (más "C", el Switch de Pagos y el de Usuarios) | **0** |
+| Elementos interactivos sin nombre, en el árbol del navegador (12 pantallas) | decenas (la 21a lo anotó por pantalla) | **0** en las 12 (Dashboard 17, Mesas 98, POS 38, KDS 336, Inventario 178, Finanzas 27, Usuarios 66, Pagos 101, Caja 19, Mermas 29, Reportes 21, Config 32) |
+| Pantallas con un solo `h1` y título propio | 1 título para todas | **12 de 12**, más login y `/menu` |
+
+### Lo que sigue fallando o no se pudo verificar
+
+- **Lector de pantalla real (NVDA):** no se usó; los nombres salen del DOM.
+- **Solo por código:** los diálogos que solo se ven con datos o roles que la sesión no abrió (Nueva Mesa, personalizar producto, Usuarios, Compras, Activos, Gastos, Empleados, Proveedores, Recetas) están cubiertos por la prueba estática de etiquetas y nombres, no por el navegador. `prefers-reduced-motion` tampoco se puede conmutar en el navegador integrado.
+- **Teclado en pantalla del login:** con la decisión B ya no se llega a las teclas con Tab; quien dependa de un conmutador o de un teclado virtual por barrido llega al campo PIN pero no a las teclas.
+- **Gráficos de Recharts** (Dashboard, Reportes): después del enlace "saltar al contenido", el siguiente Tab cae en elementos internos del gráfico. Sin `accessibilityLayer` ni alternativa en texto; menor, fuera del alcance de K2.
+- **Menores de la auditoría que no se tocaron:** objetivos táctiles de 16 px, desborde horizontal a 800 y 1024 px (también en Pagos), aviso previo de fin de sesión, `lang="es-CL"` y el recuadro "SM" sin `aria-hidden`.
+- **Datos de prueba que dejan las baterías:** `pnpm prueba:completa --modulo=cobro` sigue sumando ítems pendientes y pérdidas en el KDS y Pagos (F37, se vacían en P2).

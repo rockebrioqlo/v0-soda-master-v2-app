@@ -1208,7 +1208,7 @@ export function POSPage() {
           </div>
         )}
         {esCajero && permisoAperturaVigente === true && permisoAperturaInfo?.valido_hasta && (
-          <div className="rounded-lg border border-emerald-500/40 bg-emerald-500/5 p-3 text-xs text-emerald-600">
+          <div className="rounded-lg border border-emerald-500/40 bg-emerald-500/5 p-3 text-xs text-emerald-400">
             Permiso de apertura de mesa vigente hasta{' '}
             {new Date(permisoAperturaInfo.valido_hasta).toLocaleString()}
           </div>
@@ -1231,8 +1231,8 @@ export function POSPage() {
               <Badge
                 className={cn(
                   'mt-1 capitalize',
-                  mesa.estado === 'libre'     && 'bg-green-500 text-white',
-                  mesa.estado === 'ocupada'   && 'bg-red-500 text-white',
+                  mesa.estado === 'libre'     && 'bg-green-500 text-zinc-950',
+                  mesa.estado === 'ocupada'   && 'bg-red-700 text-white',
                   mesa.estado === 'reservada' && 'bg-yellow-500 text-zinc-900'
                 )}
               >
@@ -1265,9 +1265,9 @@ export function POSPage() {
         <div className="flex-1 overflow-auto md:border-r md:border-border p-4">
           <div className="mb-4 flex items-center justify-between gap-2">
             <div className="flex items-center gap-3 flex-wrap">
-              <h2 className="text-xl font-bold text-foreground">{selectedMesa?.nombre}</h2>
+              <h1 className="text-xl font-bold text-foreground">{selectedMesa?.nombre}</h1>
               {currentComanda && (
-                <Badge className={cn('text-white', getEstadoComandaColor(currentComanda.estado))}>
+                <Badge className={cn(getEstadoComandaColor(currentComanda.estado))}>
                   {getEstadoComandaLabel(currentComanda.estado)}
                 </Badge>
               )}
@@ -1404,12 +1404,12 @@ export function POSPage() {
                             size="icon"
                             className="h-6 w-6 text-muted-foreground hover:text-foreground"
                             onClick={() => handleEditItem(item)}
-                            title="Editar ítem"
+                            title="Editar ítem" aria-label={`Editar ${item.productoNombre}`}
                           >
                             <Pencil className="h-3.5 w-3.5" />
                           </Button>
                         )}
-                        <Button
+                        <Button aria-label={`Quitar ${item.productoNombre}`}
                           variant="ghost"
                           size="icon"
                           className="h-6 w-6 text-red-500 hover:text-red-600"
@@ -1421,12 +1421,12 @@ export function POSPage() {
                     </div>
                     <div className="mt-2 flex items-center justify-between">
                       <div className="flex items-center gap-2">
-                        <Button variant="outline" size="icon" className="h-7 w-7"
+                        <Button aria-label={`Quitar una unidad de ${item.productoNombre}`} variant="outline" size="icon" className="h-7 w-7"
                           onClick={() => handleUpdateItemQty(item.id, -1)}>
                           <Minus className="h-3 w-3" />
                         </Button>
                         <span className="w-6 text-center text-sm font-medium text-foreground">{item.cantidad}</span>
-                        <Button variant="outline" size="icon" className="h-7 w-7"
+                        <Button aria-label={`Agregar una unidad de ${item.productoNombre}`} variant="outline" size="icon" className="h-7 w-7"
                           onClick={() => handleUpdateItemQty(item.id, 1)}>
                           <Plus className="h-3 w-3" />
                         </Button>
@@ -1514,7 +1514,7 @@ export function POSPage() {
                 {currentComanda && isPersistedId(currentComanda.id) ? 'Enviar nuevos' : 'Enviar'}
               </Button>
               <Button
-                className="bg-green-600 text-white hover:bg-green-500 font-semibold"
+                className="bg-green-700 text-white hover:bg-green-800 font-semibold"
                 onClick={handleGoToPago}
                 disabled={!currentComanda || currentComanda.items.length === 0}
               >
@@ -1635,12 +1635,12 @@ export function POSPage() {
                               size="icon"
                               className="h-8 w-8 text-muted-foreground hover:text-foreground"
                               onClick={() => handleEditItem(item)}
-                              title="Editar ítem"
+                              title="Editar ítem" aria-label={`Editar ${item.productoNombre}`}
                             >
                               <Pencil className="h-4 w-4" />
                             </Button>
                           )}
-                          <Button
+                          <Button aria-label={`Quitar ${item.productoNombre}`}
                             variant="ghost"
                             size="icon"
                             className="h-8 w-8 text-red-500 hover:text-red-600"
@@ -1652,7 +1652,7 @@ export function POSPage() {
                       </div>
                       <div className="mt-2 flex items-center justify-between">
                         <div className="flex items-center gap-2">
-                          <Button
+                          <Button aria-label={`Quitar una unidad de ${item.productoNombre}`}
                             variant="outline"
                             size="icon"
                             className="h-9 w-9"
@@ -1663,7 +1663,7 @@ export function POSPage() {
                           <span className="w-6 text-center text-base font-medium text-foreground">
                             {item.cantidad}
                           </span>
-                          <Button
+                          <Button aria-label={`Agregar una unidad de ${item.productoNombre}`}
                             variant="outline"
                             size="icon"
                             className="h-9 w-9"
@@ -1769,7 +1769,7 @@ export function POSPage() {
                   {currentComanda && isPersistedId(currentComanda.id) ? 'Enviar nuevos' : 'Enviar'}
                 </Button>
                 <Button
-                  className="min-h-[56px] bg-green-600 font-semibold text-white hover:bg-green-500"
+                  className="min-h-[56px] bg-green-700 font-semibold text-white hover:bg-green-800"
                   onClick={() => {
                     handleGoToPago()
                     setShowComandaDrawer(false)
@@ -1939,10 +1939,10 @@ export function POSPage() {
             )}
 
             <div>
-              <label className="mb-1.5 block text-sm font-medium text-amber-500">
+              <label htmlFor="pos-nota-especial" className="mb-1.5 block text-sm font-medium text-amber-500">
                 📝 Nota especial
               </label>
-              <Textarea
+              <Textarea id="pos-nota-especial"
                 value={burgerNotaEspecial}
                 onChange={(e) => setBurgerNotaEspecial(e.target.value)}
                 placeholder="Sin sal, bien cocida, sin gluten..."
@@ -2018,9 +2018,9 @@ export function POSPage() {
           <div className="space-y-4 py-4">
             {selectedItem?.variantes && selectedItem.variantes.length > 0 && (
               <div>
-                <label className="mb-2 block text-sm font-medium text-muted-foreground">Tamaño / Variante</label>
+                <label htmlFor="pos-tamano-variante" className="mb-2 block text-sm font-medium text-muted-foreground">Tamaño / Variante</label>
                 <Select value={itemVariante} onValueChange={setItemVariante}>
-                  <SelectTrigger className="border-border bg-muted">
+                  <SelectTrigger id="pos-tamano-variante" className="border-border bg-muted">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -2035,21 +2035,21 @@ export function POSPage() {
             )}
 
             <div>
-              <label className="mb-2 block text-sm font-medium text-muted-foreground">Cantidad</label>
+              <span className="mb-2 block text-sm font-medium text-muted-foreground">Cantidad</span>
               <div className="flex items-center gap-4">
-                <Button variant="outline" size="icon" onClick={() => setItemCantidad(Math.max(1, itemCantidad - 1))}>
+                <Button aria-label="Quitar una unidad" variant="outline" size="icon" onClick={() => setItemCantidad(Math.max(1, itemCantidad - 1))}>
                   <Minus className="h-4 w-4" />
                 </Button>
                 <span className="w-12 text-center text-xl font-bold text-foreground">{itemCantidad}</span>
-                <Button variant="outline" size="icon" onClick={() => setItemCantidad(itemCantidad + 1)}>
+                <Button aria-label="Agregar una unidad" variant="outline" size="icon" onClick={() => setItemCantidad(itemCantidad + 1)}>
                   <Plus className="h-4 w-4" />
                 </Button>
               </div>
             </div>
 
             <div>
-              <label className="mb-2 block text-sm font-medium text-muted-foreground">Notas</label>
-              <Textarea
+              <label htmlFor="pos-notas" className="mb-2 block text-sm font-medium text-muted-foreground">Notas</label>
+              <Textarea id="pos-notas"
                 value={itemNotas}
                 onChange={(e) => setItemNotas(e.target.value)}
                 placeholder="Ej: sin hielo, con limón..."
@@ -2089,10 +2089,10 @@ export function POSPage() {
             )}
 
             <div>
-              <label className="mb-2 block text-sm font-medium text-amber-500">
+              <label htmlFor="pos-nota-especial-2" className="mb-2 block text-sm font-medium text-amber-500">
                 📝 Nota especial
               </label>
-              <Textarea
+              <Textarea id="pos-nota-especial-2"
                 value={itemNotaEspecial}
                 onChange={(e) => setItemNotaEspecial(e.target.value)}
                 placeholder="Sin sal, bien cocida, sin gluten..."
@@ -2139,9 +2139,9 @@ export function POSPage() {
               </div>
             )}
             <div>
-              <label className="mb-2 block text-sm font-medium text-muted-foreground">Tipo</label>
+              <label htmlFor="pos-tipo" className="mb-2 block text-sm font-medium text-muted-foreground">Tipo</label>
               <Select value={descuentoTipo} onValueChange={(v) => setDescuentoTipo(v as TipoDescuento)}>
-                <SelectTrigger className="border-border bg-muted"><SelectValue /></SelectTrigger>
+                <SelectTrigger id="pos-tipo" className="border-border bg-muted"><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="porcentaje">Porcentaje (%)</SelectItem>
                   <SelectItem value="monto_fijo">Monto fijo ($)</SelectItem>
@@ -2152,10 +2152,10 @@ export function POSPage() {
             </div>
             {descuentoTipo !== 'cortesia_total' && (
               <div>
-                <label className="mb-2 block text-sm font-medium text-muted-foreground">
+                <label htmlFor="pos-valor" className="mb-2 block text-sm font-medium text-muted-foreground">
                   Valor {descuentoTipo === 'porcentaje' ? '(%)' : '($)'}
                 </label>
-                <Input
+                <Input id="pos-valor"
                   type="number"
                   value={descuentoValor}
                   onChange={(e) => setDescuentoValor(e.target.value)}
@@ -2167,10 +2167,10 @@ export function POSPage() {
               </div>
             )}
             <div>
-              <label className="mb-2 block text-sm font-medium text-muted-foreground">
+              <label htmlFor="pos-motivo" className="mb-2 block text-sm font-medium text-muted-foreground">
                 Motivo {(esCortesia || permisoActual?.requiereMotivo || requiereAdmin) && <span className="text-red-400">*</span>}
               </label>
-              <Textarea
+              <Textarea id="pos-motivo"
                 value={descuentoMotivo}
                 onChange={(e) => setDescuentoMotivo(e.target.value)}
                 placeholder="Motivo del descuento..."
@@ -2182,7 +2182,7 @@ export function POSPage() {
                 <p className="mb-2 text-sm font-medium text-red-200">
                   Requiere autorización del administrador
                 </p>
-                <Input
+                <Input aria-label="PIN del administrador"
                   type="password"
                   value={authPin}
                   onChange={(e) => setAuthPin(e.target.value)}
@@ -2232,14 +2232,14 @@ export function POSPage() {
               !propinasHabilitadas && 'opacity-50',
             )}>
               <div className="space-y-0.5">
-                <Label className="text-sm font-medium">Incluir propina</Label>
+                <Label htmlFor="pos-incluir-propina" className="text-sm font-medium">Incluir propina</Label>
                 <p className="text-xs text-muted-foreground">
                   {propinasHabilitadas
                     ? `Propina sugerida: ${formatCurrency(propinaMonto)}`
                     : 'Las propinas están deshabilitadas en Configuración'}
                 </p>
               </div>
-              <Switch
+              <Switch id="pos-incluir-propina"
                 checked={precuentaIncluirPropina && propinasHabilitadas}
                 onCheckedChange={(v) => setPrecuentaIncluirPropina(!!v)}
                 disabled={!propinasHabilitadas}
@@ -2549,7 +2549,7 @@ function EntregasButton({ count, onClick }: { count: number; onClick: () => void
       className={cn(
         'relative gap-2',
         count > 0
-          ? 'bg-green-600 text-white hover:bg-green-500 animate-pulse'
+          ? 'bg-green-700 text-white hover:bg-green-800 animate-pulse'
           : 'border-border'
       )}
     >
@@ -2667,7 +2667,7 @@ function EntregasDialog({
                                   {esBar(it.categoria) ? 'Bar' : 'Cocina'}
                                 </Badge>
                                 {yaEntregado && (
-                                  <Badge className="bg-emerald-600 text-white text-[10px]">
+                                  <Badge className="bg-emerald-700 text-white text-[10px]">
                                     <Check className="mr-1 h-3 w-3" />
                                     Entregado
                                   </Badge>
@@ -2705,7 +2705,7 @@ function EntregasDialog({
                                 size="sm"
                                 disabled={trabajando}
                                 onClick={() => onMarcarEntregado(it.comandaId, it.itemId)}
-                                className="bg-green-600 text-white hover:bg-green-500 shrink-0"
+                                className="bg-green-700 text-white hover:bg-green-800 shrink-0"
                               >
                                 {trabajando ? '…' : 'Entregado'}
                               </Button>

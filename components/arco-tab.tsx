@@ -132,9 +132,9 @@ export function ArcoTab() {
       <CardContent className="space-y-4">
         <div className="flex flex-wrap items-end gap-3">
           <div className="space-y-1">
-            <Label>Estado</Label>
+            <Label htmlFor="arco-estado">Estado</Label>
             <Select value={estado} onValueChange={setEstado}>
-              <SelectTrigger className="w-44">
+              <SelectTrigger id="arco-estado" className="w-44">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -290,32 +290,32 @@ function NuevaSolicitud({ abierto, onCerrar, onCreada }: { abierto: boolean; onC
         </DialogHeader>
         <div className="grid gap-3">
           <div className="space-y-1">
-            <Label>Derecho</Label>
+            <Label htmlFor="arco-derecho">Derecho</Label>
             <Select value={tipo} onValueChange={setTipo}>
-              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectTrigger id="arco-derecho"><SelectValue /></SelectTrigger>
               <SelectContent>{TIPOS.map((t) => <SelectItem key={t.valor} value={t.valor}>{t.etiqueta}</SelectItem>)}</SelectContent>
             </Select>
           </div>
           <div className="space-y-1">
-            <Label>Tipo de titular</Label>
+            <Label htmlFor="arco-tipo-de-titular">Tipo de titular</Label>
             <Select value={titularTipo} onValueChange={setTitularTipo}>
-              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectTrigger id="arco-tipo-de-titular"><SelectValue /></SelectTrigger>
               <SelectContent>{TITULARES.map((t) => <SelectItem key={t.valor} value={t.valor}>{t.etiqueta}</SelectItem>)}</SelectContent>
             </Select>
           </div>
           <div className="space-y-1">
-            <Label>Titular</Label>
+            <Label htmlFor="arco-titular">Titular</Label>
             <Select value={titularId} onValueChange={setTitularId}>
-              <SelectTrigger><SelectValue placeholder="Elige a la persona" /></SelectTrigger>
+              <SelectTrigger id="arco-titular"><SelectValue placeholder="Elige a la persona" /></SelectTrigger>
               <SelectContent>
                 {opciones.map((o) => <SelectItem key={o.id} value={o.id}>{o.nombre}</SelectItem>)}
               </SelectContent>
             </Select>
           </div>
           <div className="space-y-1">
-            <Label>Canal por el que llegó</Label>
+            <Label htmlFor="arco-canal-por-el-que">Canal por el que llegó</Label>
             <Select value={canal} onValueChange={setCanal}>
-              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectTrigger id="arco-canal-por-el-que"><SelectValue /></SelectTrigger>
               <SelectContent>{CANALES.map((c) => <SelectItem key={c.valor} value={c.valor}>{c.etiqueta}</SelectItem>)}</SelectContent>
             </Select>
           </div>
@@ -436,7 +436,7 @@ function GestionSolicitud({ solicitud, onCerrar, onCambio }: { solicitud: Solici
             {textoSugerido && (
               <div className="space-y-2">
                 <p className="font-medium">Texto sugerido para el titular (borrador, revisión legal)</p>
-                <Textarea readOnly value={textoSugerido} rows={7} />
+                <Textarea aria-label="Texto sugerido para el titular" readOnly value={textoSugerido} rows={7} />
                 <Button size="sm" variant="outline" className="border-border" onClick={copiar}>
                   <ClipboardCopy className="mr-2 h-4 w-4" />
                   Copiar
