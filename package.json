@@ -12,7 +12,9 @@
     "start": "next start",
     "lint": "eslint .",
     "prueba:humo": "node --env-file=.env.local scripts/pruebas/humo.cjs",
-    "prueba:completa": "node --env-file=.env.local scripts/pruebas/completa.cjs"
+    "prueba:completa": "node --env-file=.env.local scripts/pruebas/completa.cjs",
+    "prueba:esquema": "node --env-file=.env.local scripts/pruebas/esquema.cjs",
+    "db:esquema-base": "node --env-file=.env.local scripts/sql/crear-esquema.cjs"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.9.1",
