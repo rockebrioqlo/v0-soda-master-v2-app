@@ -7,6 +7,7 @@ import { Input } from '@/components/ui/input'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Delete, Loader2 } from 'lucide-react'
 import { showToast } from '@/components/toast'
+import { AvisoPrivacidad } from '@/components/aviso-privacidad'
 import { borrarAvisoLogin, leerAvisoLogin, MENSAJES_CIERRE, type MotivoCierre } from '@/lib/sesion-cliente'
 
 export function LoginForm() {
@@ -236,6 +237,8 @@ export function LoginForm() {
           )}
         </CardContent>
       </Card>
+
+      <AvisoPrivacidad variante="login" className="mt-6 max-w-md text-center text-xs text-zinc-400" />
     </div>
   )
 }

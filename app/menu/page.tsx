@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { AvisoPrivacidad } from '@/components/aviso-privacidad'
 
 type Producto = {
   id: string
@@ -227,6 +228,7 @@ export default function MenuPage() {
       <footer className="mt-8 border-t border-zinc-800 px-4 py-6 text-center text-xs text-zinc-500 sm:px-6">
         <p className="font-medium text-zinc-400">{nombreNegocio}</p>
         <p className="mt-1">Precios incluyen IVA</p>
+        <AvisoPrivacidad variante="menu" className="mt-3" />
       </footer>
     </div>
   )
