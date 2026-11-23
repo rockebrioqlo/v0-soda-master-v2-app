@@ -20,16 +20,35 @@ function notifyListeners() {
   toastListeners.forEach(listener => listener([...toasts]))
 }
 
+// Sesión 21a (K2, #3): los errores no se cierran solos (WCAG 2.2.1: quien usa un lector o tarda en leer los perdía a los
+// 4 s) y hay como máximo 3 a la vez: al entrar uno nuevo sale el más viejo. Los demás avisos siguen en 4 s.
+const MAX_ERRORES = 3
+
+function quitarToast(id: string) {
+  const timer = toastTimers.get(id)
+  if (timer) {
+    clearTimeout(timer)
+    toastTimers.delete(id)
+  }
+  toasts = toasts.filter(t => t.id !== id)
+}
+
 export function showToast(message: string, type: ToastType = 'info') {
   const id = Math.random().toString(36).substring(2, 9)
+  if (type === 'error') {
+    const errores = toasts.filter(t => t.type === 'error')
+    errores.slice(0, Math.max(0, errores.length - (MAX_ERRORES - 1))).forEach(t => quitarToast(t.id))
+  }
   toasts.push({ id, message, type })
   notifyListeners()
 
-  toastTimers.set(id, setTimeout(() => {
-    toastTimers.delete(id)
-    toasts = toasts.filter(t => t.id !== id)
-    notifyListeners()
-  }, 4000))
+  if (type !== 'error') {
+    toastTimers.set(id, setTimeout(() => {
+      toastTimers.delete(id)
+      toasts = toasts.filter(t => t.id !== id)
+      notifyListeners()
+    }, 4000))
+  }
 }
 
 export function ToastContainer() {
@@ -50,12 +69,7 @@ export function ToastContainer() {
   }, [])
 
   const removeToast = (id: string) => {
-    const timer = toastTimers.get(id)
-    if (timer) {
-      clearTimeout(timer)
-      toastTimers.delete(id)
-    }
-    toasts = toasts.filter(t => t.id !== id)
+    quitarToast(id)
     notifyListeners()
   }
 
@@ -85,26 +99,37 @@ export function ToastContainer() {
     }
   }
 
+  const renderToast = (toast: Toast) => (
+    <div
+      key={toast.id}
+      className={cn(
+        'flex items-center gap-3 rounded-lg border bg-card px-4 py-3 shadow-lg animate-in slide-in-from-right-5 motion-reduce:animate-none',
+        getStyles(toast.type)
+      )}
+    >
+      <span aria-hidden="true">{getIcon(toast.type)}</span>
+      <span className="text-sm text-foreground">{toast.message}</span>
+      <button
+        type="button"
+        onClick={() => removeToast(toast.id)}
+        aria-label="Cerrar aviso"
+        className="ml-2 text-muted-foreground hover:text-foreground"
+      >
+        <X className="h-4 w-4" aria-hidden="true" />
+      </button>
+    </div>
+  )
+
+  // Dos regiones siempre montadas (un lector solo anuncia lo que cambia en una región que ya existía):
+  // los errores con role="alert" (anuncio inmediato) y el resto con role="status" (anuncio educado).
   return (
     <div className="fixed top-4 right-4 z-[100] flex flex-col gap-2">
-      {currentToasts.map(toast => (
-        <div
-          key={toast.id}
-          className={cn(
-            'flex items-center gap-3 rounded-lg border px-4 py-3 shadow-lg animate-in slide-in-from-right-5',
-            getStyles(toast.type)
-          )}
-        >
-          {getIcon(toast.type)}
-          <span className="text-sm text-foreground">{toast.message}</span>
-          <button
-            onClick={() => removeToast(toast.id)}
-            className="ml-2 text-muted-foreground hover:text-foreground"
-          >
-            <X className="h-4 w-4" />
-          </button>
-        </div>
-      ))}
+      <div role="alert" className="flex flex-col gap-2">
+        {currentToasts.filter(t => t.type === 'error').map(renderToast)}
+      </div>
+      <div role="status" className="flex flex-col gap-2">
+        {currentToasts.filter(t => t.type !== 'error').map(renderToast)}
+      </div>
     </div>
   )
 }

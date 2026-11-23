@@ -25,6 +25,7 @@ import {
 } from '@/components/ui/select'
 import { cn } from '@/lib/utils'
 import { formatCurrency, generateId, getEstadoComandaColor, getEstadoComandaLabel } from '@/lib/helpers'
+import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet'
 import { Plus, Minus, Trash2, Send, Printer, Percent, ChefHat, Wine, Star, ArrowLeft, Beer, GlassWater, ShoppingCart, X, Receipt, Check, Pencil } from 'lucide-react'
 import { Switch } from '@/components/ui/switch'
 import { Label } from '@/components/ui/label'
@@ -1214,31 +1215,30 @@ export function POSPage() {
         )}
         <div className="grid gap-4 grid-cols-2 sm:grid-cols-3 lg:grid-cols-4">
           {mesas.map((mesa) => (
-            <Card
+            <button
               key={mesa.id}
+              type="button"
               className={cn(
-                'cursor-pointer border-2 transition-all hover:scale-[1.02]',
+                'bg-card text-card-foreground flex flex-col items-center justify-center gap-1 rounded-xl border-2 p-6 shadow-sm transition-all hover:scale-[1.02] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500',
                 mesa.estado === 'libre'     && 'border-green-500/50 bg-green-500/5 hover:border-green-500',
                 mesa.estado === 'ocupada'   && 'border-red-500/50   bg-red-500/5   hover:border-red-500',
                 mesa.estado === 'reservada' && 'border-yellow-500/50 bg-yellow-500/5 hover:border-yellow-500'
               )}
               onClick={() => handleSelectMesa(mesa.id)}
             >
-              <CardContent className="flex flex-col items-center justify-center gap-1 p-6">
-                <span className="text-xl font-bold text-foreground">{mesa.nombre || `Mesa ${mesa.numero}`}</span>
-                <span className="text-xs text-muted-foreground">Cap. {mesa.capacidad}</span>
-                <Badge
-                  className={cn(
-                    'mt-1 capitalize',
-                    mesa.estado === 'libre'     && 'bg-green-500 text-white',
-                    mesa.estado === 'ocupada'   && 'bg-red-500 text-white',
-                    mesa.estado === 'reservada' && 'bg-yellow-500 text-zinc-900'
-                  )}
-                >
-                  {mesa.estado}
-                </Badge>
-              </CardContent>
-            </Card>
+              <span className="text-xl font-bold text-foreground">{mesa.nombre || `Mesa ${mesa.numero}`}</span>
+              <span className="text-xs text-muted-foreground">Cap. {mesa.capacidad}</span>
+              <Badge
+                className={cn(
+                  'mt-1 capitalize',
+                  mesa.estado === 'libre'     && 'bg-green-500 text-white',
+                  mesa.estado === 'ocupada'   && 'bg-red-500 text-white',
+                  mesa.estado === 'reservada' && 'bg-yellow-500 text-zinc-900'
+                )}
+              >
+                {mesa.estado}
+              </Badge>
+            </button>
           ))}
         </div>
 
@@ -1526,9 +1526,11 @@ export function POSPage() {
       </div>
 
       {/* ── Mobile "Ver comanda" FAB ── */}
-      {cantidadItems > 0 && !showComandaDrawer && (
+      {/* Sesión 21a: el botón sigue montado con el cajón abierto (lo tapa el fondo del Sheet) para que el foco vuelva a él al cerrar. */}
+      {cantidadItems > 0 && (
         <button
           type="button"
+          aria-haspopup="dialog"
           onClick={() => setShowComandaDrawer(true)}
           className="fixed bottom-20 right-4 z-30 flex items-center gap-2 rounded-full bg-amber-500 px-5 py-3 text-sm font-bold text-zinc-900 shadow-xl shadow-amber-500/30 hover:bg-amber-400 md:hidden"
           style={{ bottom: 'calc(env(safe-area-inset-bottom) + 5rem)' }}
@@ -1544,34 +1546,23 @@ export function POSPage() {
       )}
 
       {/* ── Mobile order drawer ── */}
-      {showComandaDrawer && (
-        <div className="fixed inset-0 z-40 md:hidden">
-          <div
-            className="absolute inset-0 bg-black/60"
-            onClick={() => setShowComandaDrawer(false)}
-          />
-          <aside
-            className="absolute inset-x-0 bottom-0 flex max-h-[85vh] flex-col rounded-t-2xl border-t border-border bg-card shadow-2xl"
-            style={{ height: '85vh' }}
-          >
-            <div className="border-b border-border p-4">
+      {/* Sesión 21a (K2, #2): Sheet de Radix (antes un fondo con onClick hecho a mano, sin foco ni Esc). */}
+      <Sheet open={showComandaDrawer} onOpenChange={setShowComandaDrawer}>
+        <SheetContent
+          side="bottom"
+          aria-describedby={undefined}
+          className="h-[85vh] max-h-[85vh] gap-0 rounded-t-2xl bg-card p-0 md:hidden"
+        >
+            <div className="border-b border-border p-4 pr-12">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
-                  <h3 className="font-semibold text-foreground">Resumen de Comanda</h3>
+                  <SheetTitle className="font-semibold text-foreground">Resumen de Comanda</SheetTitle>
                   {currentComanda && !isPersistedId(currentComanda.id) && currentComanda.items.length > 0 && (
                     <Badge variant="outline" className="border-amber-500/60 text-amber-600 text-[10px]">
                       No enviada
                     </Badge>
                   )}
                 </div>
-                <button
-                  type="button"
-                  onClick={() => setShowComandaDrawer(false)}
-                  className="rounded-md p-1 text-muted-foreground hover:bg-muted"
-                  aria-label="Cerrar"
-                >
-                  <X className="h-5 w-5" />
-                </button>
               </div>
               {currentComanda && (
                 <p className="mt-1 text-xs text-muted-foreground">
@@ -1789,9 +1780,8 @@ export function POSPage() {
                 </Button>
               </div>
             </div>
-          </aside>
-        </div>
-      )}
+        </SheetContent>
+      </Sheet>
 
       {/* ── Burger dialog ── */}
       <Dialog

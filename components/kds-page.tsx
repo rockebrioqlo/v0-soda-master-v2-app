@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useApp } from '@/lib/app-context'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -72,6 +72,26 @@ export function KDSPage() {
       c.items.some((item) => item.estado !== 'listo' && item.estado !== 'entregado')
     ),
   ]
+
+  // Sesión 21a (K2, #10): las comandas nuevas se anuncian en una región aria-live (antes solo se veían con color
+  // y animación). La primera lectura no anuncia nada: solo lo que llega después de abrir la pantalla.
+  const idsVistosRef = useRef<Set<string> | null>(null)
+  const [anuncio, setAnuncio] = useState('')
+  const clavesActivas = comandasActivas.map((c) => c.id).join(',')
+  useEffect(() => {
+    const ids = new Set(comandasActivas.map((c) => c.id))
+    const vistos = idsVistosRef.current
+    idsVistosRef.current = ids
+    if (vistos === null) return
+    const nuevas = comandasActivas.filter((c) => !vistos.has(c.id))
+    if (nuevas.length > 0) setAnuncio(`Nueva comanda: ${nuevas.map((c) => c.mesaNombre).join(', ')}`)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clavesActivas])
+  useEffect(() => {
+    if (!anuncio) return
+    const t = setTimeout(() => setAnuncio(''), 8000)
+    return () => clearTimeout(t)
+  }, [anuncio])
 
   const isBarItem = (item: ItemComanda) => {
     if (item.categoria) return CATEGORIAS_BAR.includes(item.categoria)
@@ -197,6 +217,9 @@ export function KDSPage() {
 
   return (
     <div className="min-h-screen bg-background p-3 md:p-4">
+      <div role="status" aria-live="polite" className="sr-only">
+        {anuncio}
+      </div>
       {/* Header */}
       <div className="mb-4 flex items-center justify-between gap-2 md:mb-6">
         <h1 className="flex items-center gap-2 text-2xl font-bold text-foreground md:text-3xl">
@@ -444,7 +467,7 @@ function ComandaCard({
     <Card
       className={cn(
         'border-2 transition-all',
-        isNew && 'animate-pulse border-amber-500 bg-amber-500/10',
+        isNew && 'animate-pulse motion-reduce:animate-none border-amber-500 bg-amber-500/10',
         isDelayed && !isNew && 'border-red-500 bg-red-500/10',
         !isNew && !isDelayed && 'border-border bg-card'
       )}
@@ -558,6 +581,7 @@ function ComandaCard({
                       variant="outline"
                       size="sm"
                       className="min-h-[40px] text-xs font-semibold"
+                      aria-label={`Preparando: ${item.cantidad}x ${item.productoNombre}`}
                       onClick={() => handleItemStateChange(item.id, 'en_preparacion')}
                       disabled={isItemUpdating || item.estado === 'en_preparacion'}
                     >
@@ -567,6 +591,7 @@ function ComandaCard({
                     <Button
                       size="sm"
                       className="bg-green-600 min-h-[40px] text-xs font-bold text-white hover:bg-green-500"
+                      aria-label={`Listo: ${item.cantidad}x ${item.productoNombre}`}
                       onClick={() => handleItemStateChange(item.id, 'listo')}
                       disabled={isItemUpdating}
                     >
@@ -577,6 +602,7 @@ function ComandaCard({
                       variant="destructive"
                       size="sm"
                       className="min-h-[40px] text-xs font-semibold"
+                      aria-label={`Problema: ${item.cantidad}x ${item.productoNombre}`}
                       onClick={() => handleItemStateChange(item.id, 'problema')}
                       disabled={isItemUpdating || item.estado === 'problema'}
                     >

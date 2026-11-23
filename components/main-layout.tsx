@@ -16,11 +16,11 @@ import {
   Wallet,
   LogOut,
   Menu,
-  X,
   WifiOff,
   AlertTriangle,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { useState } from 'react'
 import { BottomNav } from '@/components/bottom-nav'
 import { RelojAviso } from '@/components/reloj-aviso'
@@ -79,12 +79,14 @@ export function MainLayout({ children }: { children: React.ReactNode }) {
         <header className="sticky top-0 z-50 flex h-14 items-center justify-between border-b border-border bg-card px-4">
           <div className="flex items-center gap-2">
             <span className="text-lg font-bold text-amber-500">{configuracion.nombreRestaurante}</span>
-            {!isOnline && (
-              <span className="flex items-center gap-1 rounded bg-yellow-500/20 px-2 py-1 text-xs text-yellow-500">
-                <WifiOff className="h-3 w-3" />
-                Modo offline
-              </span>
-            )}
+            <div role="status">
+              {!isOnline && (
+                <span className="flex items-center gap-1 rounded bg-yellow-500/20 px-2 py-1 text-xs text-yellow-500">
+                  <WifiOff className="h-3 w-3" aria-hidden="true" />
+                  Modo offline
+                </span>
+              )}
+            </div>
           </div>
           <div className="flex items-center gap-4">
             <span className="text-sm text-muted-foreground">
@@ -108,6 +110,7 @@ export function MainLayout({ children }: { children: React.ReactNode }) {
     return (
       <button
         key={item.page}
+        aria-current={active ? 'page' : undefined}
         onClick={() => {
           navigateTo(item.page)
           opts?.onAfter?.()
@@ -130,12 +133,15 @@ export function MainLayout({ children }: { children: React.ReactNode }) {
   return (
     <div className="min-h-screen bg-background">
       {/* Offline Banner */}
-      {!isOnline && (
-        <div className="bg-yellow-500/20 px-4 py-2 text-center text-xs text-yellow-500 md:text-sm">
-          <WifiOff className="mr-2 inline h-4 w-4" />
-          Modo offline activo
-        </div>
-      )}
+      {/* Sesión 21a (K2, #3): región siempre montada para que un lector anuncie el cambio de conexión. */}
+      <div role="status">
+        {!isOnline && (
+          <div className="bg-yellow-500/20 px-4 py-2 text-center text-xs text-yellow-500 md:text-sm">
+            <WifiOff className="mr-2 inline h-4 w-4" aria-hidden="true" />
+            Modo offline activo
+          </div>
+        )}
+      </div>
 
       {/* Aviso si el reloj del cajero está desfasado vs la hora oficial */}
       <RelojAviso />
@@ -148,10 +154,11 @@ export function MainLayout({ children }: { children: React.ReactNode }) {
             variant="ghost"
             size="icon"
             className="hidden md:inline-flex lg:hidden"
-            onClick={() => setTabletExpanded((v) => !v)}
+            onClick={() => setTabletExpanded(true)}
             aria-label="Menú"
+            aria-haspopup="dialog"
           >
-            {tabletExpanded ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
+            <Menu className="h-5 w-5" aria-hidden="true" />
           </Button>
           <button
             onClick={() => navigateTo(hasPermission('dashboard') ? 'dashboard' : 'mesas')}
@@ -201,22 +208,20 @@ export function MainLayout({ children }: { children: React.ReactNode }) {
           </nav>
         </aside>
 
-        {/* Tablet expanded overlay (md..lg) */}
-        {tabletExpanded && (
-          <div className="fixed inset-0 z-40 hidden md:block lg:hidden">
-            <div
-              className="absolute inset-0 bg-black/50"
-              onClick={() => setTabletExpanded(false)}
-            />
-            <aside className="absolute left-0 top-14 h-[calc(100vh-3.5rem)] w-64 border-r border-border bg-card shadow-xl">
-              <nav className="flex flex-col gap-1 p-4">
-                {filteredNavItems.map((item) =>
-                  renderNavButton(item, { onAfter: () => setTabletExpanded(false) })
-                )}
-              </nav>
-            </aside>
-          </div>
-        )}
+        {/* Tablet expanded overlay (md..lg). Sesión 21a (K2, #2): Sheet lateral de Radix con título "Menú" y botón
+            "Cerrar" (antes un fondo con onClick hecho a mano, sin foco, sin Esc y con el botón X sin nombre). */}
+        <Sheet open={tabletExpanded} onOpenChange={setTabletExpanded}>
+          <SheetContent side="left" aria-describedby={undefined} className="w-64 gap-0 bg-card p-0 sm:max-w-64 lg:hidden">
+            <SheetHeader className="border-b border-border p-4 pr-10">
+              <SheetTitle className="text-base">Menú</SheetTitle>
+            </SheetHeader>
+            <nav className="flex flex-col gap-1 p-4">
+              {filteredNavItems.map((item) =>
+                renderNavButton(item, { onAfter: () => setTabletExpanded(false) })
+              )}
+            </nav>
+          </SheetContent>
+        </Sheet>
 
         {/* Main Content */}
         <main className="flex-1 p-3 pb-24 md:p-4 md:pb-4 lg:p-6">

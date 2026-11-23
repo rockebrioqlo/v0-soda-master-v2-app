@@ -35,7 +35,7 @@ export default function RootLayout({
   children: React.ReactNode
 }>) {
   return (
-    <html lang="es" className="bg-background">
+    <html lang="es" className="bg-background dark">
       <body className="font-sans antialiased">
         <ResizeObserverFix />
         {children}

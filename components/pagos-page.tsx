@@ -1229,24 +1229,25 @@ export function PagosPage() {
                         config: configCobro,
                       }).total
                       return (
-                        <div
+                        <button
                           key={comanda.id}
-                          className="flex cursor-pointer items-center justify-between rounded-lg border border-border p-4 transition-colors hover:bg-muted"
+                          type="button"
+                          className="flex w-full cursor-pointer items-center justify-between rounded-lg border border-border p-4 text-left transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"
                           onClick={() => handleSelectComanda(comanda.id)}
                         >
-                          <div>
-                            <p className="font-medium text-foreground">{comanda.mesaNombre}</p>
-                            <p className="text-sm text-muted-foreground">
+                          <span className="block">
+                            <span className="block font-medium text-foreground">{comanda.mesaNombre}</span>
+                            <span className="block text-sm text-muted-foreground">
                               {comanda.items.length} items • {formatDate(comanda.creadoAt)}
-                            </p>
-                          </div>
-                          <div className="text-right">
-                            <p className="font-bold text-amber-500">{formatCurrency(comandaTotal)}</p>
+                            </span>
+                          </span>
+                          <span className="block text-right">
+                            <span className="block font-bold text-amber-500">{formatCurrency(comandaTotal)}</span>
                             <Badge className={cn('text-white', getEstadoComandaColor(comanda.estado))}>
                               {getEstadoComandaLabel(comanda.estado)}
                             </Badge>
-                          </div>
-                        </div>
+                          </span>
+                        </button>
                       )
                     })}
                   </div>
@@ -1953,6 +1954,7 @@ export function PagosPage() {
                 <div className="grid grid-cols-2 gap-3">
                   <Button
                     variant={metodoPago === 'efectivo' ? 'default' : 'outline'}
+                    aria-pressed={metodoPago === 'efectivo'}
                     onClick={() => setMetodoPago('efectivo')}
                     className={cn(
                       'flex h-20 flex-col gap-2',
@@ -1964,6 +1966,7 @@ export function PagosPage() {
                   </Button>
                   <Button
                     variant={metodoPago === 'tarjeta' ? 'default' : 'outline'}
+                    aria-pressed={metodoPago === 'tarjeta'}
                     onClick={() => setMetodoPago('tarjeta')}
                     className={cn(
                       'flex h-20 flex-col gap-2',
@@ -2038,21 +2041,24 @@ export function PagosPage() {
                         </button>
                       )}
                     </div>
-                    {efectivoRecibidoNum >= Math.ceil(totalAPagar) && (
-                      <div className="rounded-lg bg-green-500/20 p-3 text-center">
-                        <p className="text-sm text-muted-foreground">Vuelto</p>
-                        <p className="text-3xl font-bold text-green-500">
-                          {formatCurrency(Math.max(vuelto, 0))}
-                        </p>
-                      </div>
-                    )}
-                    {efectivoRecibido !== '' &&
-                      efectivoRecibidoNum > 0 &&
-                      efectivoRecibidoNum < Math.ceil(totalAPagar) && (
-                        <div className="rounded-lg bg-amber-500/15 p-3 text-center text-sm text-amber-700">
-                          Falta {formatCurrency(Math.ceil(totalAPagar) - efectivoRecibidoNum)}
+                    {/* Sesión 21a (K2, #3): región siempre montada para que un lector anuncie el vuelto o lo que falta. */}
+                    <div role="status">
+                      {efectivoRecibidoNum >= Math.ceil(totalAPagar) && (
+                        <div className="rounded-lg bg-green-500/20 p-3 text-center">
+                          <p className="text-sm text-muted-foreground">Vuelto</p>
+                          <p className="text-3xl font-bold text-green-500">
+                            {formatCurrency(Math.max(vuelto, 0))}
+                          </p>
                         </div>
                       )}
+                      {efectivoRecibido !== '' &&
+                        efectivoRecibidoNum > 0 &&
+                        efectivoRecibidoNum < Math.ceil(totalAPagar) && (
+                          <div className="rounded-lg bg-amber-500/15 p-3 text-center text-sm text-amber-700">
+                            Falta {formatCurrency(Math.ceil(totalAPagar) - efectivoRecibidoNum)}
+                          </div>
+                        )}
+                    </div>
                   </div>
                 )}
               </CardContent>

@@ -254,7 +254,7 @@ export function MesasPage() {
               <Card
                 key={mesa.id}
                 className={cn(
-                  'cursor-pointer border-2 transition-all hover:scale-[1.02] min-h-[100px]',
+                  'relative cursor-pointer border-2 transition-all hover:scale-[1.02] min-h-[100px]',
                   mesa.estado === 'libre' && 'border-green-500/50 bg-green-500/10',
                   mesa.estado === 'ocupada' &&
                     !pagadaEsperandoLiberar &&
@@ -264,11 +264,20 @@ export function MesasPage() {
                   mesa.estado === 'ocupada' && perdidaEsperandoLiberar && 'border-rose-700/60 bg-rose-700/10',
                   mesa.estado === 'reservada' && 'border-yellow-500/50 bg-yellow-500/10'
                 )}
-                onClick={() => handleMesaClick(mesa)}
               >
                 <CardHeader className="pb-2">
                   <div className="flex items-center justify-between gap-2">
-                    <CardTitle className="text-lg font-bold text-foreground">{mesa.nombre}</CardTitle>
+                    {/* Sesión 21a (K2, #1): el título es el botón y su ::after cubre toda la tarjeta; el Select y los
+                        botones de abajo van encima (z-10), así que no quedan botones dentro de botones. */}
+                    <CardTitle className="text-lg font-bold text-foreground">
+                      <button
+                        type="button"
+                        onClick={() => handleMesaClick(mesa)}
+                        className="text-left after:absolute after:inset-0 after:rounded-xl focus-visible:outline-none focus-visible:after:ring-2 focus-visible:after:ring-amber-500"
+                      >
+                        {mesa.nombre}
+                      </button>
+                    </CardTitle>
                     <span className={cn('rounded-full px-2 py-1 text-[10px] font-medium text-white md:text-xs', getEstadoMesaColor(mesa.estado))}>
                       {getEstadoMesaLabel(mesa.estado)}
                     </span>
@@ -301,7 +310,7 @@ export function MesasPage() {
                     </div>
                   )}
 
-                  <div className="mt-4 flex gap-2" onClick={e => e.stopPropagation()}>
+                  <div className="relative z-10 mt-4 flex gap-2">
                     <Select
                       value={mesa.estado}
                       onValueChange={(value) => handleChangeEstado(mesa, value as EstadoMesa)}

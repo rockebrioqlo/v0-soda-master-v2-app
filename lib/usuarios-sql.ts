@@ -212,3 +212,29 @@ export function sentenciasUsuarios(esquema: string): { crear: string; actualizar
 
   return { crear, actualizar, eliminar }
 }
+
+/**
+ * Sesión 21a (corrección del 23-11-2026), SOLO para la limpieza de las pruebas (`scripts/pruebas/lib.cjs`): borra la
+ * auditoría de usuarios TEMPORALES de prueba, pero únicamente la de los que quedarán sin otro historial (los que
+ * `DELETE /api/usuarios/[id]` podrá eliminar a continuación). La excepción de la sesión 17 a que `auditoria_admin`
+ * sea de solo adición es solo para usuarios que se eliminan en la misma limpieza: un usuario que queda
+ * desactivado por historial (F50) conserva su auditoría ENTERA. La condición va en el MISMO statement que el
+ * borrado (no hay una comprobación aparte que pueda quedar vieja) y exige además el nombre "prueba …" en el usuario
+ * y en la entrada. Parámetro: $1 = uuid[] con los ids de los temporales. Devuelve el `id` de cada entrada borrada.
+ */
+export function sentenciaAuditoriaDeTemporalesBorrables(esquema: string): string {
+  if (!ESQUEMA_VALIDO.test(esquema)) throw new Error('Esquema inválido')
+  const sinOtroHistorial = REFERENCIAS_HISTORIAL
+    .filter(([tabla]) => tabla !== 'auditoria_admin')
+    .map(([tabla, columna]) => `NOT EXISTS (SELECT 1 FROM ${esquema}.${tabla} WHERE ${columna} = u.id)`)
+    .join(' AND ')
+  return `
+    DELETE FROM ${esquema}.auditoria_admin a
+    USING ${esquema}.usuarios u
+    WHERE a.usuario_id = u.id
+      AND u.id = ANY($1::uuid[])
+      AND starts_with(u.nombre, 'prueba ')
+      AND starts_with(a.usuario_nombre, 'prueba ')
+      AND ${sinOtroHistorial}
+    RETURNING a.id`
+}

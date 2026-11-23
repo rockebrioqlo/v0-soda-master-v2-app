@@ -5,11 +5,16 @@ import * as DialogPrimitive from '@radix-ui/react-dialog'
 import { XIcon } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
+import { OpenerProvider, useRestaurarFoco } from '@/components/ui/restaurar-foco'
 
 function Dialog({
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Root>) {
-  return <DialogPrimitive.Root data-slot="dialog" {...props} />
+  return (
+    <OpenerProvider open={props.open}>
+      <DialogPrimitive.Root data-slot="dialog" {...props} />
+    </OpenerProvider>
+  )
 }
 
 function DialogTrigger({
@@ -50,10 +55,12 @@ function DialogContent({
   className,
   children,
   showCloseButton = true,
+  onCloseAutoFocus,
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Content> & {
   showCloseButton?: boolean
 }) {
+  const restaurarFoco = useRestaurarFoco(onCloseAutoFocus)
   return (
     <DialogPortal data-slot="dialog-portal">
       <DialogOverlay />
@@ -67,6 +74,7 @@ function DialogContent({
           'md:inset-auto md:top-[50%] md:left-[50%] md:w-full md:max-w-[calc(100%-2rem)] md:translate-x-[-50%] md:translate-y-[-50%] md:rounded-lg md:border md:p-6 md:data-[state=closed]:zoom-out-95 md:data-[state=open]:zoom-in-95 sm:max-w-lg',
           className,
         )}
+        onCloseAutoFocus={restaurarFoco}
         {...props}
       >
         {children}
@@ -76,7 +84,7 @@ function DialogContent({
             className="ring-offset-background focus:ring-ring data-[state=open]:bg-accent data-[state=open]:text-muted-foreground absolute top-4 right-4 rounded-xs opacity-70 transition-opacity hover:opacity-100 focus:ring-2 focus:ring-offset-2 focus:outline-hidden disabled:pointer-events-none [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4"
           >
             <XIcon />
-            <span className="sr-only">Close</span>
+            <span className="sr-only">Cerrar</span>
           </DialogPrimitive.Close>
         )}
       </DialogPrimitive.Content>

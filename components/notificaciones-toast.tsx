@@ -67,71 +67,78 @@ export function NotificacionesToast() {
     notificacionesVisibles.includes(n.id),
   )
 
-  if (notificacionesPorMostrar.length === 0) return null
+  // Sesión 21a (K2, #3): dos regiones siempre montadas para que un lector anuncie lo que entra: los problemas con
+  // role="alert" (anuncio inmediato) y el resto con role="status" (educado).
+  const renderNotif = (notif: (typeof notificacionesPorMostrar)[number]) => {
+    const esProblema = notif.tipo === 'problema'
+    const esListo = notif.tipo === 'listo'
+    return (
+      <div
+        key={notif.id}
+        className={cn(
+          'rounded-lg border p-4 shadow-lg animate-in slide-in-from-bottom-5',
+          esProblema && 'border-red-500 bg-red-500/10',
+          esListo && 'border-green-500 bg-green-500/10',
+          !esProblema && !esListo && 'border-amber-500 bg-amber-500/10',
+        )}
+      >
+        <div className="flex items-start justify-between gap-2">
+          <div className="flex items-start gap-3">
+            {esProblema ? (
+              <AlertCircle className="mt-0.5 h-5 w-5 flex-shrink-0 text-red-500" />
+            ) : esListo ? (
+              <Check className="mt-0.5 h-5 w-5 flex-shrink-0 text-green-500" />
+            ) : (
+              <AlertCircle className="mt-0.5 h-5 w-5 flex-shrink-0 text-amber-500" />
+            )}
+            <div>
+              <p className="font-semibold text-foreground">{notif.mensaje}</p>
+              {esProblema && (
+                <p className="mt-1 text-sm text-muted-foreground">
+                  Ir a POS para resolver o cambiar items
+                  {notif.mesaNombre ? ` de ${notif.mesaNombre}` : ''}.
+                </p>
+              )}
+              {esListo && notif.mesaNombre && (
+                <p className="mt-1 text-sm text-muted-foreground">
+                  Pasa a retirar a {notif.mesaNombre}.
+                </p>
+              )}
+            </div>
+          </div>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => handleDismiss(notif.id)}
+            aria-label="Cerrar notificación"
+          >
+            <X className="h-4 w-4" />
+          </Button>
+        </div>
+        {esProblema && notif.ordenId && (
+          <div className="mt-3 flex justify-end">
+            <Button
+              size="sm"
+              variant="outline"
+              className="border-red-500/40 text-red-600 hover:bg-red-500/10"
+              onClick={() => handleIrAPOS(notif)}
+            >
+              Ir a POS
+            </Button>
+          </div>
+        )}
+      </div>
+    )
+  }
 
   return (
     <div className="fixed bottom-4 right-4 z-50 max-w-md space-y-3">
-      {notificacionesPorMostrar.map((notif) => {
-        const esProblema = notif.tipo === 'problema'
-        const esListo = notif.tipo === 'listo'
-        return (
-          <div
-            key={notif.id}
-            className={cn(
-              'rounded-lg border p-4 shadow-lg animate-in slide-in-from-bottom-5',
-              esProblema && 'border-red-500 bg-red-500/10',
-              esListo && 'border-green-500 bg-green-500/10',
-              !esProblema && !esListo && 'border-amber-500 bg-amber-500/10',
-            )}
-          >
-            <div className="flex items-start justify-between gap-2">
-              <div className="flex items-start gap-3">
-                {esProblema ? (
-                  <AlertCircle className="mt-0.5 h-5 w-5 flex-shrink-0 text-red-500" />
-                ) : esListo ? (
-                  <Check className="mt-0.5 h-5 w-5 flex-shrink-0 text-green-500" />
-                ) : (
-                  <AlertCircle className="mt-0.5 h-5 w-5 flex-shrink-0 text-amber-500" />
-                )}
-                <div>
-                  <p className="font-semibold text-foreground">{notif.mensaje}</p>
-                  {esProblema && (
-                    <p className="mt-1 text-sm text-muted-foreground">
-                      Ir a POS para resolver o cambiar items
-                      {notif.mesaNombre ? ` de ${notif.mesaNombre}` : ''}.
-                    </p>
-                  )}
-                  {esListo && notif.mesaNombre && (
-                    <p className="mt-1 text-sm text-muted-foreground">
-                      Pasa a retirar a {notif.mesaNombre}.
-                    </p>
-                  )}
-                </div>
-              </div>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => handleDismiss(notif.id)}
-                aria-label="Cerrar notificación"
-              >
-                <X className="h-4 w-4" />
-              </Button>
-            </div>
-            {esProblema && notif.ordenId && (
-              <div className="mt-3 flex justify-end">
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="border-red-500/40 text-red-600 hover:bg-red-500/10"
-                  onClick={() => handleIrAPOS(notif)}
-                >
-                  Ir a POS
-                </Button>
-              </div>
-            )}
-          </div>
-        )
-      })}
+      <div role="alert" className="space-y-3">
+        {notificacionesPorMostrar.filter((n) => n.tipo === 'problema').map(renderNotif)}
+      </div>
+      <div role="status" className="space-y-3">
+        {notificacionesPorMostrar.filter((n) => n.tipo !== 'problema').map(renderNotif)}
+      </div>
     </div>
   )
 }

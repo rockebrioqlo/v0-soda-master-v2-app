@@ -190,11 +190,14 @@ export function LoginForm() {
               </Button>
             </div>
 
-            {error && (
-              <div className="rounded-lg bg-red-500/20 p-3 text-center text-sm text-red-400">
-                {error}
-              </div>
-            )}
+            {/* Sesión 21a (K2, #3): región siempre montada con role="alert" para que un lector anuncie el error. */}
+            <div role="alert">
+              {error && (
+                <div className="rounded-lg bg-red-500/20 p-3 text-center text-sm text-red-400">
+                  {error}
+                </div>
+              )}
+            </div>
 
             <Button
               type="submit"

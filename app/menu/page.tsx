@@ -150,6 +150,8 @@ export default function MenuPage() {
           {seccionesAgrupadas.map((s) => (
             <button
               key={s.slug}
+              type="button"
+              aria-pressed={activa === s.slug}
               onClick={() => handleNavClick(s.slug)}
               className={[
                 'shrink-0 rounded-full px-3 py-1.5 text-sm font-medium transition-colors',

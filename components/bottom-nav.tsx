@@ -14,10 +14,10 @@ import {
   AlertTriangle,
   Wallet,
   MoreHorizontal,
-  X,
 } from 'lucide-react'
 import { useApp } from '@/lib/app-context'
 import { cn } from '@/lib/utils'
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 
 type PageType =
   | 'dashboard'
@@ -109,6 +109,7 @@ export function BottomNav() {
             <button
               key={item.page}
               type="button"
+              aria-current={currentPage === item.page ? 'page' : undefined}
               onClick={() => navigateTo(item.page)}
               className={cn(
                 'flex flex-1 flex-col items-center justify-center gap-1 px-1 text-[11px] font-medium transition-colors',
@@ -124,6 +125,7 @@ export function BottomNav() {
           {showOverflow && (
             <button
               type="button"
+              aria-haspopup="dialog"
               onClick={() => setDrawerOpen(true)}
               className={cn(
                 'flex flex-1 flex-col items-center justify-center gap-1 px-1 text-[11px] font-medium transition-colors',
@@ -139,50 +141,42 @@ export function BottomNav() {
         </div>
       </nav>
 
-      {drawerOpen && (
-        <div className="fixed inset-0 z-50 md:hidden">
-          <div
-            className="absolute inset-0 bg-black/60"
-            onClick={() => setDrawerOpen(false)}
-          />
-          <div
-            className="absolute inset-x-0 bottom-0 rounded-t-2xl border-t border-border bg-card p-4 shadow-xl"
-            style={{ paddingBottom: 'calc(env(safe-area-inset-bottom) + 1rem)' }}
-          >
-            <div className="mb-4 flex items-center justify-between">
-              <h3 className="text-base font-semibold text-foreground">Menú</h3>
+      {/* Sesión 21a (K2, #2): Sheet de Radix (antes un fondo con onClick hecho a mano): el foco entra al cajón,
+          Esc lo cierra, el fondo queda inerte, el botón de cerrar se llama "Cerrar" y el foco vuelve a "Más". */}
+      <Sheet open={drawerOpen} onOpenChange={setDrawerOpen}>
+        <SheetContent
+          side="bottom"
+          aria-describedby={undefined}
+          className="gap-0 rounded-t-2xl bg-card p-4 md:hidden"
+          style={{ paddingBottom: 'calc(env(safe-area-inset-bottom) + 1rem)' }}
+        >
+          <SheetHeader className="mb-4 p-0 pr-8">
+            <SheetTitle className="text-base">Menú</SheetTitle>
+          </SheetHeader>
+          <div className="grid grid-cols-3 gap-3">
+            {overflow.map((item) => (
               <button
+                key={item.page}
                 type="button"
-                onClick={() => setDrawerOpen(false)}
-                className="rounded-md p-1 text-muted-foreground hover:bg-muted"
+                aria-current={currentPage === item.page ? 'page' : undefined}
+                onClick={() => {
+                  navigateTo(item.page)
+                  setDrawerOpen(false)
+                }}
+                className={cn(
+                  'flex min-h-[80px] flex-col items-center justify-center gap-2 rounded-xl border border-border bg-muted/40 p-3 text-xs font-medium transition-colors',
+                  currentPage === item.page
+                    ? 'border-amber-500/60 bg-amber-500/10 text-amber-500'
+                    : 'text-foreground active:bg-muted'
+                )}
               >
-                <X className="h-5 w-5" />
+                {item.icon}
+                <span className="text-center leading-tight">{item.label}</span>
               </button>
-            </div>
-            <div className="grid grid-cols-3 gap-3">
-              {overflow.map((item) => (
-                <button
-                  key={item.page}
-                  type="button"
-                  onClick={() => {
-                    navigateTo(item.page)
-                    setDrawerOpen(false)
-                  }}
-                  className={cn(
-                    'flex min-h-[80px] flex-col items-center justify-center gap-2 rounded-xl border border-border bg-muted/40 p-3 text-xs font-medium transition-colors',
-                    currentPage === item.page
-                      ? 'border-amber-500/60 bg-amber-500/10 text-amber-500'
-                      : 'text-foreground active:bg-muted'
-                  )}
-                >
-                  {item.icon}
-                  <span className="text-center leading-tight">{item.label}</span>
-                </button>
-              ))}
-            </div>
+            ))}
           </div>
-        </div>
-      )}
+        </SheetContent>
+      </Sheet>
     </>
   )
 }

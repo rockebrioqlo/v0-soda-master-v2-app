@@ -3,7 +3,7 @@
  * asignaciones y pérdidas, stock, el sondeo agrupado (sesión 10) y el KDS con el estado de la orden y la matriz de ítems por rol (sesión 13). Las carreras son de 3 rondas como máximo.
  *
  * Para correr solo una parte (p. ej. si una sesión tocó cobro, caja o stock):
- *   pnpm prueba:completa --modulo=stock          (también: cobro, ordenes, permisos, rutas, asignaciones, sondeo, kds, sesion, usuarios, datos-personales, arco, aviso, mesas, robustez)
+ *   pnpm prueba:completa --modulo=stock          (también: cobro, ordenes, permisos, rutas, asignaciones, sondeo, kds, sesion, usuarios, datos-personales, arco, aviso, accesibilidad, mesas, robustez)
  *   pnpm prueba:completa --modulo=cobro,stock
  * Requiere el servidor levantado (ver lib.cjs). Todo lo creado queda marcado "prueba prueba:completa <fecha>".
  */
@@ -26,6 +26,7 @@ const MODULOS = {
   'datos-personales': require('./datos-personales.cjs'),
   arco: require('./arco.cjs'),
   aviso: require('./aviso-privacidad.cjs'),
+  accesibilidad: require('./accesibilidad.cjs'),
   mesas: require('./mesas.cjs'),
   robustez: require('./robustez.cjs'),
 }

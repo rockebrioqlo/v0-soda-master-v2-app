@@ -113,3 +113,53 @@ Pruebas de la 21a: teclado y lector sobre lo cambiado, `pnpm build`, `pnpm prueb
 ## 8. Fuera de alcance de K2
 
 La pista de PINs del login y `accesos-rapidos` (P1 y P3), F59, F57, F58, C10, la certificación WCAG, los textos legales del aviso y los cambios de diseño que no sean de accesibilidad.
+
+## 9. Estado tras la 21a
+
+Sesión 21a (23-11-2026, local, sin push). Mismo método que la sesión 20: compilación de producción en el puerto 3011, un admin temporal propio, teclado real (Tab, Shift+Tab, Enter, Espacio, Esc) y contraste calculado con la fórmula de WCAG sobre los colores calculados por el navegador, componiendo transparencias. Sigue sin verificarse con un lector de pantalla real (NVDA).
+
+### Qué cambió
+
+| # | Estado | Cómo quedó |
+|---|---|---|
+| Tema oscuro | ✅ | `<html className="bg-background dark">` y `color-scheme: dark` en `.dark` (`app/globals.css`): las barras de scroll nativas salían blancas. La tarjeta del login queda oscura (`bg-card`), así que no hizo falta rediseñarla; los claros fijos que quedan son el papel del recibo y las vistas previas de impresión, a propósito |
+| 5b | ✅ | "Cerrar" en `ui/dialog.tsx` y `ui/sheet.tsx` (confirmado en el navegador en Nueva Mesa, personalizar, el cajón "Más" y el aviso) |
+| 3 | ✅ | `toast.tsx`: dos regiones siempre montadas, `role="alert"` para errores y `role="status"` para el resto; los errores no se cierran solos (solo con la X, `aria-label="Cerrar aviso"`), máximo 3 a la vez (sale el más viejo) y los demás siguen en 4 s. `notificaciones-toast.tsx`: lo mismo (problemas `alert`, resto `status`, con sus 10 s y 6 s de siempre). Error del login, banner offline (los dos) y "Vuelto"/"Falta" de Pagos en una región con `role` siempre montada. Comprobado en el DOM: "El nombre es requerido" aparece en `role=alert`; 4 errores seguidos dejan 3, siguen a los 6,5 s y la X cierra uno; "Falta $35.000" aparece en `role=status`; "Comanda enviada/actualizada en cocina/bar" en `role=status` |
+| 1 | ✅ | Mesas: el título de cada tarjeta es un `<button>` cuyo `::after` cubre la tarjeta; el Select y los botones de editar y borrar quedan encima (`z-10`). POS: la tarjeta de mesa es un `<button>` entero. Pagos: la fila de la comanda es un `<button>` entero. Comprobado con teclado: en Mesas Tab recorre Nueva Mesa, "Mesa 1" y su Select, y Enter abre la mesa en el POS; en el POS Enter ("Cambiar Mesa") y Espacio (Mesa 12) abren la mesa; en Pagos Enter elige la comanda |
+| 2 | ✅ | `bottom-nav.tsx` (cajón "Más"), `main-layout.tsx` (overlay de tablet, `Sheet` lateral izquierdo "Menú") y el cajón de comanda de `pos-page.tsx` (el mismo patrón, ahora `Sheet` inferior): Radix da `role=dialog` con nombre, foco dentro, Esc, fondo inerte y botón "Cerrar". Comprobado en 375 px y 800 px: el foco entra, Shift+Tab da la vuelta dentro del cajón, Esc y "Cerrar" cierran y el foco vuelve a "Más", a la hamburguesa y a "Ver comanda" |
+| 7 | ✅ | `aria-pressed` en Efectivo/Tarjeta (Pagos: `Efectivo=true`, `Tarjeta=false`) y en las categorías de `/menu`; `aria-current="page"` en los dos menús (comprobado en "Mesas" y "Pagos") |
+| 9 | ✅ | `ui/restaurar-foco.tsx`: guarda el elemento activo al abrir (diálogos abiertos por estado) y lo devuelve al cerrar; lo usan `dialog.tsx`, `sheet.tsx` y `alert-dialog.tsx`, así que cubre todos. Comprobado: Nueva Mesa vuelve a "Nueva Mesa" y personalizar vuelve al producto que lo abrió (Burger BBQ y Agua Mineral) |
+| 10 | ✅ | KDS: `aria-label` "Preparando: 1x Nachos", "Listo: …", "Problema: …" por ítem; región `aria-live="polite"` que anuncia "Nueva comanda: Mesa 13" (comprobado en vivo al entrar una comanda con el KDS abierto; la primera lectura no anuncia nada); `motion-reduce:animate-none` en el `animate-pulse` de las comandas nuevas |
+
+Comanda de prueba del KDS (mesas 12 y 13): solo se miraron los nombres, la región `aria-live` y el contraste; **no se cambió el estado de ningún ítem**. Se cancelaron con los ítems en pendiente y las mesas quedaron libres. Lectura de la base: las 2 órdenes en `cancelado`, 0 mermas, 0 pagos, los movimientos de inventario son `venta` y `devolucion` con neto 0 y las mesas 12 y 13 disponibles.
+
+### Contraste medido con el tema oscuro (build de producción)
+
+Cuenta elementos de texto con razón menor a 4,5:1 (3:1 en texto grande). Los botones deshabilitados están exentos de WCAG y se anotan aparte.
+
+| Pantalla | Textos | Fallos (elementos) | Detalle |
+|---|---|---|---|
+| Login | 26 | 2 + 1 deshabilitado | `zinc-500` 4,10 en "Acceso rapido (demo)" y en la pista "PINs:" (fuera de K2, ver P1 y P3); "Ingresar" deshabilitado 2,78. **"Iniciar Sesion" pasó de 1,21 a legible** |
+| Dashboard | 85 | 0 | antes 9 en claro |
+| Mesas | 103 | 20 | blanco sobre `green-500` 2,22 en "Libre" (17), blanco sobre `red-500` 3,81 en "Ocupada" (3). Antes 43 en claro |
+| POS, selector de mesa | 80 | 21 | los mismos badges (17 y 3) y "Para entregar" blanco sobre `green-600` 3,22 |
+| POS, pedido | 110 | 2 + 4 deshabilitados | "Para entregar" 2,62 y su contador 3,62; deshabilitados: "Agotado" 2,39, `$2.200` amber 3,02, "Enviar" 2,78, "Ir a Pago" 1,79. Antes 37 en claro |
+| KDS (con comandas) | 622 | 94 | "Listo" blanco sobre `green-600` 3,01 a 3,22 (botones y badge). Antes sin medida fiable |
+| Pagos | 610 | 160 | `rose-700` 3,24 en los montos de "Pérdidas pendientes" (79), "Cobrar" blanco sobre `green-600` 3,65 (79), título "Pérdidas pendientes" 3,28, "Listo" 2,22. Antes sin medida fiable |
+| Caja | 23 | 0 | antes 2 en claro |
+
+El amber-500 sobre fondo oscuro ya no falla (era 2,06 a 2,13 sobre blanco) y el `green-500` como texto tampoco.
+
+### Pasa a la 21b (además de lo que ya tenía)
+
+- **Contraste** (lo anterior): badges "Libre" y "Ocupada" (`green-500`/`red-500` con texto blanco de 10 px), "Listo" y "Cobrar" (`green-600`), "Para entregar", `rose-700` en Pagos y `zinc-500` del pie del login.
+- #5 `aria-label`: el árbol de accesibilidad todavía muestra decenas de botones sin nombre (por ejemplo el lápiz y el basurero del cajón de comanda, y el lápiz es el primer botón al que cae el foco dentro de ese cajón; también los de las tarjetas de Mesas y los de la pantalla de pedido).
+- Los avisos `problema` de `notificaciones-toast.tsx` siguen cerrándose a los 10 s (solo se les dio `role=alert`). **Decidido el 23-11-2026:** también hasta cerrarlos (`role=alert`, sin autocierre y dentro del tope de 3 visibles, como los errores de `showToast`); va en la 21b.
+- `animate-pulse` queda sin `motion-reduce` fuera del KDS (esqueletos de carga y otros); una regla global bajo `prefers-reduced-motion` lo arreglaría de una vez.
+- Tras elegir un destino en el cajón "Más" o en la hamburguesa, el foco vuelve a ese botón y no al contenido de la pantalla nueva (parte de #8).
+
+### Visto y no tocado
+
+- El layout de Mesas a 375 px mide 398 px de ancho (el desborde conocido de 1024 px aparece también en móvil); no es de esta sesión.
+- `pnpm prueba:completa --modulo=cobro` deja en el KDS comandas pagadas con ítems sin "listo" (31 pendientes y 79 pérdidas pendientes tras la corrida, F37): son datos de prueba que se vacían antes de entregar al cliente (P2).
+

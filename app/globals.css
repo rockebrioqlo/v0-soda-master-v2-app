@@ -40,6 +40,8 @@
 }
 
 .dark {
+  /* Sesión 21a (K2): barras de scroll y controles nativos en oscuro (sin esto salían blancos). */
+  color-scheme: dark;
   --background: oklch(0.145 0 0);
   --foreground: oklch(0.985 0 0);
   --card: oklch(0.145 0 0);

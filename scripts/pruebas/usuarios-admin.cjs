@@ -156,12 +156,17 @@ exports.correr = async function (ctx, { login } = {}) {
   const delX0 = await api(admin, 'DELETE', ruta(x.usuario.id))
   check('el admin temporal que modificó usuarios dejó entradas de auditoría: cuenta como historial y no se borra (409 USUARIO_CON_HISTORIAL)', delX0.status === 409 && delX0.json.codigo === 'USUARIO_CON_HISTORIAL', delX0)
   // limpieza de las entradas de la propia prueba (el actor es un usuario temporal; mismo criterio que las mermas de prueba en lib.cjs)
-  await db`DELETE FROM soda_master.auditoria_admin WHERE usuario_id = ${x.usuario.id}::uuid AND starts_with(usuario_nombre, 'prueba ')`
+  // Corrección del 23-11-2026: la auditoría de un temporal se borra SOLO si ese usuario se elimina a continuación (aquí x no tiene otro historial).
+  const nAudX = await L.borrarAuditoriaDeTemporales(db, [x.usuario.id])
+  check('la auditoría del admin temporal se borra porque se elimina a continuación (sin otro historial)', nAudX >= 1, nAudX)
   const delX = await api(admin, 'DELETE', ruta(x.usuario.id))
   const delY = await api(admin, 'DELETE', ruta(y.usuario.id))
   check('al borrar al mesero cae su permiso (cascada) y, sin entradas de auditoría, el admin temporal queda sin historial: los tres se borran (200)', delM.status === 200 && delX.status === 200 && delY.status === 200, [delM.status, delX.status, delY.status])
 
   // estático
+  const libSrc = leer('scripts', 'pruebas', 'lib.cjs')
+  check('lib.cjs: `limpiar` borra la auditoría de los temporales solo con `borrarAuditoriaDeTemporales` (nunca un DELETE directo de todos los temporales)', /borrarAuditoriaDeTemporales\(ctx\.db, ctx\.usuariosPrueba/.test(libSrc) && !/DELETE FROM soda_master\.auditoria_admin WHERE usuario_id = ANY/.test(libSrc))
+  check('usuarios-sql.ts: la condición "sin otro historial" va en el mismo statement y recorre todas las columnas de REFERENCIAS_HISTORIAL menos auditoria_admin', (S.sentenciaAuditoriaDeTemporalesBorrables('soda_master').match(/NOT EXISTS/g) || []).length === S.REFERENCIAS_HISTORIAL.filter(([t]) => t !== 'auditoria_admin').length)
   const ruta_ = leer('app', 'api', 'usuarios', '[id]', 'route.ts')
   check('la ruta toma el actor de la sesión (actor: actorDe(s.usuario)) en PATCH y DELETE', (ruta_.match(/actor: actorDe\(s\.usuario\)/g) || []).length === 2 && /respuestaCambioUsuario/.test(ruta_))
   const pagina = leer('components', 'usuarios-page.tsx')
@@ -366,6 +371,31 @@ exports.correr = async function (ctx, { login } = {}) {
     await db.query(`ALTER TABLE ${ES}.auditoria_admin DROP CONSTRAINT prueba_rechaza`)
     r = await db.query(SQLS.actualizar, [objetivo, 'Control', null, null, null, null, null, null, actor, 'Admin Prueba', 'admin'])
     check('CONTROL: sin el CHECK el mismo cambio sí se aplica y deja su entrada', r[0].aplicado === 1 && (await entradas5()).length === 1)
+
+    // C5. (corrección del 23-11-2026) la auditoría de un temporal se borra SOLO si ese usuario queda sin otro historial (se elimina en la misma
+    // limpieza); un temporal que queda desactivado por historial (F50) conserva su auditoría ENTERA. Se ejecuta `borrarAuditoriaDeTemporales`
+    // (la función que usa `limpiar`) contra el esquema temporal.
+    {
+      const fa = (id, nombre) => `('${id}', '${id}@prueba.invalid', '${nombre}', 'x', 'admin', true)`
+      const aud = (id, nombre, n) => `INSERT INTO ${ES}.auditoria_admin (usuario_id, usuario_nombre, accion, entidad) SELECT '${id}', '${nombre}', 'ver_datos_personales', 'usuario' FROM generate_series(1, ${n})`
+      const A = uuid(), B = uuid(), C = uuid(), D = uuid()
+      await db.transaction([
+        db.query(vaciar),
+        db.query(INS([fa(A, 'prueba a'), fa(B, 'prueba b'), fa(C, 'Admin real'), fa(D, 'prueba d')])),
+        db.query(aud(A, 'prueba a', 2)), db.query(aud(A, 'Otro nombre', 1)), db.query(aud(B, 'prueba b', 3)), db.query(aud(C, 'Admin real', 4)), db.query(aud(D, 'prueba d', 1)),
+        db.query(`INSERT INTO ${ES}.ordenes (usuario_id) VALUES ('${B}')`),
+        db.query(`INSERT INTO ${ES}.solicitudes_arco (ingresada_por) VALUES ('${D}')`),
+      ])
+      const n = await L.borrarAuditoriaDeTemporales(db, [A, B, C, D], ES)
+      const resto = await db.query(`SELECT usuario_id, count(*)::int AS n FROM ${ES}.auditoria_admin GROUP BY 1`)
+      const por = Object.fromEntries(resto.map((r) => [r.usuario_id, r.n]))
+      check('auditoría de temporales: el que se puede eliminar (sin otro historial) pierde sus entradas "prueba …" y solo esas', n === 2 && por[A] === 1, { n, restoA: por[A] })
+      check('auditoría de temporales: el que tiene historial (una orden) conserva su auditoría ENTERA', por[B] === 3, por[B])
+      check('auditoría de temporales: el que tiene historial en otra tabla (una solicitud ARCOP) conserva su auditoría entera', por[D] === 1, por[D])
+      check('auditoría de temporales: un usuario que no es de prueba (nombre sin "prueba ") no pierde nada aunque no tenga otro historial', por[C] === 4, por[C])
+      const vacia = await L.borrarAuditoriaDeTemporales(db, [], ES)
+      check('auditoría de temporales: sin ids no borra nada', vacia === 0)
+    }
   } finally {
     try { await db.query(`DROP SCHEMA IF EXISTS ${ES} CASCADE`) } catch (e) { console.log('  AVISO: no se pudo eliminar el esquema temporal ' + ES + ': ' + e.message) }
   }

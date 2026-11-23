@@ -332,6 +332,17 @@ async function cerrarOrden(ctx, ordenId) {
   await api(ctx.cajero, 'POST', '/api/pagos', { orden_id: ordenId, metodo: 'tarjeta', monto_esperado: monto })
 }
 
+/**
+ * Borra la auditoría de los usuarios temporales indicados SOLO si cada uno se podrá eliminar a continuación (sin otro historial).
+ * El SQL es el de `lib/usuarios-sql.ts` (el mismo texto que corre la prueba en un esquema temporal). Devuelve las entradas borradas.
+ */
+async function borrarAuditoriaDeTemporales(db, ids, esquema = 'soda_master') {
+  if (!ids.length) return 0
+  const S = await import('file:///' + path.join(RAIZ, 'lib', 'usuarios-sql.ts').split(path.sep).join('/'))
+  const r = await db.query(S.sentenciaAuditoriaDeTemporalesBorrables(esquema), [ids])
+  return r.length
+}
+
 /** Cierre final: libera mesas, desactiva fixtures, cierra sesiones. Siempre se llama, aun con fallos. */
 async function limpiar(ctx) {
   const avisos = []
@@ -384,16 +395,18 @@ async function limpiar(ctx) {
         if (quedan[0].s + quedan[0].e + quedan[0].p > 0) avisos.push(`quedaron filas de prueba de ARCOP (solicitudes ${quedan[0].s}, empleados ${quedan[0].e}, proveedores ${quedan[0].p})`)
       } catch (e) { avisos.push('no se pudieron borrar las solicitudes ARCOP y los titulares de prueba: ' + e.message) }
     }
-    // sesión 17 (K1): un admin temporal que modificó usuarios dejó entradas en auditoria_admin (`usuario_id` cuenta como historial y
-    // impide borrarlo, F50). Excepción explícita del usuario (21-11-2026) a que auditoria_admin sea de solo adición: se borran SOLO las que
-    // dejaron los usuarios temporales de esta corrida (por id Y con el nombre "prueba …" que tenían al actuar), antes de borrarlos.
-    try { await ctx.db`DELETE FROM soda_master.auditoria_admin WHERE usuario_id = ANY(${ctx.usuariosPrueba || []}::uuid[]) AND starts_with(usuario_nombre, 'prueba ')` } catch (e) { avisos.push('no se pudieron borrar las entradas de auditoría de los usuarios de prueba: ' + e.message) }
+    // sesión 17 (K1) y corrección del 23-11-2026: un admin temporal que modificó usuarios (o leyó datos personales) dejó entradas en
+    // auditoria_admin (`usuario_id` cuenta como historial y impide borrarlo, F50). La excepción de la sesión 17 a que sea de solo adición
+    // vale SOLO para usuarios que se eliminan en esta misma limpieza: se borran las entradas únicamente de los temporales que quedarán sin
+    // otro historial (la condición va en el mismo statement, ver `sentenciaAuditoriaDeTemporalesBorrables`); un temporal que queda
+    // desactivado por historial conserva su auditoría ENTERA. Va antes de borrar a los usuarios.
+    try { await borrarAuditoriaDeTemporales(ctx.db, ctx.usuariosPrueba || []) } catch (e) { avisos.push('no se pudieron borrar las entradas de auditoría de los usuarios de prueba: ' + e.message) }
     // usuarios de prueba (sesión 14.5a): se borran (sus sesiones caen en cascada)
     for (const id of ctx.usuariosPrueba || []) {
       const d = await api(ctx.admin, 'DELETE', '/api/usuarios/' + id)
       if (d.status !== 200 && d.status !== 404) {
         await api(ctx.admin, 'PATCH', '/api/usuarios/' + id, { activo: false })
-        avisos.push(`no se pudo borrar el usuario de prueba ${id} (quedó desactivado)`)
+        avisos.push(`no se pudo borrar el usuario de prueba ${id} (quedó desactivado y conserva su auditoría entera)`)
       }
     }
     const abiertas = await ctx.db`SELECT count(*)::int AS n FROM soda_master.cajas WHERE estado = 'abierta'`
@@ -419,5 +432,5 @@ function resumen(titulo) {
 module.exports = {
   BASE, MESAS, UUID_FALSO, iniciarSesion, BIG, sleep, eq, check, res, api, crearContexto, crearFixtures, reponer,
   stocks, K, movCount, huerfanos, totalesOk, netoItem, activasMesa, itemsDe, ordenRow,
-  enviar, it, extraX, limpiarMesas, cerrarOrden, limpiar, resumen, fechaHoy, crearUsuarioPrueba,
+  enviar, it, extraX, limpiarMesas, cerrarOrden, borrarAuditoriaDeTemporales, limpiar, resumen, fechaHoy, crearUsuarioPrueba,
 }
